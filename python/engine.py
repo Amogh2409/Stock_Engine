@@ -1997,19 +1997,26 @@ def _governance_points(stock, lines):
     total = 0.0
     ph = stock.get("promoterHolding")
     pp = stock.get("promoterPledge")
-    if ph is not None and ph > 0:
+    if ph is None:
+        lines.append("Promoter holding missing (+0.0)")
+    elif ph <= 0:
+        # A genuine zero. ITC, L&T, HDFC Bank and ICICI Bank are professionally
+        # managed with no promoter at all, so this earns no points -- but it is
+        # a published figure, not an absent one, and must not be called missing.
+        lines.append(_award("Promoter holding", ph, "%", 0.0))
+    else:
         awarded = clamp((ph / 75.0) * 5.0, 0, 5)
         total += awarded
         lines.append(_award("Promoter holding", ph, "%", awarded))
-    else:
-        lines.append("Promoter holding missing (+0.0)")
-    if pp is not None and pp >= 0:
-        awarded = 5.0 if pp == 0 else clamp(5.0 - pp, 0, 5)
-        total += awarded
-        lines.append("No promoter pledge (+5.0)" if pp == 0
-                     else _award("Promoter pledge", pp, "%", awarded))
-    else:
+    if pp is None:
         lines.append("Promoter pledge missing (+0.0)")
+    elif pp == 0:
+        total += 5.0
+        lines.append("No promoter pledge (+5.0)")
+    else:
+        awarded = clamp(5.0 - pp, 0, 5)
+        total += awarded
+        lines.append(_award("Promoter pledge", pp, "%", awarded))
     return clamp(total, 0, 10)
 
 
@@ -2023,28 +2030,41 @@ def score_general(stock, sc, medians):
     quality = 0.0
     for metric, label in (("roce", "ROCE"), ("roe", "ROE")):
         value = stock.get(metric)
-        if value is not None and value > 0:
+        if value is None:
+            lines.append("%s missing (+0.0)" % label)
+        elif value <= 0:
+            # Reported and genuinely zero or negative: worth no points, but a
+            # fact about the company rather than a gap in the export.
+            lines.append(_award(label, value, "%", 0.0))
+        else:
             awarded = clamp((value / 20.0) * 15.0, 0, 15)
             quality += awarded
             lines.append(_award(label, value, "%", awarded))
-        else:
-            lines.append("%s missing or not positive (+0.0)" % label)
 
     safety = 0.0
     de = stock.get("debtToEquity")
-    if de is not None and de >= 0:
+    if de is None:
+        lines.append("Debt/Equity missing (+0.0)")
+    elif de < 0:
+        # Unreachable in practice: a negative D/E is negative net worth, a hard
+        # red flag that stops scoring before this point.
+        lines.append(_award("D/E", de, "", 0.0))
+    else:
+        # Zero debt is the best possible case and earns the full ten.
         awarded = clamp(10.0 - de * 5.0, 0, 10)
         safety += awarded
         lines.append(_award("D/E", de, "", awarded))
-    else:
-        lines.append("Debt/Equity missing (+0.0)")
     icr = stock.get("interestCoverage")
-    if icr is not None and icr > 0:
+    if icr is None:
+        lines.append("Interest coverage missing (+0.0)")
+    elif icr <= 0:
+        # No operating profit to cover interest at all: a real reported figure
+        # that earns nothing.
+        lines.append(_award("Interest cover", icr, "x", 0.0))
+    else:
         awarded = clamp((icr / 5.0) * 10.0, 0, 10)
         safety += awarded
         lines.append(_award("Interest cover", icr, "x", awarded))
-    else:
-        lines.append("Interest coverage missing (+0.0)")
 
     return {
         "financialQuality": clamp(quality, 0, 30),
@@ -2070,19 +2090,23 @@ def score_financial(stock, sc, medians):
     lines = []
     quality = 0.0
     roa = stock.get("returnOnAssets")
-    if roa is not None and roa > 0:
+    if roa is None:
+        lines.append("Return on assets missing (+0.0)")
+    elif roa <= 0:
+        lines.append(_award("Return on assets", roa, "%", 0.0))
+    else:
         awarded = clamp((roa / 1.5) * 15.0, 0, 15)
         quality += awarded
         lines.append(_award("Return on assets", roa, "%", awarded))
-    else:
-        lines.append("Return on assets missing or not positive (+0.0)")
     roe = stock.get("roe")
-    if roe is not None and roe > 0:
+    if roe is None:
+        lines.append("ROE missing (+0.0)")
+    elif roe <= 0:
+        lines.append(_award("ROE", roe, "%", 0.0))
+    else:
         awarded = clamp((roe / 20.0) * 15.0, 0, 15)
         quality += awarded
         lines.append(_award("ROE", roe, "%", awarded))
-    else:
-        lines.append("ROE missing or not positive (+0.0)")
 
     safety = 0.0
     car = stock.get("capitalAdequacy")
@@ -3360,6 +3384,43 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(
             engine_for_tests().evaluate(dict(_FULL_STOCK, pbRatio=-0.3))["redFlags"],
             ["Negative net worth"])
+
+    def test_a_reported_zero_is_a_value_not_a_gap(self):
+        """A published zero must never be described as a missing figure.
+
+        ITC, L&T, HDFC Bank and ICICI Bank genuinely have no promoter at all.
+        Guarding on `value > 0` made every such company report "Promoter
+        holding missing", and the same truthiness mistake sat in five other
+        fields. None of them changes the points -- zero earns zero either way --
+        but the explanation was stating something untrue about the company.
+        """
+        zero = engine_for_tests().evaluate(dict(_FULL_STOCK, promoterHolding=0.0))
+        self.assertIn("Promoter holding 0.0% (+0.0)", zero["scoreLines"])
+        self.assertNotIn("Promoter holding missing (+0.0)", zero["scoreLines"])
+
+        # A genuinely absent value still reports itself absent.
+        absent = engine_for_tests().evaluate(dict(_FULL_STOCK, promoterHolding=None))
+        self.assertIn("Promoter holding missing (+0.0)", absent["scoreLines"])
+
+        # Coverage already counted the zero as present, so it is not penalised
+        # a second time; this pins that it stays that way.
+        self.assertEqual(zero["coverage"], 100.0)
+        self.assertLess(absent["coverage"], zero["coverage"])
+
+        for field, line in (("roce", "ROCE 0.0% (+0.0)"),
+                            ("roe", "ROE 0.0% (+0.0)"),
+                            ("interestCoverage", "Interest cover 0.0x (+0.0)")):
+            result = engine_for_tests().evaluate(dict(_FULL_STOCK, **{field: 0.0}))
+            self.assertIn(line, result["scoreLines"], field)
+
+        bank = dict(_FULL_STOCK, sector="Banking", returnOnAssets=0.0, grossNpa=2.1,
+                    netNpa=0.5, capitalAdequacy=16.0)
+        self.assertIn("Return on assets 0.0% (+0.0)",
+                      engine_for_tests().evaluate(bank)["scoreLines"])
+
+        # Zero debt is the best case, not a missing one, and keeps its ten.
+        self.assertIn("D/E 0.0 (+10.0)",
+                      engine_for_tests().evaluate(dict(_FULL_STOCK, debtToEquity=0.0))["scoreLines"])
 
     def test_screener_financial_sector_names(self):
         financial = ("Banking", "Financial - Services", "Financial Services", "Capital Markets",

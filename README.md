@@ -122,8 +122,9 @@ No required step is allowed to fail.
 Technical confirmation is a separate 0–100 score from daily closing prices. It
 never affects pass/fail or the fundamental score.
 
-- **Python / Colab** downloads 18 months of daily history for exactly the
-  tickers being screened (plus the `^NSEI` benchmark) with `yfinance`, and
+- **Python / Colab** downloads daily history from **2015-01-01** for every
+  ticker in the active universe — not merely the ones this export happens to
+  contain — plus the `^NSEI` benchmark, with `yfinance`, and
   saves it as `data-store/market_data/price_history_<date>_<key>.csv`. A second
   run the same day reuses that file when it prices every ticker. A download
   that prices only some tickers (Yahoo rate-limits) is retried on the next run
@@ -138,14 +139,19 @@ never affects pass/fail or the fundamental score.
 The file format is plain CSV, easy to produce from any source:
 
 ```
-Date,Ticker,Close,Volume
-2026-09-10,TCS,4180.5,1834200
-2026-09-10,^NSEI,24310.2,
+Date,Ticker,Open,High,Low,Close,Volume
+2026-09-10,TCS,4162.0,4195.8,4150.1,4180.5,1834200
+2026-09-10,^NSEI,24280.0,24330.4,24255.9,24310.2,
 ```
 
 Fields are separated by commas and any line ending works. `Date` is a real
 calendar date written `YYYY-MM-DD`, `Ticker` is the screener ticker (`Symbol`
-is accepted as a header), `Volume` is optional. Rows with a malformed or
+is accepted as a header), and `Open`, `High`, `Low` and `Volume` are all
+optional. A four-column `Date,Ticker,Close,Volume` file written by an earlier
+version still loads unchanged; the indicators that need a high and a low then
+report themselves unavailable rather than substituting the close. A session
+missing only its high and low keeps its close instead of being discarded.
+Rows with a malformed or
 impossible date, a blank ticker or a non-numeric close are skipped and counted;
 a later row for the same ticker and date wins. The benchmark is matched to each
 stock by date, so relative strength compares sessions where both actually
@@ -275,8 +281,8 @@ indicators that genuinely exist:
 
 A 200-session maximum is *not* a 52-week high. With fewer than 252 valid
 sessions the 52-week high is unavailable and scores **zero** — it is never
-approximated. History is downloaded over 18 months so a full 252-session
-window is actually available.
+approximated. History is downloaded from 2015-01-01, so every indicator window
+is comfortably covered and the same file can feed a backtest.
 
 ### Delta tracking
 
@@ -304,13 +310,83 @@ delta does not become text.
 ## Scoring
 
 100 points across five factors: financial quality 30, growth 25,
-balance-sheet safety 20, valuation 15, governance 10. Every candidate also
-carries a generated rationale naming its strongest and weakest factors, its
-key input metrics, and any rejection reasons or warnings.
+balance-sheet safety 20, valuation 15, governance 10. **Every company that
+survives the hard red flags is scored and ranked.** Each awarded point carries
+its own one-line reason (`scoreLines`), and every candidate also carries a
+generated rationale naming its strongest and weakest factors, its key input
+metrics, and any rejection reasons or warnings.
 
-Screening rejects on any failed hurdle. Financial-sector companies (banks,
-NBFCs, insurers, brokers) are always rejected: the leverage and cash-flow
-rules do not transfer to them.
+### Three outcomes, decided in this order
+
+| Outcome | When | Result |
+|---|---|---|
+| **Not scored** | A financial company whose export lacks the metrics its model needs | `Not scored: missing bank metrics (…)`, naming each absent column |
+| **Rejected** | A hard red flag fired — the numbers cannot be trusted | Score 0, no sub-scores, no score lines |
+| **Scored** | Everything else | Graded sub-scores, each point explained |
+
+### Hard red flags
+
+These reject outright. They are not "unattractive" findings — an expensive
+company still gets a score — they mean *this row is not usable as evidence*:
+
+1. Negative net worth (a negative P/B or D/E changes sign, not magnitude, so a
+   "cheap" P/B of −0.3 is insolvency rather than a bargain)
+2. Promoter pledge above the configured limit
+3. Negative operating cash flow — **non-financial companies only**, because a
+   growing loan book consumes cash and the rule would reject healthy lenders
+4. Fundamental coverage below the configured minimum
+5. Revenue of zero or less, when the export carries a revenue column
+6. Impossible promoter holding or pledge (outside 0–100)
+7. Market capitalisation of zero or less
+8. A pledge recorded against a promoter holding of zero — internally contradictory
+9. Two rows for the same company disagreeing on their numbers
+
+### The strict screen
+
+The old pass/fail hurdles — minimum ROCE, growth, leverage, interest cover,
+valuation ceilings, promoter holding — are *preferences*, not data-integrity
+problems. By default they **cost points rather than rejecting**, so a mediocre
+company is ranked low instead of vanishing. Setting `app.strict_screen` to
+`true` re-applies them as a filter over the ranked list. The strict screen
+never changes what a company scores; it only changes what passes.
+
+### Financial companies
+
+Banks and NBFCs are scored by their own model rather than excluded. Quality is
+return on assets and return on equity; safety is capital adequacy (scored above
+the 9% regulatory floor) and net NPA (scored down from a clean book to 2%).
+Growth, valuation and governance are shared with the general model, so the
+30/25/20/15/10 caps hold and totals stay comparable.
+
+That model needs four extra Screener.in columns — **Return on assets**,
+**Gross NPA %**, **Net NPA %** and **Capital adequacy ratio**. Without them a
+lender is reported as `not scored: missing bank metrics`, naming exactly which
+are absent, rather than being scored on ratios that do not describe it. CASA
+and financing margin are *reported but never scored*: an NBFC has no CASA at
+all, so paying points for it would penalise every NBFC for being one.
+
+Insurers need a third model (solvency ratio rather than NPAs) and are not yet
+covered; they currently land in "not scored".
+
+### Sector-relative valuation
+
+Valuation is judged against the loaded file's own sectors, because a P/E of 30
+is dear for a bank and cheap for a fast-growing software company. Half the
+yardstick earns full marks, the yardstick itself earns half, and half again
+above it earns nothing.
+
+Screener.in's industry labels are fine-grained ("FMCG - Food" and "FMCG -
+Household Products" are separate), so a 100-row export splits into roughly 25
+industries, most holding one or two companies. The yardstick therefore falls
+back in order, and **the reason line always names which basis was used**, so a
+fallback can never be mistaken for a true sector comparison:
+
+1. The fine industry median, when at least 5 companies in it report the metric
+2. otherwise a coarse sector group median, on the same threshold
+3. otherwise the whole-universe median
+
+Only positive ratios feed a median: a negative P/E is a loss and a negative P/B
+is negative net worth, and neither is a cheap valuation.
 
 All fifteen thresholds, plus top-N, minimum score and staleness, are editable
 in **Universe & config**, and every input is clamped to a documented range.
@@ -398,7 +474,10 @@ and opt-in; they never gate a release.
    the separate technical-confirmation score. The browser cannot download it;
    upload a price-history CSV there (the Python run saves one).
 4. The Nifty 100 list is a cached, dated snapshot (see above).
-5. Financial-sector companies are out of scope and always rejected.
+5. Financial companies are scored by a separate model that needs four extra
+   Screener.in columns; without them they are reported as "not scored:
+   missing bank metrics" rather than scored wrongly. Insurers need a different
+   model again and are not yet covered.
 6. Scores are deterministic research signals, not price predictions.
 7. Technical indicators need sufficient history; missing ones score zero
    rather than being approximated.

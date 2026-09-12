@@ -775,6 +775,46 @@ describe('Screening rules found by review', () => {
     ).toEqual(['Negative net worth']);
   });
 
+  it('reports a published zero as a value, never as a missing figure', () => {
+    // ITC, L&T, HDFC Bank and ICICI Bank genuinely have no promoter at all.
+    // Guarding on `value > 0` made every such company report "Promoter holding
+    // missing", and the same truthiness mistake sat in five other fields. None
+    // of them changes the points -- zero earns zero either way -- but the
+    // explanation was stating something untrue about the company.
+    const zero = evaluateStock(makeStock({ promoterHolding: 0 }), DEFAULT_SCREENING_CONFIG, APP);
+    expect(zero.scoreLines).toContain('Promoter holding 0.0% (+0.0)');
+    expect(zero.scoreLines).not.toContain('Promoter holding missing (+0.0)');
+
+    // A genuinely absent value still reports itself absent.
+    const absent = evaluateStock(makeStock({ promoterHolding: null }), DEFAULT_SCREENING_CONFIG, APP);
+    expect(absent.scoreLines).toContain('Promoter holding missing (+0.0)');
+
+    // Coverage already counted the zero as present, so it is not penalised a
+    // second time; this pins that it stays that way.
+    expect(zero.coveragePct).toBe(100);
+    expect(absent.coveragePct).toBeLessThan(zero.coveragePct);
+
+    expect(evaluateStock(makeStock({ roce: 0 }), DEFAULT_SCREENING_CONFIG, APP).scoreLines)
+      .toContain('ROCE 0.0% (+0.0)');
+    expect(evaluateStock(makeStock({ roe: 0 }), DEFAULT_SCREENING_CONFIG, APP).scoreLines)
+      .toContain('ROE 0.0% (+0.0)');
+    expect(evaluateStock(makeStock({ interestCoverage: 0 }), DEFAULT_SCREENING_CONFIG, APP).scoreLines)
+      .toContain('Interest cover 0.0x (+0.0)');
+
+    const bank = evaluateStock(
+      makeStock({
+        sector: 'Banking', returnOnAssets: 0, grossNpa: 2.1, netNpa: 0.5, capitalAdequacy: 16,
+      }),
+      DEFAULT_SCREENING_CONFIG,
+      APP,
+    );
+    expect(bank.scoreLines).toContain('Return on assets 0.0% (+0.0)');
+
+    // Zero debt is the best case, not a missing one, and keeps its ten.
+    expect(evaluateStock(makeStock({ debtToEquity: 0 }), DEFAULT_SCREENING_CONFIG, APP).scoreLines)
+      .toContain('D/E 0.0 (+10.0)');
+  });
+
   it('treats every Screener.in financial sector name as financial', () => {
     const financial = [
       'Banking', 'Financial - Services', 'Financial Services', 'Capital Markets',

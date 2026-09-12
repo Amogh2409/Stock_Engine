@@ -1564,19 +1564,27 @@ function governancePoints(stock: CleanedStock, lines: string[]): number {
   let total = 0;
   const ph = stock.promoterHolding;
   const pp = stock.promoterPledge;
-  if (ph !== null && ph > 0) {
+  if (ph === null) {
+    lines.push('Promoter holding missing (+0.0)');
+  } else if (ph <= 0) {
+    // A genuine zero. ITC, L&T, HDFC Bank and ICICI Bank are professionally
+    // managed with no promoter at all, so this earns no points -- but it is a
+    // published figure, not an absent one, and must not be called missing.
+    lines.push(award('Promoter holding', ph, '%', 0));
+  } else {
     const awarded = clamp((ph / 75) * 5, 0, 5);
     total += awarded;
     lines.push(award('Promoter holding', ph, '%', awarded));
-  } else {
-    lines.push('Promoter holding missing (+0.0)');
   }
-  if (pp !== null && pp >= 0) {
-    const awarded = pp === 0 ? 5 : clamp(5 - pp, 0, 5);
-    total += awarded;
-    lines.push(pp === 0 ? 'No promoter pledge (+5.0)' : award('Promoter pledge', pp, '%', awarded));
-  } else {
+  if (pp === null) {
     lines.push('Promoter pledge missing (+0.0)');
+  } else if (pp === 0) {
+    total += 5;
+    lines.push('No promoter pledge (+5.0)');
+  } else {
+    const awarded = clamp(5 - pp, 0, 5);
+    total += awarded;
+    lines.push(award('Promoter pledge', pp, '%', awarded));
   }
   return clamp(total, 0, 10);
 }
@@ -1596,31 +1604,44 @@ export function scoreGeneral(
   const qualityMetrics: [('roce' | 'roe'), string][] = [['roce', 'ROCE'], ['roe', 'ROE']];
   for (const [metric, label] of qualityMetrics) {
     const value = stock[metric];
-    if (value !== null && value > 0) {
+    if (value === null) {
+      lines.push(`${label} missing (+0.0)`);
+    } else if (value <= 0) {
+      // Reported and genuinely zero or negative: worth no points, but a fact
+      // about the company rather than a gap in the export.
+      lines.push(award(label, value, '%', 0));
+    } else {
       const awarded = clamp((value / 20) * 15, 0, 15);
       quality += awarded;
       lines.push(award(label, value, '%', awarded));
-    } else {
-      lines.push(`${label} missing or not positive (+0.0)`);
     }
   }
 
   let safety = 0;
   const de = stock.debtToEquity;
-  if (de !== null && de >= 0) {
+  if (de === null) {
+    lines.push('Debt/Equity missing (+0.0)');
+  } else if (de < 0) {
+    // Unreachable in practice: a negative D/E is negative net worth, a hard red
+    // flag that stops scoring before this point.
+    lines.push(award('D/E', de, '', 0));
+  } else {
+    // Zero debt is the best possible case and earns the full ten.
     const awarded = clamp(10 - de * 5, 0, 10);
     safety += awarded;
     lines.push(award('D/E', de, '', awarded));
-  } else {
-    lines.push('Debt/Equity missing (+0.0)');
   }
   const icr = stock.interestCoverage;
-  if (icr !== null && icr > 0) {
+  if (icr === null) {
+    lines.push('Interest coverage missing (+0.0)');
+  } else if (icr <= 0) {
+    // No operating profit to cover interest at all: a real reported figure
+    // that earns nothing.
+    lines.push(award('Interest cover', icr, 'x', 0));
+  } else {
     const awarded = clamp((icr / 5) * 10, 0, 10);
     safety += awarded;
     lines.push(award('Interest cover', icr, 'x', awarded));
-  } else {
-    lines.push('Interest coverage missing (+0.0)');
   }
 
   return {
@@ -1655,20 +1676,24 @@ export function scoreFinancial(
   const lines: string[] = [];
   let quality = 0;
   const roa = stock.returnOnAssets;
-  if (roa !== null && roa > 0) {
+  if (roa === null) {
+    lines.push('Return on assets missing (+0.0)');
+  } else if (roa <= 0) {
+    lines.push(award('Return on assets', roa, '%', 0));
+  } else {
     const awarded = clamp((roa / 1.5) * 15, 0, 15);
     quality += awarded;
     lines.push(award('Return on assets', roa, '%', awarded));
-  } else {
-    lines.push('Return on assets missing or not positive (+0.0)');
   }
   const roe = stock.roe;
-  if (roe !== null && roe > 0) {
+  if (roe === null) {
+    lines.push('ROE missing (+0.0)');
+  } else if (roe <= 0) {
+    lines.push(award('ROE', roe, '%', 0));
+  } else {
     const awarded = clamp((roe / 20) * 15, 0, 15);
     quality += awarded;
     lines.push(award('ROE', roe, '%', awarded));
-  } else {
-    lines.push('ROE missing or not positive (+0.0)');
   }
 
   let safety = 0;
