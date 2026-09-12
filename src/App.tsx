@@ -555,6 +555,7 @@ export default function App() {
             watchlist={watchlist}
             belowCutOff={result.passedBelowCutOff}
             fundamentalOnly={result.fundamentalOnly}
+            priceHistory={prices?.history ?? null}
           />
         )}
         {activeTab === 'changes' && (

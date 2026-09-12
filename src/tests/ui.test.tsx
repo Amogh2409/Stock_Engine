@@ -298,6 +298,44 @@ describe('Technical panel', () => {
     render(<WatchlistTable watchlist={[ranked({ technicals: tech }, 1)]} />);
     expect(screen.getByTestId('short-price-history').textContent).toMatch(/only 30 sessions/);
   });
+
+  it('charts the loaded closes against the levels the score actually used', () => {
+    const closes = Array.from({ length: 260 }, (_, i) => 100 + i);
+    const dates = closes.map((_, i) => `2024-${String((i % 12) + 1).padStart(2, '0')}-01`);
+    const tech = computeTechnicalIndicators(closes);
+    render(
+      <WatchlistTable
+        watchlist={[ranked({ technicals: tech }, 1)]}
+        priceHistory={{ AAA: { dates, closes, volumes: [], opens: [], highs: [], lows: [] } }}
+      />,
+    );
+    const chart = screen.getByTestId('price-chart');
+    expect(chart.querySelector('polyline')).toBeTruthy();
+    // A level is legended only when the score was allowed to use it, and 260
+    // rising sessions make all three available.
+    expect(chart.textContent).toContain('50 SMA');
+    expect(chart.textContent).toContain('200 SMA');
+    expect(chart.textContent).toContain('52W high');
+  });
+
+  it('draws no chart when the indicators exist but the closes were never passed', () => {
+    const tech = computeTechnicalIndicators(Array.from({ length: 260 }, (_, i) => 100 + i));
+    render(<WatchlistTable watchlist={[ranked({ technicals: tech }, 1)]} />);
+    expect(screen.queryByTestId('price-chart')).toBeNull();
+  });
+
+  it('draws no chart for a company the loaded history does not cover', () => {
+    const closes = Array.from({ length: 260 }, (_, i) => 100 + i);
+    const dates = closes.map(() => '2024-01-01');
+    const tech = computeTechnicalIndicators(closes);
+    render(
+      <WatchlistTable
+        watchlist={[ranked({ technicals: tech }, 1)]}
+        priceHistory={{ ZZZ: { dates, closes, volumes: [], opens: [], highs: [], lows: [] } }}
+      />,
+    );
+    expect(screen.queryByTestId('price-chart')).toBeNull();
+  });
 });
 
 function ConfigHarness() {

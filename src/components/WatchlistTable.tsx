@@ -3,7 +3,8 @@ import React, { useState } from 'react';
 
 import { StockEvaluation, TechnicalIndicators } from '../types';
 import { downloadText, todayStamp } from '../utils/download';
-import { fmt1, generateWatchlistCsv } from '../utils/screenerEngine';
+import { fmt1, generateWatchlistCsv, PriceHistory } from '../utils/screenerEngine';
+import { PriceChart } from './PriceChart';
 
 interface WatchlistTableProps {
   watchlist: StockEvaluation[];
@@ -16,6 +17,12 @@ interface WatchlistTableProps {
    * hidden, and nothing is ranked against a scale it never faced.
    */
   fundamentalOnly?: StockEvaluation[];
+  /**
+   * The loaded closes, so the detail panel can chart the selected company. The
+   * indicators on the evaluation are derived values; this is the series they
+   * were derived from, and nothing here recomputes them.
+   */
+  priceHistory?: PriceHistory | null;
 }
 
 /**
@@ -159,6 +166,7 @@ export const WatchlistTable: React.FC<WatchlistTableProps> = ({
   watchlist,
   belowCutOff = [],
   fundamentalOnly = [],
+  priceHistory = null,
 }) => {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
@@ -394,6 +402,27 @@ export const WatchlistTable: React.FC<WatchlistTableProps> = ({
               </p>
             ) : (
               <>
+                {(() => {
+                  // hasOwnProperty, not a bare index: the history is a plain
+                  // record, so a ticker that collides with Object.prototype
+                  // would otherwise hand back a function instead of a series.
+                  const series =
+                    priceHistory && Object.prototype.hasOwnProperty.call(priceHistory, s.ticker)
+                      ? priceHistory[s.ticker]
+                      : null;
+                  if (!series) return null;
+                  // Each level is drawn only when the score was allowed to use
+                  // it, so the chart never shows a line the points ignored.
+                  return (
+                    <PriceChart
+                      closes={series.closes}
+                      dates={series.dates}
+                      sma50={t.available.sma50 ? t.sma50 : null}
+                      sma200={t.available.sma200 ? t.sma200 : null}
+                      high52Week={t.available.high52Week ? t.high52Week : null}
+                    />
+                  );
+                })()}
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   {indicatorCells(t).map((cell) => (
                     <div
