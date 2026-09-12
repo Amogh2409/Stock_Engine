@@ -196,6 +196,17 @@ result is exactly what you would expect if the two effects cancel.
 mean-reversion sign is the single highest-value experiment available, because it
 is one character of code and the backtest harness already exists.
 
+Be precise about the failure mode, because "untested" undersells it. The sign
+flipping inside a single market is evidence that the relationship is **not
+stable**, which is a stronger and more uncomfortable claim than "we have not
+checked this one locally." An indicator whose direction reverses within one
+market is not awaiting a local test that would settle it for good — its sign is
+regime-dependent, and a fixed +15 for RSI > 50 encodes a constant where the
+source documents a variable. So the risk is not merely that the rule is
+unproven; it is that the rule is **directionally wrong in some regimes**, and a
+single backtest over one span can only report the average of whichever regimes
+that span happened to contain.
+
 ### RSI > 80 as an exhaustion flag — **Adapted**
 
 Wilder set 70/30 (TSaM p. 386). p. 387 reports Aan's study (*Futures*, January
