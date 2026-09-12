@@ -57,6 +57,7 @@ const APP_CONFIG: AppConfig = {
   minimum_total_score: 0,
   fundamentals_stale_after_days: 30,
   enable_technical_confirmation: false,
+  technical_weight_pct: 40,
   strict_screen: false,
 };
 const SCREENING_CONFIG: ScreeningConfig = { ...DEFAULT_SCREENING_CONFIG };
@@ -368,6 +369,9 @@ function tsEvaluationFields(ev: StockEvaluation): Omit<ParityEvaluation, 'ticker
   return {
     passed: ev.passed,
     score: ev.score,
+    composite: ev.compositeScore,
+    compositeBasis: ev.compositeBasis,
+    verdict: ev.verdict,
     coverage: ev.coveragePct,
     reasons: ev.rejectionReasons,
     warningFlags: ev.warningFlags,
@@ -673,6 +677,13 @@ describe('Cross-engine parity on additional screens', () => {
         );
         expect(theirs.passed_below_cutoff).toEqual(
           ours.passedBelowCutOff.map((item) => ({
+            ticker: item.stock.ticker, rank: item.rank, score: item.score,
+          })),
+        );
+        // Companies this run could not price, ranked apart from the ones it
+        // could. Both engines must agree on who lands here and in what order.
+        expect(theirs.fundamental_only).toEqual(
+          ours.fundamentalOnly.map((item) => ({
             ticker: item.stock.ticker, rank: item.rank, score: item.score,
           })),
         );

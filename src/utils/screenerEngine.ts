@@ -454,6 +454,11 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   minimum_total_score: 50,
   fundamentals_stale_after_days: 30,
   enable_technical_confirmation: true,
+  // Share of the composite the technical half carries; the fundamental half
+  // takes the remainder, so one knob cannot produce weights that fail to sum to
+  // 100. The split itself is untested against returns -- a backtest is what
+  // would justify a number here.
+  technical_weight_pct: 40,
   // Off by default: every company that survives the hard red flags is scored
   // and ranked. Turning this on re-applies the old pass/fail hurdles (minimum
   // ROCE, growth, leverage, valuation and so on) as a filter over that ranked
@@ -732,6 +737,7 @@ export function normaliseSymbols(symbols: readonly unknown[] | undefined): strin
 export const CONFIG_LIMITS: Record<string, { min: number; max: number }> = {
   top_n: { min: 1, max: 100 },
   minimum_total_score: { min: 0, max: 100 },
+  technical_weight_pct: { min: 0, max: 100 },
   fundamentals_stale_after_days: { min: 1, max: 365 },
   minMarketCapCr: { min: 0, max: 100000 },
   minSalesGrowthPct: { min: -100, max: 100 },
@@ -2199,6 +2205,67 @@ export function buildExplanation(
  * makes valuation sector-relative. Evaluating a stock on its own, with no
  * medians, therefore scores no valuation points and says so in its score lines.
  */
+/**
+ * DESCRIPTIVE LABELS, NOT MEASURED CUT-OFFS. These numbers were chosen to
+ * spread the current scoring scale so a long list can be read quickly. Nothing
+ * tests that a "Strong" goes on to outperform a "Good", and until a backtest
+ * says otherwise they carry no predictive claim at all. Do not cite them as
+ * evidence, and do not tune them against the bundled sample -- its figures are
+ * invented.
+ */
+const VERDICT_BANDS: readonly (readonly [number, string])[] = [
+  [70, 'Strong'], [60, 'Good'], [45, 'Average'],
+];
+const VERDICT_WEAK = 'Weak';
+const VERDICT_RED_FLAG = 'Red flag';
+const VERDICT_NOT_SCORED = 'Not scored';
+
+/**
+ * The fundamental and technical halves combined, with text describing how.
+ * Counterpart of combine_scores().
+ *
+ * A null technical score means confirmation is off, the run had no price
+ * history at all, or this company is not in the price file. The composite is
+ * then the fundamental score alone rather than the fundamental score diluted
+ * towards zero -- a gap in the price file is a fact about the file, not
+ * evidence against the company. Such companies are ranked separately by
+ * processScreenerPipeline, because a composite without a technical half is not
+ * on the same scale as one with it.
+ */
+export function combineScores(
+  fundamental: number,
+  technical: number | null,
+  technicalWeightPct: number,
+): { composite: number; basis: string } {
+  if (technical === null) return { composite: round1(fundamental), basis: 'fundamental only' };
+  const weight = clamp(technicalWeightPct, 0, 100) / 100;
+  const composite = fundamental * (1 - weight) + technical * weight;
+  return {
+    composite: round1(composite),
+    basis: `fundamentals ${round1((1 - weight) * 100)}% + technicals ${round1(weight * 100)}%`,
+  };
+}
+
+/**
+ * A descriptive band over the composite. Counterpart of verdict_for().
+ *
+ * These are labels for reading a long list quickly. They are NOT predictions
+ * and are not validated against returns: the cut-offs were chosen to spread the
+ * current scale, and nothing yet tests that a "Strong" outperforms a "Good".
+ */
+export function verdictFor(
+  composite: number,
+  redFlags: readonly string[],
+  notScored: string | null,
+): string {
+  if (notScored) return VERDICT_NOT_SCORED;
+  if (redFlags.length) return VERDICT_RED_FLAG;
+  for (const [threshold, label] of VERDICT_BANDS) {
+    if (composite >= threshold) return label;
+  }
+  return VERDICT_WEAK;
+}
+
 export function evaluateStock(
   stock: CleanedStock,
   config: ScreeningConfig,
@@ -2304,12 +2371,21 @@ export function evaluateStock(
   // separate list nobody reads.
   warningFlags.push(...technicalScore.warnings);
 
+  // The composite is what the ranking sorts on. minimum_total_score still gates
+  // the fundamental total: moving that gate onto the composite would be a second
+  // recalibration with nothing to calibrate it against.
+  const combined = combineScores(total, technicalScore.score, appConfig.technical_weight_pct);
+  const verdict = verdictFor(combined.composite, redFlags, notScored);
+
   return {
     stock,
     passed: reasons.length === 0,
     rejectionReasons: reasons,
     warningFlags,
     score: round1(total),
+    compositeScore: combined.composite,
+    compositeBasis: combined.basis,
+    verdict,
     coveragePct: round1(coverage),
     redFlags,
     notScored,
@@ -2493,12 +2569,21 @@ export interface PipelineResult {
   outsideUniverseCount: number;
   /** Passed every rule but ranks below top_n; ranked, never dropped. */
   passedBelowCutOff: StockEvaluation[];
+  /**
+   * Passed every rule, but this run priced other companies and not these, so
+   * their composite has no technical half. Ranked among themselves rather than
+   * mixed into a list built on a different scale. Empty when no company in the
+   * run has a technical score, because then every composite is comparable.
+   */
+  fundamentalOnly: StockEvaluation[];
 }
 
 /** Canonical watchlist ordering: score descending, then ticker ascending. */
 export function sortByScoreThenTicker(items: StockEvaluation[]): StockEvaluation[] {
+  // "Score" here is the composite, which is what the ranking is built on; it
+  // equals the fundamental score whenever there is no technical half to fold in.
   return [...items].sort(
-    (a, b) => b.score - a.score || compareCodePoints(a.stock.ticker, b.stock.ticker),
+    (a, b) => b.compositeScore - a.compositeScore || compareCodePoints(a.stock.ticker, b.stock.ticker),
   );
 }
 
@@ -2520,6 +2605,7 @@ export function processScreenerPipeline(
   if (inspectionReport.configErrors.length > 0) {
     return {
       evaluations: [], watchlist: [], rejected: [], passedBelowCutOff: [],
+      fundamentalOnly: [],
       inspectionReport, duplicatesCount: 0, outsideUniverseCount: 0,
     };
   }
@@ -2550,7 +2636,27 @@ export function processScreenerPipeline(
 
   // Every passing stock is ranked, then the list is split at top_n: the ones
   // below the cut-off are reported separately rather than dropped.
-  const passed = sortByScoreThenTicker(evaluations.filter((e) => e.passed))
+  // A composite built without a technical half is not on the same scale as one
+  // built with it. At the default weights, a company with fundamentals 90 and no
+  // price data scores 90, while an identical company whose technicals scored 50
+  // gets 0.6*90 + 0.4*50 = 74 -- so being absent from the price file would be
+  // worth sixteen points, and worth most to recent listings, illiquid names and
+  // whatever the download was rate-limited out of. Those companies are ranked in
+  // a list of their own rather than competing on a scale they never faced.
+  //
+  // When NO company has a technical score -- confirmation switched off, or a run
+  // with no price history at all -- every composite is fundamental only, which is
+  // one consistent scale, so the split does not apply.
+  const allPassed = evaluations.filter((e) => e.passed);
+  const technicalInPlay = evaluations.some((e) => e.technicalScore.score !== null);
+  const rankable = technicalInPlay
+    ? allPassed.filter((e) => e.technicalScore.score !== null)
+    : allPassed;
+  const fundamentalOnly = technicalInPlay
+    ? sortByScoreThenTicker(allPassed.filter((e) => e.technicalScore.score === null))
+      .map((item, idx) => ({ ...item, rank: idx + 1 }))
+    : [];
+  const passed = sortByScoreThenTicker(rankable)
     .map((item, idx) => ({ ...item, rank: idx + 1 }));
   const cutOff = appConfig.top_n > 0 ? appConfig.top_n : passed.length;
   const watchlist = passed.slice(0, cutOff);
@@ -2559,7 +2665,7 @@ export function processScreenerPipeline(
   const rejected = sortByScoreThenTicker(evaluations.filter((e) => !e.passed));
 
   return {
-    evaluations, watchlist, passedBelowCutOff, rejected, inspectionReport,
+    evaluations, watchlist, passedBelowCutOff, fundamentalOnly, rejected, inspectionReport,
     duplicatesCount: duplicatesRemoved, outsideUniverseCount,
   };
 }
@@ -2757,8 +2863,8 @@ export function generateRankingChangesCsv(changes: RankingChange[]): string {
 
 export const WATCHLIST_CSV_COLUMNS = [
   'Rank', 'Ticker', 'Name', 'Sector', 'CurrentPrice', 'MarketCapCr', 'Score',
-  'TechScore', 'Coverage', 'FinancialQuality', 'Growth', 'BalanceSheet',
-  'Valuation', 'Governance', 'WarningFlags',
+  'TechScore', 'Composite', 'Verdict', 'Coverage', 'FinancialQuality',
+  'Growth', 'BalanceSheet', 'Valuation', 'Governance', 'WarningFlags',
 ] as const;
 
 export const REJECTED_CSV_COLUMNS = [
@@ -2779,6 +2885,8 @@ export function generateWatchlistCsv(rows: StockEvaluation[]): string {
       fmt1(item.stock.marketCap),
       fmt1(item.score),
       item.technicalScore.score === null ? '' : fmt1(item.technicalScore.score),
+      fmt1(item.compositeScore),
+      textCell(item.verdict),
       fmt1(item.coveragePct),
       fmt1(c.financialQuality.score),
       fmt1(c.growth.score),

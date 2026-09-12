@@ -74,6 +74,9 @@ def run_screen(engine, pd, spec, expected_rows=None):
                 "ticker": item["ticker"],
                 "passed": bool(item["passed"]),
                 "score": item["score"],
+                "composite": item["composite"],
+                "compositeBasis": item["compositeBasis"],
+                "verdict": item["verdict"],
                 "coverage": item["coverage"],
                 "reasons": list(item["reasons"]),
                 "warningFlags": list(item["warningFlags"]),
@@ -97,6 +100,12 @@ def run_screen(engine, pd, spec, expected_rows=None):
         "passed_below_cutoff": [
             {"ticker": item["ticker"], "rank": item["rank"], "score": item["score"]}
             for item in result["passed_below_cutoff"]
+        ],
+        # Passing companies this run could not price, ranked apart from the ones
+        # it could: a composite with no technical half is not on the same scale.
+        "fundamental_only": [
+            {"ticker": item["ticker"], "rank": item["rank"], "score": item["score"]}
+            for item in result["fundamental_only"]
         ],
         "watchlist_csv": engine.watchlist_to_csv(result["watchlist"]),
         "passed_below_csv": engine.watchlist_to_csv(result["passed_below_cutoff"]),

@@ -353,6 +353,35 @@ company still gets a score — they mean *this row is not usable as evidence*:
 8. A pledge recorded against a promoter holding of zero — internally contradictory
 9. Two rows for the same company disagreeing on their numbers
 
+### The composite: it gates on one number and ranks on another
+
+The **fundamental total** decides whether a company qualifies, against
+`minimum_total_score`. The **composite** — the fundamental and technical halves
+combined, the technical one carrying `technical_weight_pct` of it, 40% by
+default — decides where a qualifying company sits in the ranking. Two numbers
+doing two jobs reads like an inconsistency until the jobs are named:
+
+- The technical half is *confirmation*. Fundamentals qualify a company; the
+  chart orders what already qualified. Gating on the composite would let a
+  weak-fundamental, strong-momentum company through on the strength of its
+  chart, which inverts the design rather than refining it.
+- Gating on the composite would also let `technical_weight_pct` silently
+  redefine what passes: raising it to 80 would change the qualifying set without
+  anyone touching the threshold.
+
+A company the run could not price has no technical half, so its composite is
+just its fundamental score. Those companies are **ranked in a list of their
+own**, not mixed in. At the default weights, fundamentals of 90 with no price
+data scores 90, while fundamentals of 90 with technicals of 50 scores 74 — so
+interleaving them would make absence from the price file worth sixteen points,
+and worth most to recent listings, illiquid names and whatever the download was
+rate-limited out of. When *no* company in the run has a technical score, the
+whole list is on one scale and there is no split.
+
+Verdict bands (Strong / Good / Average / Weak) are descriptive labels over the
+composite, chosen to spread the current scale so a long list can be read
+quickly. Nothing tests that a "Strong" goes on to outperform a "Good".
+
 ### The strict screen
 
 The old pass/fail hurdles — minimum ROCE, growth, leverage, interest cover,

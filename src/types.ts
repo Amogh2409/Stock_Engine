@@ -182,6 +182,12 @@ export interface AppConfig {
   fundamentals_stale_after_days: number;
   enable_technical_confirmation: boolean;
   /**
+   * Share of the composite score the technical half carries, 0-100. The
+   * fundamental half takes the remainder, so the two can never sum to anything
+   * but 100.
+   */
+  technical_weight_pct: number;
+  /**
    * Re-apply the old pass/fail hurdles as a filter over the ranked list. Off by
    * default, so every company surviving the hard red flags is scored and ranked.
    */
@@ -230,6 +236,15 @@ export interface StockEvaluation {
   sectorGroup: string | null;
   /** 1-based rank within the sorted, truncated watchlist. */
   rank?: number;
+  /**
+   * Fundamental and technical halves combined, and what the ranking sorts on.
+   * Equal to `score` when there is no technical score to combine.
+   */
+  compositeScore: number;
+  /** How the composite was arrived at, for display beside it. */
+  compositeBasis: string;
+  /** Descriptive band over the composite. A label, not a prediction. */
+  verdict: string;
   technicalScore: TechnicalScoreResult;
   categoryScores: CategoryScores;
   /** Factual rationale built from real factor contributions. Never empty. */

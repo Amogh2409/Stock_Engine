@@ -323,6 +323,39 @@ describe('Screening and scoring', () => {
     expect(ev.scoreLines.some((line) => line.includes('no P/E yardstick'))).toBe(true);
   });
 
+  it('combines both halves into the composite the ranking uses', () => {
+    const withCharts = makeStock({
+      technicals: computeTechnicalIndicators(
+        prices(300), Array.from({ length: 300 }, (_, i) => 50 + i * 0.1),
+      ),
+    });
+    const ev = evaluateStock(withCharts, DEFAULT_SCREENING_CONFIG, {
+      ...APP, enable_technical_confirmation: true,
+    });
+    expect(ev.technicalScore.score).not.toBeNull();
+    expect(ev.compositeBasis).toBe('fundamentals 60% + technicals 40%');
+    // The composite lands between the two halves it was built from.
+    const technical = ev.technicalScore.score as number;
+    expect(ev.compositeScore).toBeGreaterThanOrEqual(Math.min(ev.score, technical));
+    expect(ev.compositeScore).toBeLessThanOrEqual(Math.max(ev.score, technical));
+    expect(['Strong', 'Good', 'Average', 'Weak']).toContain(ev.verdict);
+  });
+
+  it('leaves the composite as the fundamental score when there is no chart half', () => {
+    // Not diluted towards zero: a gap in the price file is a fact about the
+    // file. What stops these companies out-ranking priced ones is the separate
+    // list processScreenerPipeline puts them in, not a smaller number here.
+    const ev = evaluateStock(makeStock(), DEFAULT_SCREENING_CONFIG, APP);
+    expect(ev.compositeScore).toBe(ev.score);
+    expect(ev.compositeBasis).toBe('fundamental only');
+  });
+
+  it('gives a red-flagged company the red-flag verdict whatever it scores', () => {
+    const ev = evaluateStock(makeStock({ debtToEquity: -3.5 }), DEFAULT_SCREENING_CONFIG, APP);
+    expect(ev.verdict).toBe('Red flag');
+    expect(ev.compositeScore).toBeGreaterThan(0);
+  });
+
   it('scores valuation against the sector median when the file supplies one', () => {
     // Five identical companies make their industry its own median, so this
     // stock sits exactly on the yardstick and earns half the valuation marks.

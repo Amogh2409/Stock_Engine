@@ -664,6 +664,11 @@ DEFAULT_APP_CONFIG = {
     "minimum_total_score": 50,
     "fundamentals_stale_after_days": 30,
     "enable_technical_confirmation": True,
+    # Share of the composite the technical half carries; the fundamental half
+    # takes the remainder, so one knob cannot produce weights that fail to sum
+    # to 100. The split itself is untested against returns -- Section E is what
+    # would justify a number here.
+    "technical_weight_pct": 40,
     # Off by default: every company that survives the hard red flags is scored
     # and ranked. Turning this on re-applies the old pass/fail hurdles (minimum
     # ROCE, growth, leverage, valuation and so on) as a filter over that ranked
@@ -883,6 +888,7 @@ def valuation_yardstick(medians, sector, metric):
 CONFIG_LIMITS = {
     "top_n": (1, 100),
     "minimum_total_score": (0, 100),
+    "technical_weight_pct": (0, 100),
     "fundamentals_stale_after_days": (1, 365),
     "minMarketCapCr": (0, 100000),
     "minSalesGrowthPct": (-100, 100),
@@ -2525,6 +2531,56 @@ def strict_screen_failures(stock, sc, is_financial):
     return reasons
 
 
+# DESCRIPTIVE LABELS, NOT MEASURED CUT-OFFS. These numbers were chosen to
+# spread the current scoring scale so a long list can be read quickly. Nothing
+# tests that a "Strong" goes on to outperform a "Good", and until a backtest
+# says otherwise they carry no predictive claim at all. Do not cite them as
+# evidence, and do not tune them against the bundled sample -- its figures are
+# invented.
+VERDICT_BANDS = ((70.0, "Strong"), (60.0, "Good"), (45.0, "Average"))
+VERDICT_WEAK = "Weak"
+VERDICT_RED_FLAG = "Red flag"
+VERDICT_NOT_SCORED = "Not scored"
+
+
+def combine_scores(fundamental, technical, technical_weight_pct):
+    """(composite, basis text) from the fundamental and technical halves.
+
+    A technical score of None means technical confirmation is off, the run had
+    no price history at all, or this company is not in the price file. The
+    composite is then the fundamental score alone rather than the fundamental
+    score diluted towards zero: a gap in the price file is a fact about the
+    file, not evidence against the company. Mirrors combineScores() in
+    screenerEngine.ts.
+    """
+    if technical is None:
+        return round1(fundamental), "fundamental only"
+    weight = clamp(float(technical_weight_pct), 0.0, 100.0) / 100.0
+    composite = fundamental * (1.0 - weight) + technical * weight
+    return round1(composite), "fundamentals %s%% + technicals %s%%" % (
+        js_number_to_string(round1((1.0 - weight) * 100.0)),
+        js_number_to_string(round1(weight * 100.0)),
+    )
+
+
+def verdict_for(composite, red_flags, not_scored):
+    """A descriptive band over the composite score.
+
+    These are labels for reading a long list quickly. They are NOT predictions
+    and are not validated against returns: the cut-offs were chosen to spread
+    the current scale, and nothing yet tests that a "Strong" outperforms a
+    "Good". Mirrors verdictFor() in screenerEngine.ts.
+    """
+    if not_scored:
+        return VERDICT_NOT_SCORED
+    if red_flags:
+        return VERDICT_RED_FLAG
+    for threshold, label in VERDICT_BANDS:
+        if composite >= threshold:
+            return label
+    return VERDICT_WEAK
+
+
 class ScreeningEngine:
     """Deterministic rule-based screen and score.
 
@@ -2656,6 +2712,13 @@ class ScreeningEngine:
         # both engines, not a separate discarded list.
         warning_flags.extend(tech_warnings)
 
+        # The composite is what the ranking sorts on. minimum_total_score still
+        # gates the fundamental total: moving that gate onto the composite would
+        # be a second recalibration with nothing to calibrate it against.
+        composite, composite_basis = combine_scores(
+            total, tech_score, self.config.get("technical_weight_pct", 40))
+        verdict = verdict_for(composite, red_flags, not_scored)
+
         return {
             "ticker": stock.get("ticker") or "",
             "name": stock.get("name") or "Unknown",
@@ -2665,6 +2728,9 @@ class ScreeningEngine:
             "marketCap": mcap,
             "passed": len(reasons) == 0,
             "score": round1(total),
+            "composite": composite,
+            "compositeBasis": composite_basis,
+            "verdict": verdict,
             "coverage": round1(coverage),
             "reasons": list(reasons),
             "warningFlags": list(warning_flags),
@@ -2739,19 +2805,41 @@ class ScreeningEngine:
         # Every passing stock is ranked, then the list is split at top_n: the
         # ones below the cut-off are reported separately rather than dropped.
         passed = [e for e in evaluations if e["passed"]]
-        passed.sort(key=lambda e: (-e["score"], e["ticker"]))
+        # A composite built without a technical half is not on the same scale as
+        # one built with it. At the default weights, a company with fundamentals
+        # 90 and no price data scores 90, while an identical company whose
+        # technicals scored 50 gets 0.6*90 + 0.4*50 = 74 -- so being absent from
+        # the price file would be worth sixteen points, and worth most to recent
+        # listings, illiquid names and whatever the download was rate-limited
+        # out of. Those companies are ranked in a list of their own rather than
+        # competing on a scale they never faced.
+        #
+        # When NO company has a technical score -- confirmation switched off, or
+        # a run with no price history at all -- every composite is fundamental
+        # only, which is one consistent scale, so the split does not apply.
+        technical_in_play = any(e["techScore"] is not None for e in evaluations)
+        fundamental_only = []
+        if technical_in_play:
+            fundamental_only = [e for e in passed if e["techScore"] is None]
+            passed = [e for e in passed if e["techScore"] is not None]
+        # Ranked on the composite, so the chart half actually moves the order.
+        passed.sort(key=lambda e: (-e["composite"], e["ticker"]))
         for idx, item in enumerate(passed):
+            item["rank"] = idx + 1
+        fundamental_only.sort(key=lambda e: (-e["composite"], e["ticker"]))
+        for idx, item in enumerate(fundamental_only):
             item["rank"] = idx + 1
         top_n = int(self.config.get("top_n") or 0)
         cutoff = top_n if top_n > 0 else len(passed)
 
         rejected = [e for e in evaluations if not e["passed"]]
-        rejected.sort(key=lambda e: (-e["score"], e["ticker"]))
+        rejected.sort(key=lambda e: (-e["composite"], e["ticker"]))
 
         return {
             "evaluations": evaluations,
             "watchlist": passed[:cutoff],
             "passed_below_cutoff": passed[cutoff:],
+            "fundamental_only": fundamental_only,
             "rejected": rejected,
             "duplicates_removed": duplicates,
             "outside_universe": outside,
@@ -2961,8 +3049,8 @@ def ranking_changes_to_csv(changes):
 
 WATCHLIST_CSV_COLUMNS = [
     "Rank", "Ticker", "Name", "Sector", "CurrentPrice", "MarketCapCr", "Score",
-    "TechScore", "Coverage", "FinancialQuality", "Growth", "BalanceSheet",
-    "Valuation", "Governance", "WarningFlags",
+    "TechScore", "Composite", "Verdict", "Coverage", "FinancialQuality",
+    "Growth", "BalanceSheet", "Valuation", "Governance", "WarningFlags",
 ]
 REJECTED_CSV_COLUMNS = [
     "Ticker", "Name", "Sector", "Score", "Coverage", "RejectionReasons", "WarningFlags",
@@ -2989,6 +3077,8 @@ def watchlist_to_csv(rows):
             _num(item.get("marketCap")),
             _num(item.get("score")),
             "" if item.get("techScore") is None else _num(item.get("techScore")),
+            _num(item.get("composite")),
+            escape_csv_cell(item.get("verdict")),
             _num(item.get("coverage")),
             _num(cats.get("financialQuality")),
             _num(cats.get("growth")),
@@ -3409,6 +3499,55 @@ class EngineTests(unittest.TestCase):
         self.assertAlmostEqual(_relative_strength(pairs, SESSIONS_12_MONTH), 100.0, places=8)
         self.assertIsNotNone(_relative_strength(pairs, SESSIONS_3_MONTH))
         self.assertIsNone(_relative_strength(pairs[:10], SESSIONS_3_MONTH))
+
+    # --- composite score ---------------------------------------------------
+    def test_composite_combines_both_halves(self):
+        self.assertEqual(combine_scores(90.0, 50.0, 40),
+                         (74.0, "fundamentals 60% + technicals 40%"))
+        self.assertEqual(combine_scores(90.0, 50.0, 0),
+                         (90.0, "fundamentals 100% + technicals 0%"))
+        self.assertEqual(combine_scores(90.0, 50.0, 100),
+                         (50.0, "fundamentals 0% + technicals 100%"))
+
+    def test_composite_without_a_technical_half_is_the_fundamental_score(self):
+        # Not diluted towards zero: a gap in the price file is a fact about the
+        # file, not evidence against the company. What stops that 90 from
+        # out-ranking the 74 above is the separate list, not a smaller number.
+        self.assertEqual(combine_scores(90.0, None, 40), (90.0, "fundamental only"))
+
+    def test_verdict_bands_and_their_precedence(self):
+        self.assertEqual(verdict_for(75.0, [], None), "Strong")
+        self.assertEqual(verdict_for(65.0, [], None), "Good")
+        self.assertEqual(verdict_for(50.0, [], None), "Average")
+        self.assertEqual(verdict_for(20.0, [], None), "Weak")
+        # A red flag, or a row that could not be scored, outranks any band.
+        self.assertEqual(verdict_for(95.0, ["High Promoter Pledge"], None), "Red flag")
+        self.assertEqual(verdict_for(95.0, [], "Not scored: missing bank metrics (x)"),
+                         "Not scored")
+
+    def test_unpriced_companies_rank_in_a_list_of_their_own(self):
+        alpha = _fixture_frame().iloc[0].to_dict()
+        frame = pd.DataFrame([dict(alpha, **{"Name": t, "NSE Code": t, "BSE Code": ""})
+                              for t in ("AAA", "BBB")])
+        dates = [d.strftime("%Y-%m-%d")
+                 for d in pd.date_range("2024-01-01", periods=300, freq="B")]
+        history = {"AAA": {"dates": dates,
+                           "closes": [100.0 + i * 0.5 for i in range(300)],
+                           "volumes": [1000.0] * 300, "opens": [None] * 300,
+                           "highs": [None] * 300, "lows": [None] * 300}}
+        engine = ScreeningEngine(
+            dict(DEFAULT_APP_CONFIG, minimum_total_score=0, universe_mode="custom",
+                 custom_symbols=[]),
+            DEFAULT_SCREENING_CONFIG)
+        result = engine.screen(frame, price_history=history)
+        self.assertEqual([e["ticker"] for e in result["watchlist"]], ["AAA"])
+        self.assertEqual([e["ticker"] for e in result["fundamental_only"]], ["BBB"])
+        self.assertEqual(result["fundamental_only"][0]["compositeBasis"], "fundamental only")
+        # With no price history at all, every composite is on one scale, so the
+        # split does not apply and both companies rank together.
+        both = engine.screen(frame)
+        self.assertEqual([e["ticker"] for e in both["watchlist"]], ["AAA", "BBB"])
+        self.assertEqual(both["fundamental_only"], [])
 
     # --- screening / scoring ---------------------------------------------
     def test_fixture_screen_outcomes(self):

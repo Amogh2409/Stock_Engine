@@ -75,6 +75,9 @@ export interface ParityEvaluation {
   ticker: string;
   passed: boolean;
   score: number;
+  composite: number;
+  compositeBasis: string;
+  verdict: string;
   coverage: number;
   reasons: string[];
   warningFlags: string[];
@@ -98,6 +101,7 @@ export interface ParityScreen {
   evaluations: ParityEvaluation[];
   watchlist: { ticker: string; rank: number; score: number }[];
   passed_below_cutoff: { ticker: string; rank: number; score: number }[];
+  fundamental_only: { ticker: string; rank: number; score: number }[];
   watchlist_csv: string;
   passed_below_csv: string;
   rejected_csv: string;
