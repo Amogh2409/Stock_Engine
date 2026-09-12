@@ -393,7 +393,10 @@ export default function App() {
             <button
               onClick={() =>
                 downloadText(
-                  generateHtmlReport(watchlist, result.passedBelowCutOff, rejected, report, appConfig),
+                  generateHtmlReport(
+                    watchlist, result.passedBelowCutOff, rejected, report, appConfig,
+                    result.fundamentalOnly,
+                  ),
                   `research_report_${todayStamp()}.html`,
                   'text/html',
                 )
@@ -548,7 +551,11 @@ export default function App() {
         </div>
 
         {activeTab === 'watchlist' && (
-          <WatchlistTable watchlist={watchlist} belowCutOff={result.passedBelowCutOff} />
+          <WatchlistTable
+            watchlist={watchlist}
+            belowCutOff={result.passedBelowCutOff}
+            fundamentalOnly={result.fundamentalOnly}
+          />
         )}
         {activeTab === 'changes' && (
           <RankingChangesView

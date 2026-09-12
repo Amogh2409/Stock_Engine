@@ -640,6 +640,39 @@ describe('App universe and price history', () => {
     expect(screen.getByTestId('no-price-history')).toBeTruthy();
   });
 
+  it('shows a passing company this run could not price in a list of its own', async () => {
+    render(<App />);
+    // Two companies the default universe evaluates, identical and both passing.
+    const csv = [
+      'Name,NSE Code,Market Capitalization,Sales growth 3Years,Profit growth 3Years,ROCE,Return on equity,Debt to equity,Interest Coverage,Cash flow from operations,Promoter holding,Pledged percentage,Price to Earning,Price to book value,Dividend yield',
+      'Priced Ltd,SUNPHARMA,5000,20%,20%,25%,25%,0.1,10,500,60%,0%,15,2,1%',
+      'Unpriced Ltd,TCS,5000,20%,20%,25%,25%,0.1,10,500,60%,0%,15,2,1%',
+    ].join('\n');
+    fireEvent.change(document.getElementById('screener-csv-file-input') as HTMLInputElement, {
+      target: { files: [fileFrom('two.csv', csv)] },
+    });
+    await waitFor(() => expect(screen.getByText(/File: two\.csv/)).toBeTruthy());
+
+    // Price history covering only one of them.
+    const days = businessDays(300);
+    const priceCsv = [
+      'Date,Ticker,Close,Volume',
+      ...days.map((d, i) => `${d},SUNPHARMA,${100 + i * 0.5},1000`),
+      ...days.map((d, i) => `${d},${BENCHMARK_SYMBOL},${50 + i * 0.1},`),
+    ].join('\n');
+    fireEvent.change(document.getElementById('price-history-file-input') as HTMLInputElement, {
+      target: { files: [fileFrom('prices.csv', priceCsv)] },
+    });
+
+    // The unpriced company must not vanish. It belongs in its own list rather
+    // than the watchlist, because a score with no technical half is not on the
+    // same scale as one that has it.
+    await waitFor(() => expect(document.getElementById('fundamental-only-container')).toBeTruthy());
+    const unpricedList = document.getElementById('fundamental-only-container') as HTMLElement;
+    expect(within(unpricedList).getByText('Unpriced Ltd')).toBeTruthy();
+    expect(within(unpricedList).queryByText('Priced Ltd')).toBeNull();
+  });
+
   it('rejects a price file without the required columns', async () => {
     render(<App />);
     const input = document.getElementById('price-history-file-input') as HTMLInputElement;

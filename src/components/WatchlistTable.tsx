@@ -9,6 +9,13 @@ interface WatchlistTableProps {
   watchlist: StockEvaluation[];
   /** Passed every rule but ranked below top_n. Shown so nothing that passed is hidden. */
   belowCutOff?: StockEvaluation[];
+  /**
+   * Passed every rule, but this run priced other companies and not these, so
+   * their composite has no technical half and is not on the same scale as the
+   * watchlist. Shown separately for the same reason: nothing that passed is
+   * hidden, and nothing is ranked against a scale it never faced.
+   */
+  fundamentalOnly?: StockEvaluation[];
 }
 
 /**
@@ -72,7 +79,87 @@ function ratio(value: number | null, suffix = ''): string {
   return value === null ? '—' : `${fmt1(value)}${suffix}`;
 }
 
-export const WatchlistTable: React.FC<WatchlistTableProps> = ({ watchlist, belowCutOff = [] }) => {
+interface ExtraListProps {
+  items: StockEvaluation[];
+  id: string;
+  title: string;
+  blurb: React.ReactNode;
+  fileName: string;
+}
+
+/**
+ * A secondary list under the watchlist: companies that passed every rule but
+ * sit outside it, either because they rank below top_n or because this run
+ * could not price them. Both exist so that nothing which passed is ever hidden,
+ * and neither is mixed into the watchlist's ordering.
+ */
+const ExtraList: React.FC<ExtraListProps> = ({ items, id, title, blurb, fileName }) => {
+  if (items.length === 0) return null;
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs" id={id}>
+      <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-3 bg-slate-50/50">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-900 tracking-tight">
+            {title} ({items.length})
+          </h2>
+          <p className="text-xs text-slate-500 mt-0.5">{blurb}</p>
+        </div>
+        <button
+          onClick={() =>
+            downloadText(
+              generateWatchlistCsv(items),
+              `${fileName}_${todayStamp()}.csv`,
+              'text/csv;charset=utf-8',
+            )
+          }
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-lg flex-shrink-0"
+        >
+          <Download className="w-3.5 h-3.5 text-blue-600" />
+          {fileName}.csv
+        </button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-xs text-slate-700">
+          <thead className="bg-slate-50 text-slate-500 font-medium border-b border-slate-100 uppercase tracking-wider text-[11px]">
+            <tr>
+              <th className="py-3 px-3 w-10 text-center">#</th>
+              <th className="py-3 px-3">Company &amp; Ticker</th>
+              <th className="py-3 px-3 text-right">Fund. Score</th>
+              <th className="py-3 px-3 text-right">Tech. Score</th>
+              <th className="py-3 px-3 text-center">Flags</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {items.map((item) => (
+              <tr key={item.stock.id} className="hover:bg-slate-50/80">
+                <td className="py-2.5 px-3 text-center font-mono font-semibold text-slate-400">{item.rank}</td>
+                <td className="py-2.5 px-3">
+                  <span className="font-semibold text-slate-900">{item.stock.name}</span>{' '}
+                  <span className="font-mono text-[10px] bg-slate-100 px-1 rounded text-slate-700">
+                    {item.stock.ticker}
+                  </span>
+                </td>
+                <td className="py-2.5 px-3 text-right font-mono font-bold">{fmt1(item.score)}</td>
+                <td className="py-2.5 px-3 text-right font-mono">
+                  {item.technicalScore.score === null ? 'N/A' : `${item.technicalScore.score}/100`}
+                </td>
+                <td className="py-2.5 px-3 text-center text-[11px] text-amber-700">
+                  {item.warningFlags.length > 0 ? item.warningFlags.length : '0'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+export const WatchlistTable: React.FC<WatchlistTableProps> = ({
+  watchlist,
+  belowCutOff = [],
+  fundamentalOnly = [],
+}) => {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   if (watchlist.length === 0 && belowCutOff.length === 0) {
@@ -361,67 +448,33 @@ export const WatchlistTable: React.FC<WatchlistTableProps> = ({ watchlist, below
         </div>
       </div>
 
-      {belowCutOff.length > 0 && (
-        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs" id="below-cutoff-container">
-          <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-3 bg-slate-50/50">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-900 tracking-tight">
-                Passed, below the cut-off ({belowCutOff.length})
-              </h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                These passed every rule but rank below the watchlist size, so they are not in the
-                watchlist above. Raise <strong>Watchlist size (top N)</strong> to include them.
-              </p>
-            </div>
-            <button
-              onClick={() =>
-                downloadText(
-                  generateWatchlistCsv(belowCutOff),
-                  `passed_below_top_n_${todayStamp()}.csv`,
-                  'text/csv;charset=utf-8',
-                )
-              }
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-lg flex-shrink-0"
-            >
-              <Download className="w-3.5 h-3.5 text-blue-600" />
-              passed_below_top_n.csv
-            </button>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs text-slate-700">
-              <thead className="bg-slate-50 text-slate-500 font-medium border-b border-slate-100 uppercase tracking-wider text-[11px]">
-                <tr>
-                  <th className="py-3 px-3 w-10 text-center">#</th>
-                  <th className="py-3 px-3">Company & Ticker</th>
-                  <th className="py-3 px-3 text-right">Fund. Score</th>
-                  <th className="py-3 px-3 text-right">Tech. Score</th>
-                  <th className="py-3 px-3 text-center">Flags</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {belowCutOff.map((item) => (
-                  <tr key={item.stock.id} className="hover:bg-slate-50/80">
-                    <td className="py-2.5 px-3 text-center font-mono font-semibold text-slate-400">{item.rank}</td>
-                    <td className="py-2.5 px-3">
-                      <span className="font-semibold text-slate-900">{item.stock.name}</span>{' '}
-                      <span className="font-mono text-[10px] bg-slate-100 px-1 rounded text-slate-700">
-                        {item.stock.ticker}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono font-bold">{fmt1(item.score)}</td>
-                    <td className="py-2.5 px-3 text-right font-mono">
-                      {item.technicalScore.score === null ? 'N/A' : `${item.technicalScore.score}/100`}
-                    </td>
-                    <td className="py-2.5 px-3 text-center text-[11px] text-amber-700">
-                      {item.warningFlags.length > 0 ? item.warningFlags.length : '0'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+      <ExtraList
+        items={belowCutOff}
+        id="below-cutoff-container"
+        title="Passed, below the cut-off"
+        fileName="passed_below_top_n"
+        blurb={
+          <>
+            These passed every rule but rank below the watchlist size, so they are not in the
+            watchlist above. Raise <strong>Watchlist size (top N)</strong> to include them.
+          </>
+        }
+      />
+
+      <ExtraList
+        items={fundamentalOnly}
+        id="fundamental-only-container"
+        title="Passed, but this run could not price them"
+        fileName="passed_unpriced"
+        blurb={
+          <>
+            These passed every rule, but no price history covered them, so their score has no
+            technical half. They are ranked separately because a score without one is not on the
+            same scale as the watchlist above — mixing them in would reward being absent from the
+            price file. Upload prices covering them to rank them alongside the rest.
+          </>
+        }
+      />
     </div>
   );
 };

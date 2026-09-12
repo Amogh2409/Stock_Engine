@@ -2936,6 +2936,12 @@ export function generateHtmlReport(
   rejected: StockEvaluation[],
   report: DataInspectionReport,
   appConfig: AppConfig,
+  /**
+   * Passed, but unpriced by this run, so ranked on a different scale. Defaulted
+   * so existing callers keep working; appended rather than inserted so their
+   * positional arguments keep meaning what they meant.
+   */
+  fundamentalOnly: StockEvaluation[] = [],
 ): string {
   const candidateRows = (items: StockEvaluation[]) =>
     items
@@ -3000,6 +3006,12 @@ export function generateHtmlReport(
   ${belowCutOff.length === 0 ? '' : `<h2>Passed, below the top ${appConfig.top_n}</h2>
   <table>
     <tr><th>Rank</th><th>Ticker</th><th>Name</th><th>Sector</th><th>Score</th><th>Tech</th><th>Warnings</th></tr>${candidateRows(belowCutOff)}
+  </table>`}
+  ${fundamentalOnly.length === 0 ? '' : `<h2>Passed, but this run could not price them</h2>
+  <p>Ranked separately: with no technical half, their composite is not on the same
+  scale as the list above, and mixing the two would reward absence from the price file.</p>
+  <table>
+    <tr><th>Rank</th><th>Ticker</th><th>Name</th><th>Sector</th><th>Score</th><th>Tech</th><th>Warnings</th></tr>${candidateRows(fundamentalOnly)}
   </table>`}
   <h2>Rejected sample (first 50)</h2>
   <table>
