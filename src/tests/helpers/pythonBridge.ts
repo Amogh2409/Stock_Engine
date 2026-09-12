@@ -24,11 +24,34 @@ import {
 } from '../../utils/colabNotebookGenerator';
 
 /**
- * Interpreter used for parity. run_checks.sh sets PARITY_PYTHON to the
- * interpreter inside its pinned virtualenv; falling back to python3 keeps
- * `npm test` usable locally. A missing interpreter is a hard failure.
+ * Interpreter used for parity, resolved exactly as scripts/venv-python.sh
+ * resolves it: PARITY_PYTHON if set, else the project's own virtualenv.
+ *
+ * It used to fall back to a bare `python3`, which meant one missing virtualenv
+ * produced two very different failures. `npm run screen` goes through
+ * venv-python.sh and gets a sentence telling you what to create; `npm test`
+ * bypassed that script entirely and died with ModuleNotFoundError: pandas from
+ * whichever python3 happened to be on PATH. Same cause, and only one of them
+ * told you the cause. Both entry points now default to the same interpreter and
+ * fail with the same instructions.
  */
-export const PARITY_PYTHON = process.env.PARITY_PYTHON || 'python3';
+// Resolved from the working directory rather than from __dirname, which is
+// undefined in ES module scope: Vitest transpiles this to CJS so __dirname
+// happens to work there, and tsc never evaluates it, so both pass while a
+// plain ESM import of this module throws at load. Every npm script in this
+// repo runs from the repo root, and run_checks.sh sets PARITY_PYTHON
+// explicitly, so cwd is the dependable anchor.
+const VENV_PYTHON = path.resolve(process.cwd(), '.venv', 'bin', 'python');
+export const PARITY_PYTHON = process.env.PARITY_PYTHON || VENV_PYTHON;
+
+/** The instructions scripts/venv-python.sh prints, so both routes say one thing. */
+const VENV_INSTRUCTIONS =
+  `This needs the project's virtualenv, which is missing or incomplete:\n  ${PARITY_PYTHON}\n\n` +
+  'Create it once with:\n' +
+  '  python3 -m venv .venv\n' +
+  '  .venv/bin/pip install -r requirements-test.txt     # offline runs and tests\n' +
+  '  .venv/bin/pip install -r requirements-network.txt  # adds live prices and the NSE refresh\n\n' +
+  'Or point PARITY_PYTHON at an interpreter that has pandas and numpy.';
 
 export interface UnitCase {
   label: string;
@@ -176,7 +199,7 @@ export function assertPythonEnvironment(): void {
   } catch (error) {
     throw new Error(
       `Python interpreter "${PARITY_PYTHON}" is not runnable, so cross-engine parity ` +
-        `cannot be verified. Set PARITY_PYTHON to a valid interpreter. Cause: ${
+        `cannot be verified.\n\n${VENV_INSTRUCTIONS}\n\nCause: ${
           error instanceof Error ? error.message : String(error)
         }`,
     );
@@ -186,14 +209,17 @@ export function assertPythonEnvironment(): void {
   } catch (error) {
     throw new Error(
       `Required Python dependencies (pandas, numpy) are missing from "${PARITY_PYTHON}" ` +
-        `(${version}). Install requirements-test.txt. Cause: ${
+        `(${version}), so cross-engine parity cannot be verified.\n\n${VENV_INSTRUCTIONS}\n\nCause: ${
           error instanceof Error ? error.message : String(error)
         }`,
     );
   }
 }
 
-const DRIVER = path.resolve(__dirname, '..', 'fixtures', 'parity_driver.py');
+// Same reasoning as VENV_PYTHON above: __dirname is undefined in ES module
+// scope, and only Vitest's CJS transpilation hides that. Resolved from the
+// repo root, which is where every entry point runs from.
+const DRIVER = path.resolve(process.cwd(), 'src', 'tests', 'fixtures', 'parity_driver.py');
 
 /** Run the driver against the notebook engine and validate the payload strictly. */
 export function runPythonParity(job: ParityJob): ParityPayload {
