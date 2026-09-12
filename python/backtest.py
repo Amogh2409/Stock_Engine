@@ -158,10 +158,13 @@ def score_on(book, ticker, date, bench_by_date):
         highs=series["highs"][:upto],
         lows=series["lows"][:upto],
     )
-    # Unpacked positionally rather than by arity: the scoring function returns
-    # (score, breakdown, warnings) today and is being extended with per-block
-    # subtotals, and a backtest that crashes when the thing it measures gains a
-    # field is a backtest nobody reruns.
+    # Element zero is the composite total, which is what this backtest measures.
+    # The function returns (score, breakdown, warnings, blocks); the per-block
+    # subtotals exist and are deliberately unused here, because the first
+    # question is whether the total ranks returns at all. Unpacked positionally
+    # rather than by arity so the backtest keeps running when the thing it
+    # measures gains a field -- one that crashes for that reason is one nobody
+    # reruns, and rerunning after every scoring change is the whole point.
     result = E.calculate_technical_score(tech, True)
     return result[0] if isinstance(result, tuple) else result
 
@@ -461,6 +464,15 @@ LIMITATIONS = [
     "benchmark uses the same adjusted series, so the comparison is like-for-like.",
     "Costs are modelled, taxes are not. At a monthly rebalance, Indian "
     "short-term capital gains tax is the larger drag. These are pre-tax figures.",
+    "What is measured is the composite technical TOTAL, not the four blocks "
+    "behind it. A near-zero result says that one particular weighted sum of the "
+    "indicators does not rank returns. It does not say which block carries or "
+    "drags, and it is not evidence that each indicator is individually useless.",
+    "Several t-statistics are computed per run, across horizons and engine "
+    "revisions. Two of eight clearing t=2 is roughly what noise produces, so "
+    "judge any single significant figure against how many were computed, and "
+    "distrust one whose sign flips between the overlapping and non-overlapping "
+    "estimates.",
 ]
 
 
