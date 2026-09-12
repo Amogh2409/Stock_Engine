@@ -359,6 +359,82 @@ def yearly_returns(periods, key="net_return"):
 
 
 # --- Does the score rank anything? -----------------------------------------
+def _betacf(a, b, x):
+    """Continued fraction for the incomplete beta function, by Lentz's method."""
+    tiny = 1e-300
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c, d = 1.0, 1.0 - qab * x / qap
+    if abs(d) < tiny:
+        d = tiny
+    d = 1.0 / d
+    h = d
+    for m in range(1, 300):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + aa / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + aa / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < 3e-16:
+            break
+    return h
+
+
+def _betainc(a, b, x):
+    """Regularised incomplete beta I_x(a, b)."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    log_front = (math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+                 + a * math.log(x) + b * math.log(1.0 - x))
+    if x < (a + 1.0) / (a + b + 2.0):
+        return math.exp(log_front) * _betacf(a, b, x) / a
+    return 1.0 - math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+                          + b * math.log(1.0 - x) + a * math.log(x)) * _betacf(b, a, 1.0 - x) / b
+
+
+def two_sided_p(t_stat, degrees_of_freedom):
+    """Two-sided p-value from Student's t.
+
+    Student's t, NOT a normal approximation. The samples here are small -- ten
+    independent windows at the twelve-month horizon -- and at nine degrees of
+    freedom the normal understates the p-value badly: t=2.05 is p=0.04 under a
+    normal and p=0.07 under t. That difference decides whether a result reads as
+    significant, so the approximation was worth removing rather than caveating.
+    """
+    if degrees_of_freedom <= 0 or t_stat != t_stat:
+        return float("nan")
+    df = float(degrees_of_freedom)
+    return _betainc(df / 2.0, 0.5, df / (df + t_stat * t_stat))
+
+
+def bonferroni(p_value, tests):
+    """p adjusted for how many tests were run, capped at 1.
+
+    A backtest computes a t-stat per horizon, and comparing two scoring
+    revisions doubles that. Two of eight clearing t=2 is close to what noise
+    produces, so the unadjusted figure invites exactly the wrong conclusion.
+    """
+    if p_value != p_value:
+        return float("nan")
+    return min(1.0, p_value * max(1, tests))
+
+
 def spearman(pairs):
     """Rank correlation between two series, as plain arithmetic.
 
@@ -446,8 +522,18 @@ def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORI
             t_stat = mean_ic / (spread / math.sqrt(len(series))) if spread > 0 else float("nan")
         else:
             t_stat = float("nan")
-        summary[horizon] = {"deciles": deciles, "mean_ic": mean_ic,
-                            "ic_periods": len(series), "ic_t_stat": t_stat}
+        # Computed here rather than by hand afterwards, so the significance of a
+        # result is reproducible from the repository by whoever reads it next.
+        p_value = two_sided_p(t_stat, len(series) - 1)
+        summary[horizon] = {
+            "deciles": deciles,
+            "mean_ic": mean_ic,
+            "ic_periods": len(series),
+            "ic_t_stat": t_stat,
+            "ic_p_value": p_value,
+            "ic_p_bonferroni": bonferroni(p_value, len(horizons)),
+            "tests_in_family": len(horizons),
+        }
     return summary
 
 
@@ -550,8 +636,10 @@ def format_report(results):
         spread = top - bottom if top == top and bottom == bottom else float("nan")
         out.append("")
         out.append("Top minus bottom: **%s**. Mean rank correlation %.4f over %d months "
-                   "(t %.2f)." % (pct(spread), block["mean_ic"], block["ic_periods"],
-                                  block["ic_t_stat"]))
+                   "(t %.2f, p %.4f; adjusted for the %d horizons tested, p %.3f)."
+                   % (pct(spread), block["mean_ic"], block["ic_periods"],
+                      block["ic_t_stat"], block["ic_p_value"],
+                      block["tests_in_family"], block["ic_p_bonferroni"]))
         out.append("")
     out.append("## Execution quality")
     out.append("")
@@ -720,6 +808,24 @@ class BacktestTests(unittest.TestCase):
         self.assertAlmostEqual(spearman([(1, 1), (2, 2), (3, 3), (4, 4)]), 1.0, places=12)
         self.assertAlmostEqual(spearman([(1, 4), (2, 3), (3, 2), (4, 1)]), -1.0, places=12)
         self.assertIsNone(spearman([(1, 1), (1, 1), (1, 1)]))
+
+    def test_p_values_come_from_t_not_from_a_normal(self):
+        # Anchors that can be checked against a table rather than against this
+        # implementation: t converges on the normal as df grows, df=1 is Cauchy,
+        # and 2.2281 is the textbook 5% two-sided critical value at df=10.
+        self.assertAlmostEqual(two_sided_p(1.96, 1000000), 0.05, places=4)
+        self.assertAlmostEqual(two_sided_p(1.0, 1), 0.5, places=6)
+        self.assertAlmostEqual(two_sided_p(2.2281, 10), 0.05, places=4)
+        # The case that made this worth fixing: at nine degrees of freedom a
+        # normal approximation reports 0.040 where t reports 0.071, which is the
+        # difference between "significant" and not.
+        self.assertAlmostEqual(two_sided_p(2.05, 9), 0.0706, places=4)
+        self.assertGreater(two_sided_p(2.05, 9), math.erfc(2.05 / math.sqrt(2.0)))
+
+    def test_bonferroni_scales_and_caps(self):
+        self.assertAlmostEqual(bonferroni(0.0175, 8), 0.14, places=6)
+        self.assertEqual(bonferroni(0.5, 8), 1.0)
+        self.assertAlmostEqual(bonferroni(0.01, 1), 0.01, places=12)
 
 
 def main(argv=None):
