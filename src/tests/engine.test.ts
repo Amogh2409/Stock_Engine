@@ -249,6 +249,59 @@ describe('Technical history semantics', () => {
     expect(result.breakdown).toEqual(['Technical screening disabled']);
   });
 
+  it('gives each chart indicator its own minimum history', () => {
+    // 30 rising sessions: past RSI's 15 and Bollinger's 20, short of MACD's 34
+    // and of the 64 a three-month rate of change needs.
+    const tech = computeTechnicalIndicators(Array.from({ length: 30 }, (_, i) => 100 + i * 0.3));
+    expect(tech.rsi14).not.toBeNull();
+    expect(tech.bollingerPercentB).not.toBeNull();
+    expect(tech.roc1M).not.toBeNull();
+    expect(tech.drawdownFromPeakPct).not.toBeNull();
+    expect(tech.macdLine).toBeNull();
+    expect(tech.roc3M).toBeNull();
+    expect(tech.roc12M).toBeNull();
+    // No highs or lows were supplied, so the range indicators stay absent
+    // rather than substituting the close for them.
+    expect(tech.atr14).toBeNull();
+    expect(tech.adx14).toBeNull();
+  });
+
+  it('computes range indicators only from real highs and lows', () => {
+    const closes = Array.from({ length: 120 }, (_, i) => 100 + i * 0.4);
+    const highs = closes.map((c) => c + 1.5);
+    const lows = closes.map((c) => c - 1.5);
+    const withRange = computeTechnicalIndicators(closes, null, null, 't', null, highs, lows);
+    expect(withRange.atr14).not.toBeNull();
+    expect(withRange.adx14).not.toBeNull();
+    expect(withRange.atrPct).not.toBeNull();
+    // One missing high inside the window disables them, rather than letting a
+    // single gap pass as a real range.
+    const gappedHighs: (number | null)[] = [...highs];
+    gappedHighs[gappedHighs.length - 3] = null;
+    const gapped = computeTechnicalIndicators(closes, null, null, 't', null, gappedHighs, lows);
+    expect(gapped.atr14).toBeNull();
+    expect(gapped.adx14).toBeNull();
+  });
+
+  it('treats a flat series as undefined rather than as maximum strength', () => {
+    expect(computeTechnicalIndicators(Array.from({ length: 60 }, (_, i) => 100 + i)).rsi14).toBe(100);
+    const flat = Array.from({ length: 100 }, () => 100);
+    const flatTech = computeTechnicalIndicators(flat, null, null, 't', null, flat, flat);
+    expect(flatTech.rsi14).toBe(50);
+    expect(flatTech.bollingerPercentB).toBeNull();
+    expect(flatTech.adx14).toBeNull();
+  });
+
+  it('reads the direction of volume as OBV pressure', () => {
+    const volumes = Array.from({ length: 30 }, () => 1000);
+    expect(
+      computeTechnicalIndicators(Array.from({ length: 30 }, (_, i) => 100 + i), null, volumes).obvPressure20D,
+    ).toBe(100);
+    expect(
+      computeTechnicalIndicators(Array.from({ length: 30 }, (_, i) => 100 - i), null, volumes).obvPressure20D,
+    ).toBe(-100);
+  });
+
   it('merges technical-unavailable warnings into the displayed flags', () => {
     const ev = evaluateStock(makeStock(), DEFAULT_SCREENING_CONFIG, {
       ...APP, enable_technical_confirmation: true,
@@ -261,9 +314,9 @@ describe('Screening and scoring', () => {
   it('produces the arithmetic score for fully specified inputs', () => {
     // Valuation is judged against the file's own sectors, so a stock evaluated
     // on its own has no yardstick and earns nothing for valuation:
-    // 30 fq + 25 growth + 20 balance + 0 valuation + 9 governance = 84.
+    // 18.75 quality + 16.7 growth + 20 balance + 0 valuation + 9 governance.
     const ev = evaluateStock(makeStock(), DEFAULT_SCREENING_CONFIG, APP);
-    expect(ev.score).toBe(84);
+    expect(ev.score).toBe(64.4);
     expect(ev.passed).toBe(true);
     expect(ev.coveragePct).toBe(100);
     expect(ev.categoryScores.valuation.score).toBe(0);
@@ -277,7 +330,7 @@ describe('Screening and scoring', () => {
     const medians = sectorMedians(peers);
     const ev = evaluateStock(makeStock(), DEFAULT_SCREENING_CONFIG, APP, medians);
     expect(ev.categoryScores.valuation.score).toBe(7.5);
-    expect(ev.score).toBe(91.5);
+    expect(ev.score).toBe(71.9);
     expect(ev.scoreLines.some((line) => line.includes('Computers - Software median'))).toBe(true);
     // Half the sector's P/E earns full marks; half again above it earns none.
     const cheap = evaluateStock(
@@ -369,7 +422,7 @@ describe('Screening and scoring', () => {
 
   it('builds a factual, non-empty explanation', () => {
     const ev = evaluateStock(makeStock(), DEFAULT_SCREENING_CONFIG, APP);
-    expect(ev.explanation).toContain('Total fundamental score 84.0/100');
+    expect(ev.explanation).toContain('Total fundamental score 64.4/100');
     expect(ev.explanation).toContain('Strongest factor');
     expect(ev.explanation).toContain('ROCE 25.0%');
     expect(ev.explanation).toContain('Passed every configured screening rule');
@@ -464,7 +517,7 @@ describe('CSV export safety', () => {
     expect(header.startsWith('Rank,Ticker,Name')).toBe(true);
     const cells = row.split(',');
     expect(cells[0]).toBe('1');       // rank stays a bare number
-    expect(cells[6]).toBe('84.0');    // score stays a bare number
+    expect(cells[6]).toBe('64.4');    // score stays a bare number
     expect(cells[6].startsWith("'")).toBe(false);
   });
 
@@ -764,11 +817,13 @@ describe('Screening rules found by review', () => {
     expect(ev.rejectionReasons).toContain('Negative net worth');
     expect(ev.rejectionReasons).not.toContain('High D/E');
     expect(ev.passed).toBe(false);
-    // A red flag stops scoring outright: the numbers cannot be trusted, so
-    // there is nothing worth awarding points for.
-    expect(ev.score).toBe(0);
-    expect(ev.categoryScores.balanceSheetSafety.score).toBe(0);
-    expect(ev.scoreLines).toEqual([]);
+    // Red-flagged but still scored, so a comparison across the index can show
+    // the fundamentals beside the flag that disqualifies them: quality 18.8 +
+    // growth 16.7 + safety 10 (negative equity earns nothing for D/E, the
+    // interest cover still earns its ten) + governance 9.
+    expect(ev.score).toBe(54.4);
+    expect(ev.categoryScores.balanceSheetSafety.score).toBe(10);
+    expect(ev.scoreLines).toContain('D/E -3.5 (+0.0)');
     // A negative P/B reaches the same conclusion on its own.
     expect(
       evaluateStock(makeStock({ pbRatio: -0.3 }), DEFAULT_SCREENING_CONFIG, APP).redFlags,
@@ -779,11 +834,14 @@ describe('Screening rules found by review', () => {
     // ITC, L&T, HDFC Bank and ICICI Bank genuinely have no promoter at all.
     // Guarding on `value > 0` made every such company report "Promoter holding
     // missing", and the same truthiness mistake sat in five other fields. None
-    // of them changes the points -- zero earns zero either way -- but the
-    // explanation was stating something untrue about the company.
+    // The explanation was stating something untrue about the company, and for
+    // promoter holding it also scored it wrongly: having no promoter is an
+    // ownership structure, not a governance failing, so it now earns the
+    // neutral half of that component.
     const zero = evaluateStock(makeStock({ promoterHolding: 0 }), DEFAULT_SCREENING_CONFIG, APP);
-    expect(zero.scoreLines).toContain('Promoter holding 0.0% (+0.0)');
+    expect(zero.scoreLines).toContain('Promoter holding 0.0%: no promoter, scored neutral (+2.5)');
     expect(zero.scoreLines).not.toContain('Promoter holding missing (+0.0)');
+    expect(zero.categoryScores.governance.score).toBe(7.5);
 
     // A genuinely absent value still reports itself absent.
     const absent = evaluateStock(makeStock({ promoterHolding: null }), DEFAULT_SCREENING_CONFIG, APP);

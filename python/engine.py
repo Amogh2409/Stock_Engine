@@ -652,7 +652,11 @@ DEFAULT_APP_CONFIG = {
     "custom_symbols": [],
     "custom_filters": [],
     "top_n": 20,
-    "minimum_total_score": 65,
+    # Lowered from 65 when the quality and growth scales were widened. The wider
+    # scales moved every score down by roughly 15 points, so the old 65 would
+    # have silently rejected companies that used to qualify: on the bundled
+    # sample, 9 of 11 passed at the old 65 and 9 of 11 pass at this 50.
+    "minimum_total_score": 50,
     "fundamentals_stale_after_days": 30,
     "enable_technical_confirmation": True,
     # Off by default: every company that survives the hard red flags is scored
@@ -1315,6 +1319,27 @@ def empty_technicals(source="unavailable"):
         "distFrom52WHighPct": None,
         "volatility30D": None,
         "high52Week": None,
+        # Chart indicators. None means "not enough history", or "this file has
+        # no highs and lows", never "zero". See the helpers above for the
+        # minimum each one needs.
+        "rsi14": None,
+        "macdLine": None,
+        "macdSignal": None,
+        "macdHistogram": None,
+        "adx14": None,
+        "diPlus14": None,
+        "diMinus14": None,
+        "atr14": None,
+        "atrPct": None,
+        "bollingerPercentB": None,
+        "obvPressure20D": None,
+        "roc1M": None,
+        "roc3M": None,
+        "roc6M": None,
+        "roc12M": None,
+        "drawdownFromPeakPct": None,
+        "relativeStrength3M": None,
+        "relativeStrength12M": None,
         "source": source,
         "as_of": None,
         "history_rows": 0,
@@ -1355,6 +1380,253 @@ def _sequential_mean(values):
     for value in values:
         total += value
     return total / len(values)
+
+
+# --- Chart indicators -------------------------------------------------------
+# Every function below is deliberately written as a plain left-to-right loop so
+# the TypeScript mirror in screenerEngine.ts produces bit-identical doubles.
+# Each returns None when the history is too short, or when a session it needs is
+# missing a high or a low -- an unavailable indicator is never approximated.
+#
+# Availability is expressed by the value itself being None. The `available`
+# dictionary stays limited to the five indicators the technical score is built
+# from, so data_status keeps its established meaning.
+ATR_ADX_PERIOD = 14
+# Five smoothing periods, which is long enough for Wilder's running average to
+# settle and short enough that one missing session does not disable the
+# indicator for a whole decade of history.
+ATR_ADX_WINDOW = ATR_ADX_PERIOD * 5 + 1
+RSI_PERIOD = 14
+BOLLINGER_PERIOD = 20
+BOLLINGER_DEVIATIONS = 2.0
+OBV_LOOKBACK = 20
+SESSIONS_1_MONTH = 21
+SESSIONS_3_MONTH = 63
+SESSIONS_12_MONTH = 252
+
+
+def _ema_series(values, period):
+    """EMA at each index from period-1 onwards, seeded with the first mean.
+
+    Returns [] when there is not enough history. Mirrors emaSeries() in TS.
+    """
+    if len(values) < period:
+        return []
+    ema = _sequential_mean(values[:period])
+    out = [ema]
+    weight = 2.0 / (period + 1.0)
+    for value in values[period:]:
+        ema = value * weight + ema * (1.0 - weight)
+        out.append(ema)
+    return out
+
+
+def _wilder_average(values, period):
+    """Wilder's running average: seed with a mean, then (prev*(n-1) + x)/n."""
+    average = _sequential_mean(values[:period])
+    for value in values[period:]:
+        average = (average * (period - 1) + value) / period
+    return average
+
+
+def _rsi(prices, period=RSI_PERIOD):
+    """Wilder's RSI over the whole series, or None with too little history.
+
+    A perfectly flat series has neither gains nor losses, so its RSI is
+    genuinely undefined; 50 is returned rather than the 100 some libraries
+    report, which would read as maximum strength for a price that never moved.
+    """
+    if len(prices) < period + 1:
+        return None
+    gains, losses = [], []
+    for i in range(1, len(prices)):
+        change = prices[i] - prices[i - 1]
+        gains.append(change if change > 0 else 0.0)
+        losses.append(-change if change < 0 else 0.0)
+    average_gain = _wilder_average(gains, period)
+    average_loss = _wilder_average(losses, period)
+    if average_loss == 0:
+        return 100.0 if average_gain > 0 else 50.0
+    return 100.0 - (100.0 / (1.0 + average_gain / average_loss))
+
+
+def _macd(prices, fast=12, slow=26, signal=9):
+    """(line, signal, histogram) from the standard 12/26/9 EMAs, or None."""
+    if len(prices) < slow + signal - 1:
+        return None
+    fast_series = _ema_series(prices, fast)
+    slow_series = _ema_series(prices, slow)
+    if not fast_series or not slow_series:
+        return None
+    # fast_series[i + offset] and slow_series[i] describe the same session.
+    offset = slow - fast
+    line_series = [fast_series[i + offset] - slow_series[i] for i in range(len(slow_series))]
+    signal_series = _ema_series(line_series, signal)
+    if not signal_series:
+        return None
+    line = line_series[-1]
+    signal_value = signal_series[-1]
+    return line, signal_value, line - signal_value
+
+
+def _directional_window(highs, lows, closes, period):
+    """The tail used by ATR and ADX, or None when a high or low is missing."""
+    if len(closes) < period * 2 + 1:
+        return None
+    tail = min(len(closes), ATR_ADX_WINDOW)
+    window_highs = highs[-tail:]
+    window_lows = lows[-tail:]
+    window_closes = closes[-tail:]
+    for index in range(tail):
+        if math.isnan(window_highs[index]) or math.isnan(window_lows[index]):
+            return None
+    return window_highs, window_lows, window_closes
+
+
+def _true_ranges(highs, lows, closes):
+    """True range for every session after the first."""
+    out = []
+    for i in range(1, len(closes)):
+        previous_close = closes[i - 1]
+        out.append(max(highs[i] - lows[i],
+                       abs(highs[i] - previous_close),
+                       abs(lows[i] - previous_close)))
+    return out
+
+
+def _atr(highs, lows, closes, period=ATR_ADX_PERIOD):
+    """Wilder's ATR, or None when the window is short or lacks highs and lows."""
+    window = _directional_window(highs, lows, closes, period)
+    if window is None:
+        return None
+    ranges = _true_ranges(*window)
+    if len(ranges) < period:
+        return None
+    return _wilder_average(ranges, period)
+
+
+def _adx(highs, lows, closes, period=ATR_ADX_PERIOD):
+    """(ADX, +DI, -DI) from Wilder's directional movement, or None.
+
+    A series with no range at all (every high equal to its low, as a synthetic
+    flat fixture has) makes the directional indicators undefined rather than
+    zero, so None is returned.
+    """
+    window = _directional_window(highs, lows, closes, period)
+    if window is None:
+        return None
+    window_highs, window_lows, window_closes = window
+    ranges, plus_moves, minus_moves = [], [], []
+    for i in range(1, len(window_closes)):
+        up = window_highs[i] - window_highs[i - 1]
+        down = window_lows[i - 1] - window_lows[i]
+        plus_moves.append(up if (up > down and up > 0) else 0.0)
+        minus_moves.append(down if (down > up and down > 0) else 0.0)
+        previous_close = window_closes[i - 1]
+        ranges.append(max(window_highs[i] - window_lows[i],
+                          abs(window_highs[i] - previous_close),
+                          abs(window_lows[i] - previous_close)))
+    if len(ranges) < period * 2:
+        return None
+    smoothed_range = _sequential_mean(ranges[:period])
+    smoothed_plus = _sequential_mean(plus_moves[:period])
+    smoothed_minus = _sequential_mean(minus_moves[:period])
+    dx_values = []
+    di_plus = di_minus = 0.0
+    for i in range(period, len(ranges)):
+        smoothed_range = (smoothed_range * (period - 1) + ranges[i]) / period
+        smoothed_plus = (smoothed_plus * (period - 1) + plus_moves[i]) / period
+        smoothed_minus = (smoothed_minus * (period - 1) + minus_moves[i]) / period
+        if smoothed_range == 0:
+            return None
+        di_plus = 100.0 * smoothed_plus / smoothed_range
+        di_minus = 100.0 * smoothed_minus / smoothed_range
+        total = di_plus + di_minus
+        dx_values.append(0.0 if total == 0 else 100.0 * abs(di_plus - di_minus) / total)
+    if len(dx_values) < period:
+        return None
+    return _wilder_average(dx_values, period), di_plus, di_minus
+
+
+def _bollinger_percent_b(prices, period=BOLLINGER_PERIOD, deviations=BOLLINGER_DEVIATIONS):
+    """Where the last close sits across the bands, as a percentage.
+
+    0 is the lower band and 100 the upper; outside the bands runs beyond either
+    end. A flat window has no band width, so it returns None.
+    """
+    if len(prices) < period:
+        return None
+    window = prices[-period:]
+    mean = _sequential_mean(window)
+    squares = 0.0
+    for value in window:
+        deviation = value - mean
+        squares += deviation * deviation
+    # Population standard deviation, which is what Bollinger bands use.
+    spread = math.sqrt(squares / period) * deviations
+    if spread == 0:
+        return None
+    lower = mean - spread
+    return ((prices[-1] - lower) / (spread * 2.0)) * 100.0
+
+
+def _obv_pressure(prices, volumes, lookback=OBV_LOOKBACK):
+    """Net signed volume over the lookback, as a percentage of its total.
+
+    +100 means every session in the window closed up, -100 every session down.
+    Normalising by total volume makes it comparable between a bank and a
+    small-cap, which a raw on-balance-volume level is not.
+    """
+    if len(prices) < lookback + 1:
+        return None
+    window_prices = prices[-(lookback + 1):]
+    window_volumes = volumes[-(lookback + 1):]
+    signed = 0.0
+    gross = 0.0
+    for i in range(1, len(window_prices)):
+        volume = window_volumes[i]
+        if math.isnan(volume):
+            return None
+        gross += volume
+        if window_prices[i] > window_prices[i - 1]:
+            signed += volume
+        elif window_prices[i] < window_prices[i - 1]:
+            signed -= volume
+    if gross == 0:
+        return None
+    return (signed / gross) * 100.0
+
+
+def _rate_of_change(prices, sessions):
+    """Percentage change over the given number of sessions, or None."""
+    if len(prices) < sessions + 1:
+        return None
+    past = prices[-(sessions + 1)]
+    if past == 0:
+        return None
+    return (prices[-1] / past - 1.0) * 100.0
+
+
+def _drawdown_from_peak(prices, minimum=OBV_LOOKBACK):
+    """How far below the highest close of the loaded history the last one sits."""
+    if len(prices) < minimum:
+        return None
+    peak = max(prices)
+    if peak <= 0:
+        return None
+    return ((prices[-1] - peak) / peak) * 100.0
+
+
+def _relative_strength(pairs, sessions):
+    """Percentage outperformance over sessions where both series traded."""
+    if len(pairs) < sessions:
+        return None
+    past_stock, past_bench = pairs[-sessions]
+    current_stock, current_bench = pairs[-1]
+    if past_stock == 0 or past_bench == 0:
+        return None
+    return ((current_stock - past_stock) / past_stock
+            - (current_bench - past_bench) / past_bench) * 100.0
 
 
 def compute_technical_indicators(price_series, bench_series=None, volume_series=None,
@@ -1445,10 +1717,11 @@ def compute_technical_indicators(price_series, bench_series=None, volume_series=
     # Volume on the latest session against the mean of the last 20 sessions
     # that report volume, up to and including it. A blank latest volume gives
     # no ratio rather than quietly using an older session's volume as "today".
+    aligned_volumes = None
     if volume_series is not None:
-        volumes = _align_to_end([_finite_or_nan(v) for v in volume_series], n, float("nan"))
-        latest = volumes[valid[-1]]
-        window = [v for v in volumes[:valid[-1] + 1] if not math.isnan(v)][-20:]
+        aligned_volumes = _align_to_end([_finite_or_nan(v) for v in volume_series], n, float("nan"))
+        latest = aligned_volumes[valid[-1]]
+        window = [v for v in aligned_volumes[:valid[-1] + 1] if not math.isnan(v)][-20:]
         if not math.isnan(latest) and len(window) >= 20:
             average = _sequential_mean(window)
             if average > 0:
@@ -1457,14 +1730,41 @@ def compute_technical_indicators(price_series, bench_series=None, volume_series=
     if bench_series is not None:
         bench = _align_to_end([_finite_or_nan(v) for v in bench_series], n, float("nan"))
         pairs = [(closes[i], bench[i]) for i in valid if not math.isnan(bench[i])]
-        if len(pairs) >= SESSIONS_6_MONTH:
-            past_stock, past_bench = pairs[-SESSIONS_6_MONTH]
-            curr_stock, curr_bench = pairs[-1]
-            if past_stock != 0 and past_bench != 0:
-                stock_ret = (curr_stock - past_stock) / past_stock
-                bench_ret = (curr_bench - past_bench) / past_bench
-                tech["relativeStrength6M"] = (stock_ret - bench_ret) * 100.0
-                tech["available"]["relativeStrength6M"] = True
+        tech["relativeStrength3M"] = _relative_strength(pairs, SESSIONS_3_MONTH)
+        tech["relativeStrength12M"] = _relative_strength(pairs, SESSIONS_12_MONTH)
+        six_month = _relative_strength(pairs, SESSIONS_6_MONTH)
+        if six_month is not None:
+            tech["relativeStrength6M"] = six_month
+            tech["available"]["relativeStrength6M"] = True
+
+    # --- Chart indicators, computed on the valid sessions only ---------------
+    # Each is None when its own minimum history is not met, so a short series
+    # reports "unavailable" per indicator instead of scoring a made-up zero.
+    tech["rsi14"] = _rsi(prices)
+    macd = _macd(prices)
+    if macd is not None:
+        tech["macdLine"], tech["macdSignal"], tech["macdHistogram"] = macd
+    tech["bollingerPercentB"] = _bollinger_percent_b(prices)
+    tech["roc1M"] = _rate_of_change(prices, SESSIONS_1_MONTH)
+    tech["roc3M"] = _rate_of_change(prices, SESSIONS_3_MONTH)
+    tech["roc6M"] = _rate_of_change(prices, SESSIONS_6_MONTH)
+    tech["roc12M"] = _rate_of_change(prices, SESSIONS_12_MONTH)
+    tech["drawdownFromPeakPct"] = _drawdown_from_peak(prices)
+    if aligned_volumes is not None:
+        tech["obvPressure20D"] = _obv_pressure(prices, [aligned_volumes[i] for i in valid])
+    if highs is not None and lows is not None:
+        aligned_highs = _align_to_end([_finite_or_nan(v) for v in highs], n, float("nan"))
+        aligned_lows = _align_to_end([_finite_or_nan(v) for v in lows], n, float("nan"))
+        session_highs = [aligned_highs[i] for i in valid]
+        session_lows = [aligned_lows[i] for i in valid]
+        average_range = _atr(session_highs, session_lows, prices)
+        if average_range is not None:
+            tech["atr14"] = average_range
+            if current != 0:
+                tech["atrPct"] = (average_range / current) * 100.0
+        directional = _adx(session_highs, session_lows, prices)
+        if directional is not None:
+            tech["adx14"], tech["diPlus14"], tech["diMinus14"] = directional
 
     available_count = sum(1 for key in TECHNICAL_INDICATOR_KEYS if tech["available"][key])
     if available_count == len(TECHNICAL_INDICATOR_KEYS):
@@ -1986,7 +2286,9 @@ def _growth_points(stock, lines):
         elif value <= 0:
             lines.append("%s %s%% (+0.0)" % (label, format(round1(value), ".1f")))
         else:
-            awarded = clamp((value / 15.0) * 12.5, 0, 12.5)
+            # Full marks at 30%, not 15%, for the same reason the quality scale
+            # was widened: at 15% too much of the index scored full.
+            awarded = clamp((value / 30.0) * 12.5, 0, 12.5)
             total += awarded
             lines.append(_award(label, value, "%", awarded))
     return clamp(total, 0, 25)
@@ -1999,10 +2301,17 @@ def _governance_points(stock, lines):
     pp = stock.get("promoterPledge")
     if ph is None:
         lines.append("Promoter holding missing (+0.0)")
-    elif ph <= 0:
-        # A genuine zero. ITC, L&T, HDFC Bank and ICICI Bank are professionally
-        # managed with no promoter at all, so this earns no points -- but it is
-        # a published figure, not an absent one, and must not be called missing.
+    elif ph == 0:
+        # No promoter at all. ITC, L&T, HDFC Bank and ICICI Bank are
+        # professionally managed, which is an ownership structure rather than a
+        # governance failing, so it scores the neutral half of this component.
+        # A promoter who has nearly sold out (holding 1%) is a different and
+        # genuinely worrying thing, and still scores near zero below.
+        total += 2.5
+        lines.append("Promoter holding %s%%: no promoter, scored neutral (+2.5)"
+                     % format(round1(ph), ".1f"))
+    elif ph < 0:
+        # Impossible as a percentage; hard_red_flags() rejects the row anyway.
         lines.append(_award("Promoter holding", ph, "%", 0.0))
     else:
         awarded = clamp((ph / 75.0) * 5.0, 0, 5)
@@ -2037,7 +2346,10 @@ def score_general(stock, sc, medians):
             # fact about the company rather than a gap in the export.
             lines.append(_award(label, value, "%", 0.0))
         else:
-            awarded = clamp((value / 20.0) * 15.0, 0, 15)
+            # Full marks at 40%, not 20%. At the old scale most of the Nifty 100
+            # saturated -- a 58% ROCE tied a 20% one -- and a ranking cannot
+            # separate companies on a factor where half the field scores full.
+            awarded = clamp((value / 40.0) * 15.0, 0, 15)
             quality += awarded
             lines.append(_award(label, value, "%", awarded))
 
@@ -2046,8 +2358,9 @@ def score_general(stock, sc, medians):
     if de is None:
         lines.append("Debt/Equity missing (+0.0)")
     elif de < 0:
-        # Unreachable in practice: a negative D/E is negative net worth, a hard
-        # red flag that stops scoring before this point.
+        # Negative net worth. The company is red-flagged and can never reach the
+        # watchlist, but it is still scored so the comparison can show why, and
+        # negative equity is worth no safety points at all.
         lines.append(_award("D/E", de, "", 0.0))
     else:
         # Zero debt is the best possible case and earns the full ten.
@@ -2299,8 +2612,14 @@ class ScreeningEngine:
             warning_flags.append("Missing Bank Metrics")
             parts, score_lines = dict(ZERO_PARTS), []
         elif red_flags:
+            # Scored anyway, so a comparison across the whole index can show
+            # what the fundamentals look like beside the flag that disqualifies
+            # them: "Vedanta scores 58 but its promoters have pledged" is worth
+            # more than a bare 0.0. The flags stay in reasons, so the company
+            # still never reaches the watchlist.
             reasons.extend(red_flags)
-            parts, score_lines = dict(ZERO_PARTS), []
+            scorer = score_financial if is_financial else score_general
+            parts, score_lines = scorer(stock, sc, medians)
         else:
             scorer = score_financial if is_financial else score_general
             parts, score_lines = scorer(stock, sc, medians)
@@ -3007,6 +3326,85 @@ class EngineTests(unittest.TestCase):
         self.assertIsNone(score)
         self.assertEqual(breakdown, ["Technical screening disabled"])
 
+    # --- chart indicators -------------------------------------------------
+    def test_rsi_known_answers(self):
+        # A series that only rises has no losses at all, so RSI saturates.
+        self.assertEqual(_rsi([100.0 + i for i in range(60)]), 100.0)
+        self.assertEqual(_rsi([100.0 - i * 0.5 for i in range(60)]), 0.0)
+        # Flat: genuinely undefined, reported as the neutral 50 rather than the
+        # 100 some libraries return for a price that never moved.
+        self.assertEqual(_rsi([100.0] * 60), 50.0)
+        self.assertIsNone(_rsi([100.0, 101.0, 102.0]))
+
+    def test_each_indicator_declares_its_own_minimum(self):
+        # 30 rising sessions: past RSI's 15 and Bollinger's 20, short of MACD's
+        # 34 and of the 64 a three-month rate of change needs.
+        tech = compute_technical_indicators([100.0 + i * 0.3 for i in range(30)])
+        self.assertIsNotNone(tech["rsi14"])
+        self.assertIsNotNone(tech["bollingerPercentB"])
+        self.assertIsNotNone(tech["roc1M"])
+        self.assertIsNotNone(tech["drawdownFromPeakPct"])
+        self.assertIsNone(tech["macdLine"])
+        self.assertIsNone(tech["roc3M"])
+        self.assertIsNone(tech["roc12M"])
+        # No highs or lows in this call, so the range indicators stay absent
+        # instead of substituting the close.
+        self.assertIsNone(tech["atr14"])
+        self.assertIsNone(tech["adx14"])
+
+    def test_range_indicators_need_highs_and_lows(self):
+        closes = [100.0 + i * 0.4 for i in range(120)]
+        highs = [c + 1.5 for c in closes]
+        lows = [c - 1.5 for c in closes]
+        with_range = compute_technical_indicators(closes, None, None, "t", None, highs, lows)
+        self.assertIsNotNone(with_range["atr14"])
+        self.assertIsNotNone(with_range["adx14"])
+        self.assertIsNotNone(with_range["atrPct"])
+        # A single missing high inside the window disables them rather than
+        # letting one gap pass as a real range.
+        gapped_highs = list(highs)
+        gapped_highs[-3] = None
+        gapped = compute_technical_indicators(closes, None, None, "t", None, gapped_highs, lows)
+        self.assertIsNone(gapped["atr14"])
+        self.assertIsNone(gapped["adx14"])
+
+    def test_directional_indicators_are_undefined_without_range(self):
+        flat = [100.0] * 100
+        self.assertIsNone(_adx(flat, flat, flat))
+        self.assertIsNone(_bollinger_percent_b(flat))
+
+    def test_obv_pressure_reads_the_direction_of_volume(self):
+        rising = [100.0 + i for i in range(30)]
+        falling = [100.0 - i for i in range(30)]
+        volumes = [1000.0] * 30
+        self.assertEqual(_obv_pressure(rising, volumes), 100.0)
+        self.assertEqual(_obv_pressure(falling, volumes), -100.0)
+        # A blank volume inside the 20-session window makes the reading
+        # unavailable; one that falls before the window does not, because the
+        # window is the only part of the series it reads.
+        gapped = list(volumes)
+        gapped[-2] = float("nan")
+        self.assertIsNone(_obv_pressure(rising, gapped))
+        self.assertEqual(_obv_pressure(rising, [float("nan")] + volumes[1:]), 100.0)
+
+    def test_rate_of_change_and_drawdown(self):
+        prices = [100.0] * 30 + [110.0]
+        self.assertAlmostEqual(_rate_of_change(prices, SESSIONS_1_MONTH), 10.0, places=10)
+        self.assertIsNone(_rate_of_change(prices, SESSIONS_12_MONTH))
+        # Peak 120 five sessions ago, last close 110: 8.33% below the peak.
+        peaked = [100.0] * 25 + [120.0] + [110.0] * 5
+        self.assertAlmostEqual(_drawdown_from_peak(peaked), -8.333333333333334, places=10)
+
+    def test_relative_strength_windows(self):
+        # Exactly 252 pairs, so the window starts at the first one: the stock
+        # doubles from 100 to 200 while the benchmark stays flat. A 253rd pair
+        # would shift the window forward and the outperformance would no longer
+        # be a round 100%.
+        pairs = [(100.0 + i * (100.0 / 251.0), 200.0) for i in range(252)]
+        self.assertAlmostEqual(_relative_strength(pairs, SESSIONS_12_MONTH), 100.0, places=8)
+        self.assertIsNotNone(_relative_strength(pairs, SESSIONS_3_MONTH))
+        self.assertIsNone(_relative_strength(pairs[:10], SESSIONS_3_MONTH))
+
     # --- screening / scoring ---------------------------------------------
     def test_fixture_screen_outcomes(self):
         engine = ScreeningEngine(
@@ -3375,11 +3773,13 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(result["redFlags"], ["Negative net worth"])
         self.assertIn("Negative net worth", result["reasons"])
         self.assertFalse(result["passed"])
-        # A red flag stops scoring outright: the numbers cannot be trusted, so
-        # there is nothing worth awarding points for.
-        self.assertEqual(result["score"], 0.0)
-        self.assertEqual(result["categoryScores"]["balanceSheetSafety"], 0.0)
-        self.assertEqual(result["scoreLines"], [])
+        # Red-flagged but still scored, so a comparison across the index can
+        # show the fundamentals beside the flag that disqualifies them:
+        # quality 18.8 + growth 16.7 + safety 10 (negative equity earns nothing
+        # for D/E, the interest cover still earns its ten) + governance 9.
+        self.assertEqual(result["score"], 54.4)
+        self.assertEqual(result["categoryScores"]["balanceSheetSafety"], 10.0)
+        self.assertIn("D/E -3.5 (+0.0)", result["scoreLines"])
         # A negative P/B reaches the same conclusion on its own.
         self.assertEqual(
             engine_for_tests().evaluate(dict(_FULL_STOCK, pbRatio=-0.3))["redFlags"],
@@ -3391,12 +3791,16 @@ class EngineTests(unittest.TestCase):
         ITC, L&T, HDFC Bank and ICICI Bank genuinely have no promoter at all.
         Guarding on `value > 0` made every such company report "Promoter
         holding missing", and the same truthiness mistake sat in five other
-        fields. None of them changes the points -- zero earns zero either way --
-        but the explanation was stating something untrue about the company.
+        fields. The explanation was stating something untrue about the company,
+        and for promoter holding it also scored it wrongly: having no promoter
+        is an ownership structure, not a governance failing, so it now earns the
+        neutral half of that component.
         """
         zero = engine_for_tests().evaluate(dict(_FULL_STOCK, promoterHolding=0.0))
-        self.assertIn("Promoter holding 0.0% (+0.0)", zero["scoreLines"])
+        self.assertIn("Promoter holding 0.0%: no promoter, scored neutral (+2.5)",
+                      zero["scoreLines"])
         self.assertNotIn("Promoter holding missing (+0.0)", zero["scoreLines"])
+        self.assertEqual(zero["categoryScores"]["governance"], 7.5)
 
         # A genuinely absent value still reports itself absent.
         absent = engine_for_tests().evaluate(dict(_FULL_STOCK, promoterHolding=None))

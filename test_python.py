@@ -480,8 +480,9 @@ class ScoringAndOrdering(unittest.TestCase):
         # Valuation is judged against the file's own sectors, so a single stock
         # evaluated with no yardstick scores nothing for valuation and says so,
         # rather than being flattered by an absolute threshold.
+        # quality 2x9.4 + growth 2x8.3 + safety 10+10 + valuation 0 + governance 4+5
         result = engine().evaluate(FULL_STOCK)
-        self.assertEqual(result["score"], 84.0)
+        self.assertEqual(result["score"], 64.4)
         self.assertTrue(result["passed"], result["reasons"])
         self.assertEqual(result["coverage"], 100.0)
         self.assertEqual(result["categoryScores"]["valuation"], 0.0)
@@ -495,7 +496,7 @@ class ScoringAndOrdering(unittest.TestCase):
         medians = E.sector_medians(peers)
         result = engine().evaluate(FULL_STOCK, None, medians)
         self.assertEqual(result["categoryScores"]["valuation"], 7.5)
-        self.assertEqual(result["score"], 91.5)
+        self.assertEqual(result["score"], 71.9)
         self.assertTrue(any("Computers - Software median" in line
                             for line in result["scoreLines"]), result["scoreLines"])
         # Half the sector's P/E earns full marks; half again above it earns none.
@@ -535,7 +536,7 @@ class ScoringAndOrdering(unittest.TestCase):
 
     def test_explanation_is_factual_and_non_empty(self):
         result = engine().evaluate(FULL_STOCK)
-        self.assertIn("Total fundamental score 84.0/100", result["explanation"])
+        self.assertIn("Total fundamental score 64.4/100", result["explanation"])
         self.assertIn("Strongest factor", result["explanation"])
         self.assertIn("ROCE 25.0%", result["explanation"])
         rejected = engine().evaluate(dict(FULL_STOCK, promoterPledge=50.0))

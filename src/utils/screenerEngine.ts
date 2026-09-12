@@ -442,7 +442,11 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   custom_symbols: [],
   custom_filters: [],
   top_n: 20,
-  minimum_total_score: 65,
+  // Lowered from 65 when the quality and growth scales were widened. The wider
+  // scales moved every score down by roughly 15 points, so the old 65 would
+  // have silently rejected companies that used to qualify: on the bundled
+  // sample, 9 of 11 passed at the old 65 and 9 of 11 pass at this 50.
+  minimum_total_score: 50,
   fundamentals_stale_after_days: 30,
   enable_technical_confirmation: true,
   // Off by default: every company that survives the hard red flags is scored
@@ -914,6 +918,27 @@ export function emptyTechnicals(source = 'unavailable'): TechnicalIndicators {
     distFrom52WHighPct: null,
     volatility30D: null,
     high52Week: null,
+    // Chart indicators. Null means "not enough history", or "this file has no
+    // highs and lows", never "zero". See the helpers above for the minimum each
+    // one needs.
+    rsi14: null,
+    macdLine: null,
+    macdSignal: null,
+    macdHistogram: null,
+    adx14: null,
+    diPlus14: null,
+    diMinus14: null,
+    atr14: null,
+    atrPct: null,
+    bollingerPercentB: null,
+    obvPressure20D: null,
+    roc1M: null,
+    roc3M: null,
+    roc6M: null,
+    roc12M: null,
+    drawdownFromPeakPct: null,
+    relativeStrength3M: null,
+    relativeStrength12M: null,
     source,
     as_of: null,
     history_rows: 0,
@@ -946,6 +971,267 @@ function sequentialMean(values: readonly number[]): number {
   let total = 0;
   for (const value of values) total += value;
   return total / values.length;
+}
+
+// --- Chart indicators ------------------------------------------------------
+// Counterparts of the helpers in python/engine.py. Every one is a plain
+// left-to-right loop so both engines produce bit-identical doubles, and every
+// one returns null when its own minimum history is not met, or when a session
+// it needs has no high or low. An unavailable indicator is never approximated.
+export const ATR_ADX_PERIOD = 14;
+/**
+ * Five smoothing periods, which is long enough for Wilder's running average to
+ * settle and short enough that one missing session does not disable the
+ * indicator for a whole decade of history.
+ */
+const ATR_ADX_WINDOW = ATR_ADX_PERIOD * 5 + 1;
+const RSI_PERIOD = 14;
+const BOLLINGER_PERIOD = 20;
+const BOLLINGER_DEVIATIONS = 2;
+const OBV_LOOKBACK = 20;
+export const SESSIONS_1_MONTH = 21;
+export const SESSIONS_3_MONTH = 63;
+export const SESSIONS_12_MONTH = 252;
+
+/** EMA at each index from period-1 onwards. Counterpart of _ema_series(). */
+function emaSeries(values: readonly number[], period: number): number[] {
+  if (values.length < period) return [];
+  let ema = sequentialMean(values.slice(0, period));
+  const out = [ema];
+  const weight = 2 / (period + 1);
+  for (const value of values.slice(period)) {
+    ema = value * weight + ema * (1 - weight);
+    out.push(ema);
+  }
+  return out;
+}
+
+/** Wilder's running average. Counterpart of _wilder_average(). */
+function wilderAverage(values: readonly number[], period: number): number {
+  let average = sequentialMean(values.slice(0, period));
+  for (const value of values.slice(period)) {
+    average = (average * (period - 1) + value) / period;
+  }
+  return average;
+}
+
+/**
+ * Wilder's RSI. Counterpart of _rsi(). A perfectly flat series has neither
+ * gains nor losses, so its RSI is genuinely undefined; 50 is returned rather
+ * than the 100 some libraries report, which would read as maximum strength for
+ * a price that never moved.
+ */
+function rsi(prices: readonly number[], period = RSI_PERIOD): number | null {
+  if (prices.length < period + 1) return null;
+  const gains: number[] = [];
+  const losses: number[] = [];
+  for (let i = 1; i < prices.length; i += 1) {
+    const change = prices[i] - prices[i - 1];
+    gains.push(change > 0 ? change : 0);
+    losses.push(change < 0 ? -change : 0);
+  }
+  const averageGain = wilderAverage(gains, period);
+  const averageLoss = wilderAverage(losses, period);
+  if (averageLoss === 0) return averageGain > 0 ? 100 : 50;
+  return 100 - 100 / (1 + averageGain / averageLoss);
+}
+
+/** [line, signal, histogram] from the standard 12/26/9 EMAs. Counterpart of _macd(). */
+function macd(prices: readonly number[], fast = 12, slow = 26, signal = 9): [number, number, number] | null {
+  if (prices.length < slow + signal - 1) return null;
+  const fastSeries = emaSeries(prices, fast);
+  const slowSeries = emaSeries(prices, slow);
+  if (!fastSeries.length || !slowSeries.length) return null;
+  // fastSeries[i + offset] and slowSeries[i] describe the same session.
+  const offset = slow - fast;
+  const lineSeries: number[] = [];
+  for (let i = 0; i < slowSeries.length; i += 1) {
+    lineSeries.push(fastSeries[i + offset] - slowSeries[i]);
+  }
+  const signalSeries = emaSeries(lineSeries, signal);
+  if (!signalSeries.length) return null;
+  const line = lineSeries[lineSeries.length - 1];
+  const signalValue = signalSeries[signalSeries.length - 1];
+  return [line, signalValue, line - signalValue];
+}
+
+/** The tail ATR and ADX use, or null when a high or low is missing. */
+function directionalWindow(
+  highs: readonly number[],
+  lows: readonly number[],
+  closes: readonly number[],
+  period: number,
+): [number[], number[], number[]] | null {
+  if (closes.length < period * 2 + 1) return null;
+  const tail = Math.min(closes.length, ATR_ADX_WINDOW);
+  const windowHighs = highs.slice(-tail);
+  const windowLows = lows.slice(-tail);
+  const windowCloses = closes.slice(-tail);
+  for (let index = 0; index < tail; index += 1) {
+    if (Number.isNaN(windowHighs[index]) || Number.isNaN(windowLows[index])) return null;
+  }
+  return [windowHighs, windowLows, windowCloses];
+}
+
+/** True range for every session after the first. Counterpart of _true_ranges(). */
+function trueRanges(
+  highs: readonly number[],
+  lows: readonly number[],
+  closes: readonly number[],
+): number[] {
+  const out: number[] = [];
+  for (let i = 1; i < closes.length; i += 1) {
+    const previousClose = closes[i - 1];
+    out.push(Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - previousClose),
+      Math.abs(lows[i] - previousClose),
+    ));
+  }
+  return out;
+}
+
+/** Wilder's ATR. Counterpart of _atr(). */
+function atr(
+  highs: readonly number[],
+  lows: readonly number[],
+  closes: readonly number[],
+  period = ATR_ADX_PERIOD,
+): number | null {
+  const window = directionalWindow(highs, lows, closes, period);
+  if (!window) return null;
+  const ranges = trueRanges(window[0], window[1], window[2]);
+  if (ranges.length < period) return null;
+  return wilderAverage(ranges, period);
+}
+
+/**
+ * [ADX, +DI, -DI] from Wilder's directional movement. Counterpart of _adx().
+ * A series with no range at all (every high equal to its low, as a synthetic
+ * flat fixture has) makes the directional indicators undefined rather than
+ * zero, so null is returned.
+ */
+function adx(
+  highs: readonly number[],
+  lows: readonly number[],
+  closes: readonly number[],
+  period = ATR_ADX_PERIOD,
+): [number, number, number] | null {
+  const window = directionalWindow(highs, lows, closes, period);
+  if (!window) return null;
+  const [windowHighs, windowLows, windowCloses] = window;
+  const ranges: number[] = [];
+  const plusMoves: number[] = [];
+  const minusMoves: number[] = [];
+  for (let i = 1; i < windowCloses.length; i += 1) {
+    const up = windowHighs[i] - windowHighs[i - 1];
+    const down = windowLows[i - 1] - windowLows[i];
+    plusMoves.push(up > down && up > 0 ? up : 0);
+    minusMoves.push(down > up && down > 0 ? down : 0);
+    const previousClose = windowCloses[i - 1];
+    ranges.push(Math.max(
+      windowHighs[i] - windowLows[i],
+      Math.abs(windowHighs[i] - previousClose),
+      Math.abs(windowLows[i] - previousClose),
+    ));
+  }
+  if (ranges.length < period * 2) return null;
+  let smoothedRange = sequentialMean(ranges.slice(0, period));
+  let smoothedPlus = sequentialMean(plusMoves.slice(0, period));
+  let smoothedMinus = sequentialMean(minusMoves.slice(0, period));
+  const dxValues: number[] = [];
+  let diPlus = 0;
+  let diMinus = 0;
+  for (let i = period; i < ranges.length; i += 1) {
+    smoothedRange = (smoothedRange * (period - 1) + ranges[i]) / period;
+    smoothedPlus = (smoothedPlus * (period - 1) + plusMoves[i]) / period;
+    smoothedMinus = (smoothedMinus * (period - 1) + minusMoves[i]) / period;
+    if (smoothedRange === 0) return null;
+    diPlus = (100 * smoothedPlus) / smoothedRange;
+    diMinus = (100 * smoothedMinus) / smoothedRange;
+    const total = diPlus + diMinus;
+    dxValues.push(total === 0 ? 0 : (100 * Math.abs(diPlus - diMinus)) / total);
+  }
+  if (dxValues.length < period) return null;
+  return [wilderAverage(dxValues, period), diPlus, diMinus];
+}
+
+/**
+ * Where the last close sits across the Bollinger bands, as a percentage: 0 is
+ * the lower band and 100 the upper. Counterpart of _bollinger_percent_b().
+ */
+function bollingerPercentB(
+  prices: readonly number[],
+  period = BOLLINGER_PERIOD,
+  deviations = BOLLINGER_DEVIATIONS,
+): number | null {
+  if (prices.length < period) return null;
+  const window = prices.slice(-period);
+  const mean = sequentialMean(window);
+  let squares = 0;
+  for (const value of window) {
+    const deviation = value - mean;
+    squares += deviation * deviation;
+  }
+  // Population standard deviation, which is what Bollinger bands use.
+  const spread = Math.sqrt(squares / period) * deviations;
+  if (spread === 0) return null;
+  const lower = mean - spread;
+  return ((prices[prices.length - 1] - lower) / (spread * 2)) * 100;
+}
+
+/**
+ * Net signed volume over the lookback, as a percentage of its total.
+ * Counterpart of _obv_pressure(): +100 means every session closed up.
+ */
+function obvPressure(
+  prices: readonly number[],
+  volumes: readonly number[],
+  lookback = OBV_LOOKBACK,
+): number | null {
+  if (prices.length < lookback + 1) return null;
+  const windowPrices = prices.slice(-(lookback + 1));
+  const windowVolumes = volumes.slice(-(lookback + 1));
+  let signed = 0;
+  let gross = 0;
+  for (let i = 1; i < windowPrices.length; i += 1) {
+    const volume = windowVolumes[i];
+    if (Number.isNaN(volume)) return null;
+    gross += volume;
+    if (windowPrices[i] > windowPrices[i - 1]) signed += volume;
+    else if (windowPrices[i] < windowPrices[i - 1]) signed -= volume;
+  }
+  if (gross === 0) return null;
+  return (signed / gross) * 100;
+}
+
+/** Percentage change over the given number of sessions. Counterpart of _rate_of_change(). */
+function rateOfChange(prices: readonly number[], sessions: number): number | null {
+  if (prices.length < sessions + 1) return null;
+  const past = prices[prices.length - sessions - 1];
+  if (past === 0) return null;
+  return (prices[prices.length - 1] / past - 1) * 100;
+}
+
+/** How far below the highest close of the loaded history the last one sits. */
+function drawdownFromPeak(prices: readonly number[], minimum = OBV_LOOKBACK): number | null {
+  if (prices.length < minimum) return null;
+  let peak = prices[0];
+  for (const value of prices) if (value > peak) peak = value;
+  if (peak <= 0) return null;
+  return ((prices[prices.length - 1] - peak) / peak) * 100;
+}
+
+/** Percentage outperformance over sessions where both series traded. */
+function relativeStrength(
+  pairs: readonly (readonly [number, number])[],
+  sessions: number,
+): number | null {
+  if (pairs.length < sessions) return null;
+  const [pastStock, pastBench] = pairs[pairs.length - sessions];
+  const [currentStock, currentBench] = pairs[pairs.length - 1];
+  if (pastStock === 0 || pastBench === 0) return null;
+  return ((currentStock - pastStock) / pastStock - (currentBench - pastBench) / pastBench) * 100;
 }
 
 /**
@@ -1020,11 +1306,12 @@ export function computeTechnicalIndicators(
 
   // Latest session's volume against the mean of the last 20 sessions that
   // report volume, up to and including it; a blank latest volume gives no ratio.
+  let alignedVolumes: number[] | null = null;
   if (volumes) {
-    const aligned = alignToEnd(volumes.map(finiteOrNaN), n, NaN);
+    alignedVolumes = alignToEnd(volumes.map(finiteOrNaN), n, NaN);
     const last = valid[valid.length - 1];
-    const latest = aligned[last];
-    const window = aligned.slice(0, last + 1).filter((v) => !Number.isNaN(v)).slice(-20);
+    const latest = alignedVolumes[last];
+    const window = alignedVolumes.slice(0, last + 1).filter((v) => !Number.isNaN(v)).slice(-20);
     if (!Number.isNaN(latest) && window.length >= 20) {
       const average = sequentialMean(window);
       if (average > 0) tech.volumeRatio20D = latest / average;
@@ -1033,16 +1320,53 @@ export function computeTechnicalIndicators(
 
   if (benchmark) {
     const bench = alignToEnd(benchmark.map(finiteOrNaN), n, NaN);
-    const pairs = valid.filter((i) => !Number.isNaN(bench[i])).map((i) => [closes[i], bench[i]]);
-    if (pairs.length >= SESSIONS_6_MONTH) {
-      const [pastStock, pastBench] = pairs[pairs.length - SESSIONS_6_MONTH];
-      const [currStock, currBench] = pairs[pairs.length - 1];
-      if (pastStock !== 0 && pastBench !== 0) {
-        const stockRet = (currStock - pastStock) / pastStock;
-        const benchRet = (currBench - pastBench) / pastBench;
-        tech.relativeStrength6M = (stockRet - benchRet) * 100;
-        tech.available.relativeStrength6M = true;
-      }
+    const pairs = valid
+      .filter((i) => !Number.isNaN(bench[i]))
+      .map((i) => [closes[i], bench[i]] as [number, number]);
+    tech.relativeStrength3M = relativeStrength(pairs, SESSIONS_3_MONTH);
+    tech.relativeStrength12M = relativeStrength(pairs, SESSIONS_12_MONTH);
+    const sixMonth = relativeStrength(pairs, SESSIONS_6_MONTH);
+    if (sixMonth !== null) {
+      tech.relativeStrength6M = sixMonth;
+      tech.available.relativeStrength6M = true;
+    }
+  }
+
+  // --- Chart indicators, computed on the valid sessions only ---------------
+  // Each is null when its own minimum history is not met, so a short series
+  // reports "unavailable" per indicator instead of scoring a made-up zero.
+  tech.rsi14 = rsi(series);
+  const macdValues = macd(series);
+  if (macdValues) {
+    tech.macdLine = macdValues[0];
+    tech.macdSignal = macdValues[1];
+    tech.macdHistogram = macdValues[2];
+  }
+  tech.bollingerPercentB = bollingerPercentB(series);
+  tech.roc1M = rateOfChange(series, SESSIONS_1_MONTH);
+  tech.roc3M = rateOfChange(series, SESSIONS_3_MONTH);
+  tech.roc6M = rateOfChange(series, SESSIONS_6_MONTH);
+  tech.roc12M = rateOfChange(series, SESSIONS_12_MONTH);
+  tech.drawdownFromPeakPct = drawdownFromPeak(series);
+  if (alignedVolumes) {
+    const volumeSeries = alignedVolumes;
+    tech.obvPressure20D = obvPressure(series, valid.map((i) => volumeSeries[i]));
+  }
+  if (highs && lows) {
+    const alignedHighs = alignToEnd(highs.map(finiteOrNaN), n, NaN);
+    const alignedLows = alignToEnd(lows.map(finiteOrNaN), n, NaN);
+    const sessionHighs = valid.map((i) => alignedHighs[i]);
+    const sessionLows = valid.map((i) => alignedLows[i]);
+    const averageRange = atr(sessionHighs, sessionLows, series);
+    if (averageRange !== null) {
+      tech.atr14 = averageRange;
+      if (current !== 0) tech.atrPct = (averageRange / current) * 100;
+    }
+    const directional = adx(sessionHighs, sessionLows, series);
+    if (directional) {
+      tech.adx14 = directional[0];
+      tech.diPlus14 = directional[1];
+      tech.diMinus14 = directional[2];
     }
   }
 
@@ -1551,7 +1875,9 @@ function growthPoints(stock: CleanedStock, lines: string[]): number {
     } else if (value <= 0) {
       lines.push(`${label} ${fmt1(value)}% (+0.0)`);
     } else {
-      const awarded = clamp((value / 15) * 12.5, 0, 12.5);
+      // Full marks at 30%, not 15%, for the same reason the quality scale was
+      // widened: at 15% too much of the index scored full.
+      const awarded = clamp((value / 30) * 12.5, 0, 12.5);
       total += awarded;
       lines.push(award(label, value, '%', awarded));
     }
@@ -1566,10 +1892,16 @@ function governancePoints(stock: CleanedStock, lines: string[]): number {
   const pp = stock.promoterPledge;
   if (ph === null) {
     lines.push('Promoter holding missing (+0.0)');
-  } else if (ph <= 0) {
-    // A genuine zero. ITC, L&T, HDFC Bank and ICICI Bank are professionally
-    // managed with no promoter at all, so this earns no points -- but it is a
-    // published figure, not an absent one, and must not be called missing.
+  } else if (ph === 0) {
+    // No promoter at all. ITC, L&T, HDFC Bank and ICICI Bank are professionally
+    // managed, which is an ownership structure rather than a governance
+    // failing, so it scores the neutral half of this component. A promoter who
+    // has nearly sold out (holding 1%) is a different and genuinely worrying
+    // thing, and still scores near zero below.
+    total += 2.5;
+    lines.push(`Promoter holding ${fmt1(ph)}%: no promoter, scored neutral (+2.5)`);
+  } else if (ph < 0) {
+    // Impossible as a percentage; hardRedFlags() rejects the row anyway.
     lines.push(award('Promoter holding', ph, '%', 0));
   } else {
     const awarded = clamp((ph / 75) * 5, 0, 5);
@@ -1611,7 +1943,10 @@ export function scoreGeneral(
       // about the company rather than a gap in the export.
       lines.push(award(label, value, '%', 0));
     } else {
-      const awarded = clamp((value / 20) * 15, 0, 15);
+      // Full marks at 40%, not 20%. At the old scale most of the Nifty 100
+      // saturated -- a 58% ROCE tied a 20% one -- and a ranking cannot separate
+      // companies on a factor where half the field scores full.
+      const awarded = clamp((value / 40) * 15, 0, 15);
       quality += awarded;
       lines.push(award(label, value, '%', awarded));
     }
@@ -1622,8 +1957,9 @@ export function scoreGeneral(
   if (de === null) {
     lines.push('Debt/Equity missing (+0.0)');
   } else if (de < 0) {
-    // Unreachable in practice: a negative D/E is negative net worth, a hard red
-    // flag that stops scoring before this point.
+    // Negative net worth. The company is red-flagged and can never reach the
+    // watchlist, but it is still scored so the comparison can show why, and
+    // negative equity is worth no safety points at all.
     lines.push(award('D/E', de, '', 0));
   } else {
     // Zero debt is the best possible case and earns the full ten.
@@ -1921,9 +2257,15 @@ export function evaluateStock(
     parts = { ...ZERO_PARTS };
     scoreLines = [];
   } else if (redFlags.length) {
+    // Scored anyway, so a comparison across the whole index can show what the
+    // fundamentals look like beside the flag that disqualifies them: "Vedanta
+    // scores 58 but its promoters have pledged" is worth more than a bare 0.0.
+    // The flags stay in reasons, so the company still never reaches the
+    // watchlist.
     reasons.push(...redFlags);
-    parts = { ...ZERO_PARTS };
-    scoreLines = [];
+    const flagged = (isFinancial ? scoreFinancial : scoreGeneral)(stock, config, medians);
+    parts = flagged.parts;
+    scoreLines = flagged.lines;
   } else {
     const scored = (isFinancial ? scoreFinancial : scoreGeneral)(stock, config, medians);
     parts = scored.parts;

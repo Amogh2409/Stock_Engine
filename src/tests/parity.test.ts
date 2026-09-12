@@ -68,13 +68,7 @@ const EXPECTED_SAMPLE_ROWS = 31;
  * every change type: AIAENG moves up, POLYCAB and SUNPHARMA move down,
  * CARBORUNIV holds its rank, FINEORG is new and GONE has left.
  */
-const DELTA_PREVIOUS: WatchlistSnapshotEntry[] = [
-  { ticker: 'POLYCAB', name: 'Polycab', rank: 1, score: 84.0, warningFlags: ['Micro Cap'] },
-  { ticker: 'AIAENG', name: 'AIA Engineering', rank: 2, score: 89.0, warningFlags: [] },
-  { ticker: 'SUNPHARMA', name: 'Sun Pharma', rank: 3, score: 80.0, warningFlags: [] },
-  { ticker: 'CARBORUNIV', name: 'Carborundum', rank: 8, score: 80.2, warningFlags: [] },
-  { ticker: 'GONE', name: 'Gone Ltd', rank: 5, score: 70.0, warningFlags: [] },
-];
+let deltaPrevious: WatchlistSnapshotEntry[];
 
 const UNIT_CASES: UnitCase[] = [
   { label: 'crore_1cr', value: '1 CRORE', unit: 'crore' },
@@ -146,24 +140,46 @@ const PRICE_DAYS = businessDays(300, '2025-06-02');
  * benchmark with its own holidays, blank volumes and malformed rows.
  */
 function buildPriceCsv(): string {
-  const lines = ['Date,Ticker,Close,Volume'];
-  const add = (ticker: string, closes: number[], days: string[], volume: (i: number) => string) =>
-    days.forEach((d, i) => lines.push(`${d},${ticker},${closes[i]},${volume(i)}`));
+  const lines = ['Date,Ticker,Open,High,Low,Close,Volume'];
+  /**
+   * Highs and lows are derived from the close, so ATR and ADX have real ranges
+   * to work with on both sides. `withRange: false` leaves them blank, which is
+   * what a file written before the OHLCV widening looks like; those indicators
+   * must then report themselves unavailable rather than substituting the close.
+   */
+  const add = (
+    ticker: string,
+    closes: number[],
+    days: string[],
+    volume: (i: number) => string,
+    withRange = true,
+  ) =>
+    days.forEach((d, i) => {
+      const close = closes[i];
+      const open = withRange ? Math.round(close * 99.7) / 100 : '';
+      const high = withRange ? Math.round(close * 101.2) / 100 : '';
+      const low = withRange ? Math.round(close * 98.6) / 100 : '';
+      lines.push(`${d},${ticker},${open},${high},${low},${close},${volume(i)}`);
+    });
   ['TCS', 'INFY', 'SUNPHARMA', 'AIAENG', 'POLYCAB', 'CARBORUNIV', 'FINEORG', 'ASTRAL'].forEach((t, k) =>
     add(t, randomWalk(1000 + k, 300, 100 + 50 * k), PRICE_DAYS, (i) =>
       i % 17 === 0 ? '' : String(100000 + ((i * 7919 + k) % 5000))),
   );
   add('KPITTECH', randomWalk(77, 180, 900), PRICE_DAYS.slice(-180), () => '5000');
   add('BEL', Array(300).fill(100.1), PRICE_DAYS, () => '1000');
-  // Too short for any indicator, and a latest session with no volume.
-  add('CLEAN', randomWalk(31, 30, 1400), PRICE_DAYS.slice(-30), () => '700');
+  // Too short for any indicator, a latest session with no volume, and no highs
+  // or lows at all, so the range indicators must report unavailable.
+  add('CLEAN', randomWalk(31, 30, 1400), PRICE_DAYS.slice(-30), () => '700', false);
   add('BIKAJI', randomWalk(62, 60, 800), PRICE_DAYS.slice(-60), (i) => (i === 59 ? '' : '900'));
   const suspended = PRICE_DAYS.filter((_, i) => i % 7 !== 3);
   add('LT', randomWalk(55, suspended.length, 3000), suspended, () => '');
   const benchDays = PRICE_DAYS.filter((_, i) => i % 11 !== 5);
   add(BENCHMARK_SYMBOL, randomWalk(99, benchDays.length, 24000), benchDays, () => '');
+  // Malformed rows, each carrying the full column count so that the reason it
+  // is skipped stays the one it was written to test.
   lines.push(
-    '2025-13-40x,TCS,1,1', '2025-02-30,TCS,1,1', `${PRICE_DAYS[0]},,5,5`, `${PRICE_DAYS[1]},INFY,n/a,5`, ',,,',
+    '2025-13-40x,TCS,1,1,1,1,1', '2025-02-30,TCS,1,1,1,1,1', `${PRICE_DAYS[0]},,1,1,1,5,5`,
+    `${PRICE_DAYS[1]},INFY,1,1,1,n/a,5`, ',,,,,,',
   );
   return `${lines.join('\n')}\n`;
 }
@@ -415,7 +431,19 @@ beforeAll(() => {
     score: item.score,
     warningFlags: item.warningFlags,
   }));
-  tsChanges = generateRankingChangesCsv(computeRankingChanges(currentSnapshot, DELTA_PREVIOUS));
+  // Derived from the current run rather than hand-pinned to particular
+  // tickers and ranks: a change to the scoring model reorders the watchlist,
+  // and a pinned fixture then quietly stops exercising a change type instead
+  // of failing. Ranks are perturbed here to produce one of each.
+  expect(currentSnapshot.length).toBeGreaterThan(16);
+  deltaPrevious = [
+    { ...currentSnapshot[2], rank: 1 },                            // slipped to 3: RANK_DOWN
+    { ...currentSnapshot[5], rank: currentSnapshot[5].rank + 3 },  // climbed: RANK_UP
+    { ...currentSnapshot[15], warningFlags: [] },                  // same rank: STABLE
+    { ticker: 'GONE', name: 'Gone Ltd', rank: 5, score: 70, warningFlags: [] },
+  ];
+  // Every other entry in the current watchlist is absent above: NEW_ENTRY.
+  tsChanges = generateRankingChangesCsv(computeRankingChanges(currentSnapshot, deltaPrevious));
 
   py = runPythonParity({
     csv: SAMPLE_SCREENER_CSV_STRING,
@@ -424,7 +452,7 @@ beforeAll(() => {
     expected_rows: EXPECTED_SAMPLE_ROWS,
     delta_fixture: {
       current: currentSnapshot as unknown as Record<string, unknown>[],
-      previous: DELTA_PREVIOUS as unknown as Record<string, unknown>[],
+      previous: deltaPrevious as unknown as Record<string, unknown>[],
     },
     unit_cases: UNIT_CASES,
     escape_cases: ESCAPE_CASES,

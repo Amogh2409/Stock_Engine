@@ -227,9 +227,10 @@ export function runAllValidations(): TestResult[] {
     // Fully specified inputs, so the expected score is arithmetic, not a clamp.
     // Valuation is judged against the loaded file's own sectors, and a stock
     // scored on its own has no yardstick, so it earns nothing there:
-    // fq 30 + growth 25 + balance 10+10 + valuation 0 + governance 4+5 = 84
+    // quality 9.4+9.4 + growth 8.3+8.3 + balance 10+10 + valuation 0
+    // + governance 4+5 = 64.4
     const ev = evaluateStock(makeStock(), DEFAULT_SCREENING_CONFIG, APP);
-    const passed = ev.score === 84 && ev.passed && ev.coveragePct === 100;
+    const passed = ev.score === 64.4 && ev.passed && ev.coveragePct === 100;
     return { passed, message: `score=${ev.score}, passed=${ev.passed}, coverage=${ev.coveragePct}` };
   });
 

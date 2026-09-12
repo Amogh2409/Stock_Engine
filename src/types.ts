@@ -33,6 +33,33 @@ export interface TechnicalIndicators {
   volatility30D: number | null;
   /** Max over the last 252 valid sessions. Null with fewer than 252. */
   high52Week: number | null;
+  /**
+   * Chart indicators. Null means "not enough history", or "this price file
+   * carries no highs and lows", never "zero". Availability is expressed by the
+   * value itself, which is why `available` below still lists only the five
+   * indicators the technical score is built from.
+   */
+  rsi14: number | null;
+  macdLine: number | null;
+  macdSignal: number | null;
+  macdHistogram: number | null;
+  adx14: number | null;
+  diPlus14: number | null;
+  diMinus14: number | null;
+  atr14: number | null;
+  atrPct: number | null;
+  /** 0 is the lower Bollinger band, 100 the upper; outside runs past either. */
+  bollingerPercentB: number | null;
+  /** Net signed volume over 20 sessions, as a percentage of total volume. */
+  obvPressure20D: number | null;
+  roc1M: number | null;
+  roc3M: number | null;
+  roc6M: number | null;
+  roc12M: number | null;
+  /** Distance below the highest close in the loaded history. */
+  drawdownFromPeakPct: number | null;
+  relativeStrength3M: number | null;
+  relativeStrength12M: number | null;
   source: string;
   as_of: string | null;
   history_rows: number;

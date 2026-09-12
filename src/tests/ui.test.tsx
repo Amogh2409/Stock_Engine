@@ -458,8 +458,11 @@ describe('Saving a run', () => {
     render(<App />);
     const input = document.getElementById('screener-csv-file-input') as HTMLInputElement;
     // The row is evaluated (its ticker is in the index) but fails the screen,
-    // so there is no watchlist to save.
-    const failing = PASSING_CSV.replace('25%,25%', '1%,1%');
+    // so there is no watchlist to save. A pledged promoter stake is a hard red
+    // flag, which keeps this test independent of wherever minimum_total_score
+    // happens to sit: it used to rely on a low score, and a later widening of
+    // the scoring scales quietly let the row pass instead.
+    const failing = PASSING_CSV.replace('60%,0%,15,2', '60%,60%,15,2');
     fireEvent.change(input, { target: { files: [fileFrom('poor.csv', failing)] } });
     await waitFor(() => expect(screen.getByText(/File: poor\.csv/)).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: /Save run/ }));
