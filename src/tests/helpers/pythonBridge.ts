@@ -17,6 +17,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import type { TechnicalBlocks } from '../../types';
 import {
   buildColabNotebookJson,
   notebookCodeCells,
@@ -89,6 +90,7 @@ export interface ParityEvaluation {
   sectorGroup: string | null;
   techScore: number | null;
   techBreakdown: string[];
+  technicalBlocks: TechnicalBlocks | null;
   dataStatus: string;
   explanation: string;
 }

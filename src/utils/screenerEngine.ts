@@ -34,6 +34,7 @@ import {
   SectorMedians,
   StockEvaluation,
   TechnicalAvailability,
+  TechnicalBlocks,
   TechnicalIndicators,
   TechnicalScoreResult,
   WatchlistSnapshotEntry,
@@ -1393,18 +1394,93 @@ export function computeTechnicalIndicators(
  * per-stock warning. An UNAVAILABLE record means history was loaded but this
  * stock is not in it, and that is flagged.
  */
+/**
+ * PROVISIONAL, not validated. These four blocks and the points inside them are
+ * a starting hypothesis about what a medium-term long-only chart looks like.
+ * Not one of them has been tested against forward returns; that is what the
+ * backtest exists to find out. Do NOT tune them against the bundled sample,
+ * whose figures are invented, and do not cite the split as evidence.
+ *
+ * Two rest on weaker ground than the others and should be first to go if the
+ * backtest says the ranking is noise: RelStrength is benchmark-only until
+ * sector-relative strength lands, so it measures "beat the Nifty" rather than
+ * "beat your peers"; and Volume is the thinnest of the four, because a single
+ * block deal moves OBV in an Indian large cap.
+ * Counterpart of TECHNICAL_BLOCK_MAX in python/engine.py.
+ */
+export const TECHNICAL_BLOCK_MAX: Record<keyof TechnicalBlocks, number> = {
+  trend: 40, momentum: 30, relStrength: 20, volume: 10,
+};
+
+/**
+ * The four block names, derived from the caps above rather than written out a
+ * second time. Two parallel lists of the same names can drift apart silently;
+ * one cannot.
+ */
+const TECHNICAL_BLOCK_NAMES = Object.keys(TECHNICAL_BLOCK_MAX) as (keyof TechnicalBlocks)[];
+
+/**
+ * Direction of the RSI rule, stated as a decision rather than left in a number.
+ * Rewarding a HIGH reading is a trend-continuation bet; rewarding a LOW one is
+ * mean reversion. They are opposite systems and one threshold cannot serve
+ * both. This engine is long-only over one to six months, so continuation is the
+ * consistent choice. An extreme reading is exhaustion and raises a flag rather
+ * than earning more.
+ */
+export const RSI_MOMENTUM_FLOOR = 50;
+export const RSI_EXHAUSTION = 80;
+/**
+ * A MACD histogram closer to zero than this, as a percentage of price, is flat
+ * rather than rising or falling. Without a band the sign of floating-point
+ * residue decides fifteen points: a perfectly steady trend produces a histogram
+ * of roughly -9e-16, because the signal line converges on the MACD line, and
+ * that reads as "falling" under a bare `> 0`. Measured against price so the
+ * band means the same for a 100-rupee stock and a 4000-rupee one.
+ */
+export const MACD_FLAT_BAND = 0.05;
+/** Above this, conventionally, there is a trend at all -- whatever its direction. */
+export const ADX_TRENDING = 25;
+/**
+ * Below this many sessions no technical score is produced. Scoring a company on
+ * the two or three indicators a short history supports, beside companies
+ * measured on all of them, compares numbers built from different amounts of
+ * evidence. Such a company joins the fundamental-only list instead.
+ */
+export const SESSIONS_FOR_TECHNICAL_SCORE = 200;
+
+/**
+ * Technical score out of 100, in four blocks. Counterpart of
+ * calculate_technical_score().
+ *
+ * Availability is handled one way throughout, and both alternatives are wrong.
+ * Awarding zero for an indicator the history cannot support punishes a company
+ * for a short listing or a four-column price file. Rescaling the earned points
+ * up to 100 across whatever was available rewards missing data, inflating the
+ * strong blocks of a company measured on two cheap indicators. So: score only
+ * what is available, never rescale, and refuse to score below
+ * SESSIONS_FOR_TECHNICAL_SCORE.
+ *
+ * Within one run every company is priced from the same file, so a file without
+ * highs and lows costs every company its ADX points equally.
+ */
 export function calculateTechnicalScore(
   tech: TechnicalIndicators | null | undefined,
   isEnabled: boolean,
 ): TechnicalScoreResult {
   if (!isEnabled) {
-    return { score: null, maxScore: 100, breakdown: ['Technical screening disabled'], warnings: [] };
+    return {
+      score: null, maxScore: 100, breakdown: ['Technical screening disabled'],
+      warnings: [], blocks: null,
+    };
   }
   if (!tech) {
-    return { score: null, maxScore: 100, breakdown: ['No price history loaded'], warnings: [] };
+    return {
+      score: null, maxScore: 100, breakdown: ['No price history loaded'],
+      warnings: [], blocks: null,
+    };
   }
+  const rows = tech.history_rows || 0;
   if (tech.data_status === 'UNAVAILABLE') {
-    const rows = tech.history_rows || 0;
     return {
       score: null,
       maxScore: 100,
@@ -1414,36 +1490,132 @@ export function calculateTechnicalScore(
           : 'Technical data unavailable',
       ],
       warnings: ['Technical Data Missing'],
+      blocks: null,
+    };
+  }
+  if (rows < SESSIONS_FOR_TECHNICAL_SCORE) {
+    // Enough for some indicators, not enough to stand beside companies
+    // measured on all of them.
+    return {
+      score: null,
+      maxScore: 100,
+      breakdown: [`Only ${rows} sessions; a technical score needs ${SESSIONS_FOR_TECHNICAL_SCORE}`],
+      warnings: ['Technical Data Missing'],
+      blocks: null,
     };
   }
 
   const avail = tech.available;
-  let score = 0;
   const breakdown: string[] = [];
   const warnings: string[] = [];
+  const blocks: TechnicalBlocks = { trend: 0, momentum: 0, relStrength: 0, volume: 0 };
+  const awardTo = (block: keyof TechnicalBlocks, points: number, text: string) => {
+    blocks[block] += points;
+    breakdown.push(`${text} (+${fmt1(points)})`);
+  };
 
-  if (avail.sma200 && tech.isAboveSma200) { score += 30; breakdown.push('Price > 200 SMA (+30)'); }
-  if (avail.sma50 && tech.isAboveSma50) { score += 20; breakdown.push('Price > 50 SMA (+20)'); }
-  if (avail.smaCross && tech.isSma50Above200) { score += 20; breakdown.push('50 SMA > 200 SMA (+20)'); }
-  if (avail.relativeStrength6M && tech.relativeStrength6M !== null && tech.relativeStrength6M > 0) {
-    score += 15;
-    breakdown.push('Positive 6M RS vs benchmark (+15)');
+  // --- Trend, 40 -----------------------------------------------------------
+  if (avail.sma200 && tech.isAboveSma200) awardTo('trend', 12, 'Price > 200 SMA');
+  if (avail.sma50 && tech.isAboveSma50) awardTo('trend', 8, 'Price > 50 SMA');
+  if (avail.smaCross && tech.isSma50Above200) awardTo('trend', 8, '50 SMA > 200 SMA');
+  const adx = tech.adx14;
+  if (adx === null) {
+    breakdown.push('ADX unavailable, needs highs and lows (+0.0)');
+  } else if (adx > ADX_TRENDING) {
+    awardTo('trend', 4, `ADX ${fmt1(adx)}: trending`);
+  } else {
+    breakdown.push(`ADX ${fmt1(adx)}: no trend (+0.0)`);
   }
   if (avail.high52Week) {
     if (tech.distFrom52WHighPct !== null && tech.distFrom52WHighPct > -15) {
-      score += 15;
-      breakdown.push('Within 15% of 52W high (+15)');
+      awardTo('trend', 8, 'Within 15% of 52W high');
     }
   } else {
-    breakdown.push(`52W high unavailable (needs ${SESSIONS_52_WEEK} sessions) (+0)`);
+    breakdown.push(`52W high unavailable (needs ${SESSIONS_52_WEEK} sessions) (+0.0)`);
   }
+
+  // --- Momentum, 30 --------------------------------------------------------
+  // One measure per concept. RSI, MACD and the four rate-of-change windows are
+  // all functions of the same close series, so paying for each would count one
+  // move several times over and make momentum dominate whatever the headline
+  // weights say. MACD carries direction, RSI carries extension; the ROC windows
+  // stay computed and displayed but unscored for that reason.
+  const hist = tech.macdHistogram;
+  const price = tech.currentPrice;
+  if (hist === null || price === null || price <= 0) {
+    breakdown.push('MACD unavailable (+0.0)');
+  } else {
+    const histPct = (hist / price) * 100;
+    if (histPct > MACD_FLAT_BAND) {
+      awardTo('momentum', 15, 'MACD histogram rising');
+    } else if (histPct < -MACD_FLAT_BAND) {
+      breakdown.push('MACD histogram falling (+0.0)');
+    } else {
+      // A steady trend has direction but no acceleration, which is a real
+      // reading rather than a missing one.
+      breakdown.push('MACD histogram flat (+0.0)');
+    }
+  }
+  const rsi = tech.rsi14;
+  if (rsi === null) {
+    breakdown.push('RSI unavailable (+0.0)');
+  } else if (rsi > RSI_MOMENTUM_FLOOR) {
+    awardTo('momentum', 15, `RSI ${fmt1(rsi)} above ${RSI_MOMENTUM_FLOOR}`);
+  } else {
+    breakdown.push(`RSI ${fmt1(rsi)} below ${RSI_MOMENTUM_FLOOR} (+0.0)`);
+  }
+
+  // --- Relative strength, 20 ----------------------------------------------
+  const rsChecks: [number | null, number, string][] = [
+    [tech.relativeStrength3M, 5, '3M'],
+    [tech.relativeStrength6M, 10, '6M'],
+    [tech.relativeStrength12M, 5, '12M'],
+  ];
+  for (const [value, points, label] of rsChecks) {
+    if (value === null) breakdown.push(`${label} RS unavailable (+0.0)`);
+    else if (value > 0) awardTo('relStrength', points, `Positive ${label} RS vs benchmark`);
+    else breakdown.push(`Negative ${label} RS vs benchmark (+0.0)`);
+  }
+
+  // --- Volume, 10 ----------------------------------------------------------
+  const ratio = tech.volumeRatio20D;
+  if (ratio === null) {
+    breakdown.push('Volume ratio unavailable (+0.0)');
+  } else if (ratio > 1) {
+    awardTo('volume', 5, `Volume ${fmt1(ratio)}x its 20-day average`);
+  } else {
+    breakdown.push(`Volume ${fmt1(ratio)}x its 20-day average (+0.0)`);
+  }
+  const obv = tech.obvPressure20D;
+  if (obv === null) breakdown.push('OBV pressure unavailable (+0.0)');
+  else if (obv > 0) awardTo('volume', 5, 'Buying pressure on volume');
+  else breakdown.push('Selling pressure on volume (+0.0)');
+
+  // --- Flags, never points -------------------------------------------------
+  // Volatility has no direction. Paying for low volatility tilts the list
+  // towards sleepy stocks and paying for high volatility towards lottery
+  // tickets, and neither is defensible without evidence. So these describe.
+  if (tech.atrPct !== null && tech.atrPct > 5) {
+    warnings.push(`High Volatility (ATR ${fmt1(tech.atrPct)}% of price)`);
+  }
+  if (rsi !== null && rsi > RSI_EXHAUSTION) warnings.push(`Overbought (RSI ${fmt1(rsi)})`);
+  if (tech.drawdownFromPeakPct !== null && tech.drawdownFromPeakPct < -25) {
+    warnings.push(`Deep Drawdown (${fmt1(tech.drawdownFromPeakPct)}% from peak)`);
+  }
+
+  for (const key of TECHNICAL_BLOCK_NAMES) {
+    blocks[key] = round1(clamp(blocks[key], 0, TECHNICAL_BLOCK_MAX[key]));
+  }
+  const score = clamp(
+    blocks.trend + blocks.momentum + blocks.relStrength + blocks.volume, 0, 100,
+  );
 
   if (tech.data_status !== 'COMPLETE') {
     const missing = TECHNICAL_KEYS.filter((k) => !avail[k]);
     warnings.push(`Technical Data Partial (${missing.join(', ')})`);
   }
 
-  return { score: round1(clamp(score, 0, 100)), maxScore: 100, breakdown, warnings };
+  return { score: round1(score), maxScore: 100, breakdown, warnings, blocks };
 }
 
 /**
@@ -2864,8 +3036,22 @@ export function generateRankingChangesCsv(changes: RankingChange[]): string {
 export const WATCHLIST_CSV_COLUMNS = [
   'Rank', 'Ticker', 'Name', 'Sector', 'CurrentPrice', 'MarketCapCr', 'Score',
   'TechScore', 'Composite', 'Verdict', 'Coverage', 'FinancialQuality',
-  'Growth', 'BalanceSheet', 'Valuation', 'Governance', 'WarningFlags',
+  'Growth', 'BalanceSheet', 'Valuation', 'Governance',
+  // The four blocks behind TechScore. Blank rather than zero when the company
+  // has no technical score at all: an empty cell says "not measured", a zero
+  // would say "measured and found wanting".
+  'Trend', 'Momentum', 'Volume', 'RelStrength',
+  'WarningFlags',
 ] as const;
+
+/**
+ * One technical block subtotal, blank when the company has no score to break
+ * down. Counterpart of _block() in python/engine.py.
+ */
+function blockCell(item: StockEvaluation, name: keyof TechnicalBlocks): string {
+  const blocks = item.technicalScore.blocks;
+  return blocks === null ? '' : fmt1(blocks[name]);
+}
 
 export const REJECTED_CSV_COLUMNS = [
   'Ticker', 'Name', 'Sector', 'Score', 'Coverage', 'RejectionReasons', 'WarningFlags',
@@ -2893,6 +3079,10 @@ export function generateWatchlistCsv(rows: StockEvaluation[]): string {
       fmt1(c.balanceSheetSafety.score),
       fmt1(c.valuation.score),
       fmt1(c.governance.score),
+      blockCell(item, 'trend'),
+      blockCell(item, 'momentum'),
+      blockCell(item, 'volume'),
+      blockCell(item, 'relStrength'),
       textCell(item.warningFlags.join(', ')),
     ]));
   });

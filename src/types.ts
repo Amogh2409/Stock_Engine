@@ -67,6 +67,18 @@ export interface TechnicalIndicators {
   data_status: 'COMPLETE' | 'PARTIAL' | 'UNAVAILABLE';
 }
 
+/**
+ * The four blocks behind a technical score. Null when there is no score to
+ * break down -- technical confirmation off, no price history, or a history too
+ * short to stand beside companies measured on every indicator.
+ */
+export interface TechnicalBlocks {
+  trend: number;
+  momentum: number;
+  relStrength: number;
+  volume: number;
+}
+
 export interface TechnicalScoreResult {
   /** Null when disabled or when no indicator is available. */
   score: number | null;
@@ -74,6 +86,8 @@ export interface TechnicalScoreResult {
   breakdown: string[];
   /** Availability warnings, merged into StockEvaluation.warningFlags. */
   warnings: string[];
+  /** Per-block subtotals behind `score`, or null when there is no score. */
+  blocks: TechnicalBlocks | null;
 }
 
 export interface CleanedStock {

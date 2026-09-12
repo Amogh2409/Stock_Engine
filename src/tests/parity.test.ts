@@ -389,6 +389,7 @@ function tsEvaluationFields(ev: StockEvaluation): Omit<ParityEvaluation, 'ticker
     sectorGroup: ev.sectorGroup,
     techScore: ev.technicalScore.score,
     techBreakdown: ev.technicalScore.breakdown,
+    technicalBlocks: ev.technicalScore.blocks,
     dataStatus: ev.stock.technicals?.data_status ?? 'UNAVAILABLE',
     explanation: ev.explanation,
   };

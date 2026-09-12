@@ -365,12 +365,21 @@ class TechnicalHistorySemantics(unittest.TestCase):
         self.assertIsNone(tech["high52Week"])
 
     def test_unavailable_52_week_high_scores_zero_points(self):
+        # Both clear the 200 sessions a technical score needs, so the only
+        # difference between them is the 52-week window itself, now worth 8 of
+        # the 40 trend points rather than the 15 it carried before the blocks.
         with_high = E.compute_technical_indicators(prices(252), bench_series=prices(252, 50.0, 0.1))
         without = E.compute_technical_indicators(prices(251), bench_series=prices(251, 50.0, 0.1))
-        score_with, _, _ = E.calculate_technical_score(with_high, True)
-        score_without, breakdown, _ = E.calculate_technical_score(without, True)
-        self.assertEqual(score_with - score_without, 15.0)
+        score_with, _, _, blocks_with = E.calculate_technical_score(with_high, True)
+        score_without, breakdown, _, blocks_without = E.calculate_technical_score(without, True)
+        # Dropping one session costs 13, not 8: the 52-week high is worth 8 of
+        # the trend block, and 12-month relative strength needs 252 sessions
+        # where stock and benchmark both traded, so it goes too.
+        self.assertEqual(score_with - score_without, 13.0)
+        self.assertEqual(blocks_with["trend"] - blocks_without["trend"], 8.0)
+        self.assertEqual(blocks_with["relStrength"] - blocks_without["relStrength"], 5.0)
         self.assertTrue(any("52W high unavailable" in line for line in breakdown))
+        self.assertTrue(any("12M RS unavailable" in line for line in breakdown))
 
     def test_availability_is_explicit_per_indicator(self):
         tech = E.compute_technical_indicators(prices(60))
@@ -764,12 +773,24 @@ class PipelineWithPriceHistory(unittest.TestCase):
         self.assertEqual(saved.read_text(encoding="utf-8").splitlines()[0],
                          "Date,Ticker,Open,High,Low,Close,Volume")
         by_ticker = {e["ticker"]: e for e in result["evaluations"]}
-        self.assertEqual(by_ticker["ALPHA"]["techScore"], 100.0)
+        # 81, not a perfect 100. This downloader supplies no highs or lows, so
+        # ADX forfeits its 4, and its closes are a straight ramp, so the MACD
+        # histogram is flat and forfeits its 15. Its volume does rise, so the
+        # volume block scores in full.
+        self.assertEqual(by_ticker["ALPHA"]["techScore"], 81.0)
         self.assertEqual(by_ticker["ALPHA"]["dataStatus"], "COMPLETE")
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(sorted(self.calls[0][0]), ["ALPHA", "BETA"])
         watchlist_row = Path(artefacts["watchlist_csv"]).read_text(encoding="utf-8").splitlines()[1]
-        self.assertEqual(watchlist_row.split(",")[7], "100.0")
+        cells = watchlist_row.split(",")
+        header = Path(artefacts["watchlist_csv"]).read_text(encoding="utf-8").splitlines()[0].split(",")
+        self.assertEqual(cells[header.index("TechScore")], "81.0")
+        # The four blocks behind that 81, so the CSV is checked on the
+        # breakdown rather than only on the total it adds up to.
+        self.assertEqual(cells[header.index("Trend")], "36.0")
+        self.assertEqual(cells[header.index("Momentum")], "15.0")
+        self.assertEqual(cells[header.index("Volume")], "10.0")
+        self.assertEqual(cells[header.index("RelStrength")], "20.0")
 
     def test_same_day_rerun_reuses_the_saved_file(self):
         self.run_once("t1")

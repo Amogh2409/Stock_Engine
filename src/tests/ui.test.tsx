@@ -635,7 +635,12 @@ describe('App universe and price history', () => {
     // file prices. Select the stock the upload actually covers before reading
     // its technical score.
     fireEvent.click(screen.getAllByText('Sun Pharmaceutical Industries Ltd.')[0]);
-    expect(within(screen.getByTestId('watchlist-detail')).getByText('100')).toBeTruthy();
+    // 76, not a perfect 100. Three separate forfeits, each for a real reason:
+    // this is a four-column file so ADX has no highs and lows (-4); the closes
+    // are a straight ramp so the MACD histogram is flat, direction without
+    // acceleration (-15); and this fixture writes a constant volume, so the
+    // 20-day ratio is exactly 1.00 and is not *above* its own average (-5).
+    expect(within(screen.getByTestId('watchlist-detail')).getByText('76')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Clear price history/ }));
     expect(screen.getByTestId('no-price-history')).toBeTruthy();
   });

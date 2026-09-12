@@ -1787,58 +1787,196 @@ def compute_technical_indicators(price_series, bench_series=None, volume_series=
     return tech
 
 
-def calculate_technical_score(tech, is_enabled):
-    """Per-indicator technical score. Mirrors calculateTechnicalScore() in TS.
+# --- Technical score weights -------------------------------------------------
+# PROVISIONAL, not validated. These four blocks and the points inside them are a
+# starting hypothesis about what a medium-term long-only chart looks like. Not
+# one of them has been tested against forward returns; that is what the backtest
+# exists to find out. Do NOT tune them against the bundled sample, whose figures
+# are invented, and do not cite the split as evidence of anything.
+#
+# Two of the four rest on weaker ground than the others and should be the first
+# to go if the backtest says the ranking is noise:
+#   * RelStrength is benchmark-only until sector-relative strength lands, so it
+#     currently measures "beat the Nifty", not "beat your peers".
+#   * Volume is the thinnest of the four. A single block deal moves OBV in an
+#     Indian large cap, so ten points is already generous for what it knows.
+TECHNICAL_BLOCK_MAX = {"trend": 40, "momentum": 30, "relStrength": 20, "volume": 10}
 
-    tech is None when the run had no price history at all. That is a fact
-    about the run, reported once by the pipeline, so it raises no per-stock
-    warning. An UNAVAILABLE record means history was loaded but this stock is
-    not in it, and that IS flagged. Points are awarded only for indicators that
-    are actually available, so an absent 52-week high contributes zero rather
-    than a spurious bonus. Returns (score_or_None, breakdown, warnings).
+# Direction of the RSI rule, stated as a decision rather than left in a number.
+# Rewarding a HIGH reading is a trend-continuation bet; rewarding a LOW one is a
+# mean-reversion bet. They are opposite systems and one threshold cannot serve
+# both. This engine is long-only over a one-to-six-month horizon, so
+# continuation is the consistent choice: above 50 earns points. An extreme
+# reading is treated as exhaustion and raises a flag rather than earning more.
+RSI_MOMENTUM_FLOOR = 50.0
+RSI_EXHAUSTION = 80.0
+# A MACD histogram closer to zero than this, as a percentage of price, is flat
+# rather than rising or falling. Without a band the sign of floating-point
+# residue decides fifteen points: a perfectly steady trend produces a histogram
+# of roughly -9e-16, because the signal line converges on the MACD line, and
+# that reads as "falling" if the test is a bare `> 0`. Expressed against price
+# so the band means the same for a 100-rupee stock and a 4000-rupee one.
+MACD_FLAT_BAND = 0.05
+# ADX above this is conventionally "there is a trend here at all", regardless of
+# its direction, which is why it scores inside Trend rather than on its own.
+ADX_TRENDING = 25.0
+# Below this many sessions no technical score is produced at all. Scoring a
+# company on the two or three indicators a short history can support, next to
+# companies measured on all of them, compares numbers built from different
+# amounts of evidence. Such a company goes to the fundamental-only list instead,
+# which is the same treatment as one the run could not price at all.
+SESSIONS_FOR_TECHNICAL_SCORE = 200
+
+
+def calculate_technical_score(tech, is_enabled):
+    """Technical score out of 100, in four blocks. Mirrors calculateTechnicalScore().
+
+    Returns (score_or_None, breakdown, warnings, blocks) where blocks carries
+    the per-category subtotals for the Trend/Momentum/Volume/RelStrength columns.
+
+    tech is None when the run had no price history at all. That is a fact about
+    the run, reported once by the pipeline, so it raises no per-stock warning.
+    An UNAVAILABLE record means history was loaded but this stock is not in it,
+    and that IS flagged.
+
+    Availability is handled one way throughout, and the alternatives are both
+    wrong. Awarding zero for an indicator the history cannot support punishes a
+    company for a short listing or for a four-column price file. Rescaling the
+    earned points up to 100 across whatever was available rewards missing data,
+    because a company measured on two cheap indicators would have its strong
+    blocks inflated to a full hundred. So: score only what is available, never
+    rescale, and refuse to score at all below SESSIONS_FOR_TECHNICAL_SCORE.
+
+    Within a single run every company is priced from the same file, so a file
+    without highs and lows costs every company its ADX points equally and the
+    ranking between them is unaffected.
     """
     if not is_enabled:
-        return None, ["Technical screening disabled"], []
+        return None, ["Technical screening disabled"], [], None
     if tech is None:
-        return None, ["No price history loaded"], []
+        return None, ["No price history loaded"], [], None
+    rows = tech.get("history_rows") or 0
     if tech.get("data_status") == "UNAVAILABLE":
-        rows = tech.get("history_rows") or 0
         reason = ("Only %d sessions of price history; indicators need at least 50" % rows
                   if rows else "Technical data unavailable")
-        return None, [reason], ["Technical Data Missing"]
+        return None, [reason], ["Technical Data Missing"], None
+    if rows < SESSIONS_FOR_TECHNICAL_SCORE:
+        # Enough for some indicators, not enough to stand beside companies
+        # measured on all of them.
+        return None, ["Only %d sessions; a technical score needs %d"
+                      % (rows, SESSIONS_FOR_TECHNICAL_SCORE)], ["Technical Data Missing"], None
 
     avail = tech.get("available", {})
-    score = 0
     breakdown = []
     warnings_out = []
+    blocks = {"trend": 0.0, "momentum": 0.0, "relStrength": 0.0, "volume": 0.0}
 
+    def award(block, points, text):
+        blocks[block] += points
+        breakdown.append("%s (+%s)" % (text, format(round1(points), ".1f")))
+
+    # --- Trend, 40 -----------------------------------------------------------
     if avail.get("sma200") and tech.get("isAboveSma200"):
-        score += 30
-        breakdown.append("Price > 200 SMA (+30)")
+        award("trend", 12.0, "Price > 200 SMA")
     if avail.get("sma50") and tech.get("isAboveSma50"):
-        score += 20
-        breakdown.append("Price > 50 SMA (+20)")
+        award("trend", 8.0, "Price > 50 SMA")
     if avail.get("smaCross") and tech.get("isSma50Above200"):
-        score += 20
-        breakdown.append("50 SMA > 200 SMA (+20)")
-    if avail.get("relativeStrength6M"):
-        rs = tech.get("relativeStrength6M")
-        if rs is not None and rs > 0:
-            score += 15
-            breakdown.append("Positive 6M RS vs benchmark (+15)")
+        award("trend", 8.0, "50 SMA > 200 SMA")
+    adx = tech.get("adx14")
+    if adx is None:
+        breakdown.append("ADX unavailable, needs highs and lows (+0.0)")
+    elif adx > ADX_TRENDING:
+        award("trend", 4.0, "ADX %s: trending" % format(round1(adx), ".1f"))
+    else:
+        breakdown.append("ADX %s: no trend (+0.0)" % format(round1(adx), ".1f"))
     if avail.get("high52Week"):
         dist = tech.get("distFrom52WHighPct")
         if dist is not None and dist > -15:
-            score += 15
-            breakdown.append("Within 15% of 52W high (+15)")
+            award("trend", 8.0, "Within 15% of 52W high")
     else:
-        breakdown.append("52W high unavailable (needs %d sessions) (+0)" % SESSIONS_52_WEEK)
+        breakdown.append("52W high unavailable (needs %d sessions) (+0.0)" % SESSIONS_52_WEEK)
+
+    # --- Momentum, 30 --------------------------------------------------------
+    # One measure per concept. RSI, MACD and the four rate-of-change windows are
+    # all functions of the same close series, so paying for each would count one
+    # move several times over and make momentum dominate whatever the headline
+    # weights say. MACD carries direction, RSI carries extension; the ROC
+    # windows stay computed and displayed but unscored for that reason.
+    hist = tech.get("macdHistogram")
+    price = tech.get("currentPrice")
+    if hist is None or price is None or price <= 0:
+        breakdown.append("MACD unavailable (+0.0)")
+    else:
+        hist_pct = hist / price * 100.0
+        if hist_pct > MACD_FLAT_BAND:
+            award("momentum", 15.0, "MACD histogram rising")
+        elif hist_pct < -MACD_FLAT_BAND:
+            breakdown.append("MACD histogram falling (+0.0)")
+        else:
+            # A steady trend has direction but no acceleration, which is a real
+            # reading rather than a missing one.
+            breakdown.append("MACD histogram flat (+0.0)")
+    rsi = tech.get("rsi14")
+    if rsi is None:
+        breakdown.append("RSI unavailable (+0.0)")
+    elif rsi > RSI_MOMENTUM_FLOOR:
+        award("momentum", 15.0, "RSI %s above %s" % (format(round1(rsi), ".1f"),
+                                                     format(RSI_MOMENTUM_FLOOR, ".0f")))
+    else:
+        breakdown.append("RSI %s below %s (+0.0)" % (format(round1(rsi), ".1f"),
+                                                     format(RSI_MOMENTUM_FLOOR, ".0f")))
+
+    # --- Relative strength, 20 ----------------------------------------------
+    for field, points, label in (("relativeStrength3M", 5.0, "3M"),
+                                 ("relativeStrength6M", 10.0, "6M"),
+                                 ("relativeStrength12M", 5.0, "12M")):
+        value = tech.get(field)
+        if value is None:
+            breakdown.append("%s RS unavailable (+0.0)" % label)
+        elif value > 0:
+            award("relStrength", points, "Positive %s RS vs benchmark" % label)
+        else:
+            breakdown.append("Negative %s RS vs benchmark (+0.0)" % label)
+
+    # --- Volume, 10 ----------------------------------------------------------
+    ratio = tech.get("volumeRatio20D")
+    if ratio is None:
+        breakdown.append("Volume ratio unavailable (+0.0)")
+    elif ratio > 1.0:
+        award("volume", 5.0, "Volume %sx its 20-day average" % format(round1(ratio), ".1f"))
+    else:
+        breakdown.append("Volume %sx its 20-day average (+0.0)" % format(round1(ratio), ".1f"))
+    obv = tech.get("obvPressure20D")
+    if obv is None:
+        breakdown.append("OBV pressure unavailable (+0.0)")
+    elif obv > 0:
+        award("volume", 5.0, "Buying pressure on volume")
+    else:
+        breakdown.append("Selling pressure on volume (+0.0)")
+
+    # --- Flags, never points -------------------------------------------------
+    # Volatility has no direction. Paying for low volatility tilts the list
+    # towards sleepy stocks and paying for high volatility towards lottery
+    # tickets, and neither is defensible without evidence. So these describe.
+    atr_pct = tech.get("atrPct")
+    if atr_pct is not None and atr_pct > 5.0:
+        warnings_out.append("High Volatility (ATR %s%% of price)" % format(round1(atr_pct), ".1f"))
+    if rsi is not None and rsi > RSI_EXHAUSTION:
+        warnings_out.append("Overbought (RSI %s)" % format(round1(rsi), ".1f"))
+    drawdown = tech.get("drawdownFromPeakPct")
+    if drawdown is not None and drawdown < -25.0:
+        warnings_out.append("Deep Drawdown (%s%% from peak)" % format(round1(drawdown), ".1f"))
+
+    for key in ("trend", "momentum", "relStrength", "volume"):
+        blocks[key] = round1(clamp(blocks[key], 0, TECHNICAL_BLOCK_MAX[key]))
+    score = clamp(blocks["trend"] + blocks["momentum"]
+                  + blocks["relStrength"] + blocks["volume"], 0, 100)
 
     if tech.get("data_status") != "COMPLETE":
         missing = [k for k in TECHNICAL_INDICATOR_KEYS if not avail.get(k)]
         warnings_out.append("Technical Data Partial (%s)" % ", ".join(missing))
 
-    return round1(clamp(score, 0, 100)), breakdown, warnings_out
+    return round1(score), breakdown, warnings_out, blocks
 
 
 def yahoo_symbol(ticker):
@@ -2705,7 +2843,7 @@ class ScreeningEngine:
         if pp is not None and pp > 0:
             warning_flags.append("Promoter Pledged")
 
-        tech_score, tech_breakdown, tech_warnings = calculate_technical_score(
+        tech_score, tech_breakdown, tech_warnings, tech_blocks = calculate_technical_score(
             tech, bool(self.config.get("enable_technical_confirmation"))
         )
         # Technical availability warnings are part of the displayed flag set in
@@ -2740,6 +2878,10 @@ class ScreeningEngine:
             "scoreLines": list(score_lines),
             "techScore": tech_score,
             "techBreakdown": tech_breakdown,
+            # Per-block subtotals behind techScore, or None when there is no
+            # technical score to break down. These are what the Trend, Momentum,
+            # Volume and RelStrength columns report.
+            "technicalBlocks": tech_blocks,
             "dataStatus": (tech or {}).get("data_status", "UNAVAILABLE"),
             "categoryScores": {
                 "financialQuality": round1(fq),
@@ -3050,7 +3192,12 @@ def ranking_changes_to_csv(changes):
 WATCHLIST_CSV_COLUMNS = [
     "Rank", "Ticker", "Name", "Sector", "CurrentPrice", "MarketCapCr", "Score",
     "TechScore", "Composite", "Verdict", "Coverage", "FinancialQuality",
-    "Growth", "BalanceSheet", "Valuation", "Governance", "WarningFlags",
+    "Growth", "BalanceSheet", "Valuation", "Governance",
+    # The four blocks behind TechScore. Blank rather than zero when the company
+    # has no technical score at all: an empty cell says "not measured", a zero
+    # would say "measured and found wanting".
+    "Trend", "Momentum", "Volume", "RelStrength",
+    "WarningFlags",
 ]
 REJECTED_CSV_COLUMNS = [
     "Ticker", "Name", "Sector", "Score", "Coverage", "RejectionReasons", "WarningFlags",
@@ -3059,6 +3206,17 @@ REJECTED_CSV_COLUMNS = [
 
 def _num(value):
     return "" if value is None else format(round1(value), ".1f")
+
+
+def _block(item, name):
+    """One technical block subtotal, blank when the company has no score.
+
+    A company the run could not price, or one whose history is too short to
+    score, has no blocks at all. Writing 0.0 there would read as a measurement;
+    an empty cell reads as the absence it is. Mirrors blockCell() in TS.
+    """
+    blocks = item.get("technicalBlocks")
+    return "" if not blocks else _num(blocks.get(name))
 
 
 def watchlist_to_csv(rows):
@@ -3085,6 +3243,10 @@ def watchlist_to_csv(rows):
             _num(cats.get("balanceSheetSafety")),
             _num(cats.get("valuation")),
             _num(cats.get("governance")),
+            _block(item, "trend"),
+            _block(item, "momentum"),
+            _block(item, "volume"),
+            _block(item, "relStrength"),
             escape_csv_cell(", ".join(item.get("warningFlags") or [])),
         ])
     return buffer.getvalue()
@@ -3403,10 +3565,15 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(tech["high52Week"], 100.0)
 
     def test_no_points_for_unavailable_52w_high(self):
+        # 251 sessions clears the 200 needed for a technical score at all, but
+        # falls one short of a genuine 52-week window, so that check earns
+        # nothing and says so instead of being approximated from 251 sessions.
         tech = compute_technical_indicators(_synthetic_prices(251))
-        score, breakdown, _ = calculate_technical_score(tech, True)
+        score, breakdown, _, blocks = calculate_technical_score(tech, True)
         self.assertIsNotNone(score)
         self.assertTrue(any("52W high unavailable" in b for b in breakdown))
+        # Trend keeps its three moving-average points and forgoes the eight.
+        self.assertEqual(blocks["trend"], 28.0)
 
     def test_data_status_levels(self):
         self.assertEqual(compute_technical_indicators(_synthetic_prices(0))["data_status"], "UNAVAILABLE")
@@ -3417,9 +3584,10 @@ class EngineTests(unittest.TestCase):
 
     def test_technical_disabled_returns_none(self):
         tech = compute_technical_indicators(_synthetic_prices(300))
-        score, breakdown, _ = calculate_technical_score(tech, False)
+        score, breakdown, _, blocks = calculate_technical_score(tech, False)
         self.assertIsNone(score)
         self.assertEqual(breakdown, ["Technical screening disabled"])
+        self.assertIsNone(blocks)
 
     # --- chart indicators -------------------------------------------------
     def test_rsi_known_answers(self):
@@ -3875,9 +4043,11 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(tech["MISSING"]["data_status"], "UNAVAILABLE")
 
     def test_no_price_history_is_reported_once_not_per_stock(self):
-        self.assertEqual(calculate_technical_score(None, True), (None, ["No price history loaded"], []))
-        _, _, missing = calculate_technical_score(empty_technicals(), True)
+        self.assertEqual(calculate_technical_score(None, True),
+                         (None, ["No price history loaded"], [], None))
+        _, _, missing, blocks = calculate_technical_score(empty_technicals(), True)
         self.assertEqual(missing, ["Technical Data Missing"])
+        self.assertIsNone(blocks)
 
     def test_screen_uses_price_history(self):
         engine = ScreeningEngine(dict(DEFAULT_APP_CONFIG, minimum_total_score=0), DEFAULT_SCREENING_CONFIG)
@@ -3885,7 +4055,12 @@ class EngineTests(unittest.TestCase):
         history = {"ALPHA": {"dates": dates, "closes": [100.0 + 0.5 * i for i in range(300)],
                              "volumes": [None] * 300}}
         by_ticker = {e["ticker"]: e for e in engine.screen(_fixture_frame(), price_history=history)["evaluations"]}
-        self.assertEqual(by_ticker["ALPHA"]["techScore"], 85.0)
+        # Trend 36 (three moving-average checks plus 52-week proximity; ADX
+        # needs highs and lows this fixture has none of) + momentum 15 (RSI
+        # above 50; a linear ramp's MACD histogram is flat) + relative strength
+        # 0 (no benchmark) + volume 0 (no volumes) = 51. Nothing is rescaled to
+        # make up for the indicators this fixture cannot support.
+        self.assertEqual(by_ticker["ALPHA"]["techScore"], 51.0)
         self.assertIn("Technical Data Missing", by_ticker["BETA"]["warningFlags"])
         without = engine.screen(_fixture_frame())["evaluations"][0]
         self.assertEqual(without["techBreakdown"], ["No price history loaded"])
@@ -4068,9 +4243,49 @@ class EngineTests(unittest.TestCase):
     def test_short_history_is_described_not_called_absent(self):
         tech = compute_technical_indicators([100.0 + i for i in range(30)])
         self.assertEqual(tech["data_status"], "UNAVAILABLE")
-        _, breakdown, flags = calculate_technical_score(tech, True)
+        _, breakdown, flags, _ = calculate_technical_score(tech, True)
         self.assertEqual(breakdown, ["Only 30 sessions of price history; indicators need at least 50"])
         self.assertEqual(flags, ["Technical Data Missing"])
+
+    def test_a_flat_macd_histogram_is_not_a_falling_one(self):
+        """Fifteen points must not turn on the sign of floating-point residue.
+
+        On a perfectly steady trend the signal line converges on the MACD line,
+        so the histogram lands at roughly -9e-16. A bare `> 0` test reads that
+        as falling and withholds the points; it would just as easily have read
+        +9e-16 as rising and awarded them. The band makes a steady trend report
+        what it actually is -- direction without acceleration.
+        """
+        tech = compute_technical_indicators(_synthetic_prices(300))
+        self.assertIsNotNone(tech["macdHistogram"])
+        self.assertLess(abs(tech["macdHistogram"]), 1e-9,
+                        "a linear ramp should land on a near-zero histogram")
+        _, breakdown, _, _ = calculate_technical_score(tech, True)
+        self.assertIn("MACD histogram flat (+0.0)", breakdown)
+        self.assertNotIn("MACD histogram falling (+0.0)", breakdown)
+        # The band is measured against price, so it means the same thing at any
+        # price level rather than being an absolute number of rupees.
+        self.assertEqual(MACD_FLAT_BAND, 0.05)
+
+    def test_a_partial_history_is_not_scored_beside_a_full_one(self):
+        """50-199 sessions supports some indicators, not a comparable score.
+
+        Scoring a company on the two or three indicators a short listing can
+        support, next to companies measured on all of them, compares numbers
+        built from different amounts of evidence. Rescaling to make up the
+        difference would be worse still: it rewards the missing data. So the
+        company gets no technical score and joins the fundamental-only list.
+        """
+        short = compute_technical_indicators(_synthetic_prices(150))
+        self.assertEqual(short["data_status"], "PARTIAL")
+        score, breakdown, flags, blocks = calculate_technical_score(short, True)
+        self.assertIsNone(score)
+        self.assertIsNone(blocks)
+        self.assertEqual(breakdown, ["Only 150 sessions; a technical score needs 200"])
+        self.assertEqual(flags, ["Technical Data Missing"])
+        # One session past the bar and it is scored normally.
+        ok = compute_technical_indicators(_synthetic_prices(SESSIONS_FOR_TECHNICAL_SCORE))
+        self.assertIsNotNone(calculate_technical_score(ok, True)[0])
 
     def test_financial_sector_match_is_ascii_only(self):
         engine = ScreeningEngine(dict(DEFAULT_APP_CONFIG, enable_technical_confirmation=False),

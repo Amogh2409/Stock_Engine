@@ -777,7 +777,15 @@ describe('Price history', () => {
       },
     });
     const byTicker = new Map(withHistory.evaluations.map((e) => [e.stock.ticker, e]));
-    expect(byTicker.get('TCS')!.technicalScore.score).toBe(85);
+    // Trend 36 (three moving-average checks plus 52-week proximity; this
+    // fixture is a close-only series so ADX is forfeited) + momentum 15 (RSI
+    // above 50; a linear ramp's MACD histogram is flat) + relative strength 0
+    // (no benchmark) + volume 0 (no volumes) = 51. Nothing is rescaled to make
+    // up for the indicators the fixture cannot support.
+    expect(byTicker.get('TCS')!.technicalScore.score).toBe(51);
+    expect(byTicker.get('TCS')!.technicalScore.blocks).toEqual({
+      trend: 36, momentum: 15, relStrength: 0, volume: 0,
+    });
     expect(byTicker.get('INFY')!.warningFlags).toContain('Technical Data Missing');
   });
 

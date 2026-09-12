@@ -88,6 +88,9 @@ def run_screen(engine, pd, spec, expected_rows=None):
                 "sectorGroup": item["sectorGroup"],
                 "techScore": item["techScore"],
                 "techBreakdown": list(item["techBreakdown"]),
+                # The four block subtotals, so the engines are compared on the
+                # breakdown rather than merely on the total they add up to.
+                "technicalBlocks": item["technicalBlocks"],
                 "dataStatus": item["dataStatus"],
                 "explanation": item["explanation"],
             }

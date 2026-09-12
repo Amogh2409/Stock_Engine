@@ -386,8 +386,29 @@ export function runAllValidations(): TestResult[] {
     const ev = evaluateStock(makeStock({ technicals: tech }), DEFAULT_SCREENING_CONFIG, {
       ...APP, enable_technical_confirmation: true,
     });
-    const passed = skipped === 0 && tech.data_status === 'COMPLETE' && ev.technicalScore.score === 100;
-    return { passed, message: `status=${tech.data_status}, score=${ev.technicalScore.score}, as of ${tech.as_of}` };
+    // Assert why the score is what it is, not a bare number. This fixture is a
+    // four-column price file, so ADX has no highs and lows to work from and
+    // forfeits its 4; and a perfectly linear ramp has direction but no
+    // acceleration, so the MACD histogram is flat and forfeits its 15. What
+    // remains is every other check passing: 36 of 40 trend, 15 of 30 momentum,
+    // all 20 relative strength and all 10 volume.
+    const blocks = ev.technicalScore.blocks;
+    const passed =
+      skipped === 0 &&
+      tech.data_status === 'COMPLETE' &&
+      blocks !== null &&
+      blocks.trend === 36 &&
+      blocks.momentum === 15 &&
+      blocks.relStrength === 20 &&
+      blocks.volume === 10 &&
+      ev.technicalScore.score === 81 &&
+      tech.adx14 === null;
+    return {
+      passed,
+      message:
+        `status=${tech.data_status}, score=${ev.technicalScore.score}, ` +
+        `blocks=${JSON.stringify(blocks)}, adx=${tech.adx14}, as of ${tech.as_of}`,
+    };
   });
 
   runTest('No price history is not a per-stock warning', 'Technicals', () => {
