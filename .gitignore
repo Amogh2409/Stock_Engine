@@ -1,0 +1,33 @@
+node_modules/
+dist/
+dist-server/
+build/
+coverage/
+.DS_Store
+*.log
+*.pyc
+__pycache__/
+.venv/
+venv/
+.env*
+!.env.example
+
+# Runtime data. The directory structure is tracked via .gitkeep files, but the
+# CSVs, snapshots, caches and run logs a run produces are not.
+data-store/**
+!data-store/README.md
+!data-store/*/
+!data-store/*/.gitkeep
+
+# Reference PDFs: large and copyrighted, never committed.
+Books_TO_study/
+
+# Legacy / transient
+IndianStockEngine/
+_test_cache/
+_notebook_engine_under_test.py
+
+# Release artefacts are produced by run_checks.sh, never committed
+indian_equity_engine_v6_clean.zip
+indian_equity_engine_v6_clean.zip.sha256
+verification_report.txt

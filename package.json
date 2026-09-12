@@ -1,0 +1,54 @@
+{
+  "name": "indian-equity-screening-engine",
+  "private": true,
+  "version": "6.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "npm run build:python && vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist-server/server.cjs",
+    "preview": "vite preview",
+    "clean": "rm -rf dist dist-server",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "start": "node dist-server/server.cjs",
+    "build:python": "node scripts/build_python_source.mjs",
+    "check:python": "node scripts/build_python_source.mjs --check",
+    "generate:notebook": "tsx generate_ipynb.ts",
+    "verify": "bash run_checks.sh",
+    "screen": "scripts/venv-python.sh python/engine.py",
+    "screen:offline": "scripts/venv-python.sh python/engine.py --offline",
+    "screen:selftest": "scripts/venv-python.sh python/engine.py --self-test",
+    "test:python": "scripts/venv-python.sh test_python.py"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.1.14",
+    "@vitejs/plugin-react": "^5.0.4",
+    "express": "^5.2.1",
+    "lucide-react": "^0.546.0",
+    "papaparse": "^5.7.0",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "vite": "^6.2.3"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.14.0",
+    "@types/papaparse": "^5.5.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "esbuild": "^0.25.0",
+    "jsdom": "^30.0.1",
+    "tailwindcss": "^4.1.14",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vitest": "^5.0.0"
+  },
+  "packageManager": "npm@10.8.2",
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+    "npm": ">=10"
+  },
+  "description": "Explainable quantitative screening and scoring for Indian equities from Screener.in CSV exports."
+}

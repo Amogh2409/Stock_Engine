@@ -1,0 +1,2530 @@
+/**
+ * Browser screening engine.
+ *
+ * This file is the TypeScript half of a two-engine system; python/engine.py is
+ * the other. Every scoring, parsing, sorting, CSV and delta rule below has a
+ * one-to-one counterpart there, and src/tests/parity.test.ts asserts the two
+ * agree exactly on all 31 bundled sample companies.
+ *
+ * Two conventions make that parity possible and MUST NOT be changed on one
+ * side only:
+ *   1. round1() -- one decimal, half-up, implemented as Math.round(x*10)/10,
+ *      which is bit-identical to Python's floor(x*10 + 0.5)/10 on the same
+ *      IEEE-754 double. Scores drive rank order, so a rounding difference is a
+ *      ranking difference, not a display difference.
+ *   2. Watchlists sort by score descending, then ticker ascending.
+ */
+import * as Papa from 'papaparse';
+
+import {
+  NIFTY100_FALLBACK_SYMBOLS,
+  NIFTY100_PROVENANCE,
+} from '../data/nifty100Snapshot';
+import {
+  AppConfig,
+  CategoryScore,
+  CleanedStock,
+  ColumnProfile,
+  DataInspectionReport,
+  FilterOperator,
+  RankingChange,
+  ScreenerRow,
+  ScreeningConfig,
+  SectorMedian,
+  SectorMedians,
+  StockEvaluation,
+  TechnicalAvailability,
+  TechnicalIndicators,
+  TechnicalScoreResult,
+  WatchlistSnapshotEntry,
+} from '../types';
+
+export { NIFTY100_FALLBACK_SYMBOLS, NIFTY100_PROVENANCE };
+
+export const SCHEMA_VERSION = 'v6';
+
+// ---------------------------------------------------------------------------
+// Numeric helpers and canonical rounding
+// ---------------------------------------------------------------------------
+
+export function clamp(val: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, val));
+}
+
+/**
+ * Canonical score rounding: one decimal place, half-up.
+ * Counterpart of round1() in python/engine.py.
+ */
+export function round1(value: number): number;
+export function round1(value: null | undefined): null;
+export function round1(value: number | null | undefined): number | null;
+export function round1(value: number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  return Math.round(value * 10) / 10;
+}
+
+/** Fixed-precision string used by every CSV writer in both engines. */
+export function fmt1(value: number | null | undefined): string {
+  const rounded = round1(value);
+  return rounded === null ? '' : rounded.toFixed(1);
+}
+
+/**
+ * Code-point string order, which is what Python's `<` uses. localeCompare is
+ * locale-dependent collation ("A_B" sorts before "AB" under ICU, after it by
+ * code point) and plain `<` compares UTF-16 units, so neither may be used to
+ * order anything the Python engine also orders.
+ */
+export function compareCodePoints(a: string, b: string): number {
+  const x = Array.from(a);
+  const y = Array.from(b);
+  const n = Math.min(x.length, y.length);
+  for (let i = 0; i < n; i += 1) {
+    const diff = (x[i].codePointAt(0) ?? 0) - (y[i].codePointAt(0) ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return x.length - y.length;
+}
+
+/** JSON.stringify, writing undefined as null (Python's None). Counterpart of _json_text(). */
+export function jsonText(value: unknown): string {
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * Strict scalar -> number. Counterpart of parse_strict_decimal().
+ *
+ * Finite numbers pass through. Strings must match NUMERIC_BODY_RE, the
+ * ASCII-only decimal shape both engines pin, so hex (0x10), binary (0b101),
+ * octal (0o17), underscore separators (1_0), Infinity/NaN and non-ASCII digits
+ * are rejected identically -- Number() and Python's float() each accept some of
+ * those and not others.
+ */
+export function parseStrictDecimal(val: unknown): number | null {
+  if (typeof val === 'number') return Number.isFinite(val) ? val : null;
+  if (typeof val !== 'string') return null;
+  const text = val.trim();
+  if (!NUMERIC_BODY_RE.test(text)) return null;
+  const num = Number(text);
+  return Number.isFinite(num) ? num : null;
+}
+
+// ---------------------------------------------------------------------------
+// Unit-aware numeric parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Declared unit of a source column. Screener.in exports monetary columns in
+ * rupee crore, so "100 LAKH" must resolve to 1 crore -- not to 100.
+ */
+export type FieldUnit = 'crore' | 'percent' | 'ratio' | 'price' | 'plain';
+
+const MONETARY_SUFFIX_RE = /(CRORES|CRORE|CRS|CR|LAKHS|LAKH|LACS|LAC)$/;
+/**
+ * The cleaned body must be a plain decimal. This deliberately rejects hex
+ * (0x10), underscore separators (1_0), "inf" and "nan" -- all of which one
+ * language's number parser accepts and the other's does not. Pinning the
+ * accepted shape here is what keeps the two engines in agreement.
+ */
+const NUMERIC_BODY_RE = /^[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/;
+/**
+ * JavaScript's \s (and String.prototype.trim) is exactly the WhiteSpace +
+ * LineTerminator set; python/engine.py spells that set out as _WS_CHARS
+ * because Python's own \s differs at the edges.
+ */
+const CURRENCY_CHARS_RE = /[₹$€£,"'\s]/g;
+/**
+ * Rupee words written in front of a price ("Rs 1,500", "Rs. 1,500", "INR 1500").
+ * Applied after the currency characters and spaces are stripped, so the text is
+ * already upper-cased and closed up. Counterpart of _CURRENCY_PREFIX_RE.
+ */
+const CURRENCY_PREFIX_RE = /^(?:RS\.?|INR)/;
+
+/**
+ * Unit-aware parser. Counterpart of clean_numeric() in python/engine.py.
+ *
+ *   cleanNumeric('1 CRORE',  'crore')   ->  1
+ *   cleanNumeric('100 LAKH', 'crore')   ->  1
+ *   cleanNumeric('10 LAKH',  'crore')   ->  0.1
+ *   cleanNumeric('15.5%',    'percent') ->  15.5
+ *   cleanNumeric('15 CR',    'percent') ->  null  (monetary on a percentage)
+ *   cleanNumeric('0.5%',     'ratio')   ->  null  (percent on a ratio)
+ *
+ * An unexpected suffix is a rejection, never a silent strip.
+ */
+export function cleanNumeric(value: unknown, unit: FieldUnit = 'plain'): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'boolean') return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  const text = String(value).toUpperCase().trim();
+  if (text === '') return null;
+
+  const hasPercent = text.includes('%');
+  let body = text.replace(CURRENCY_CHARS_RE, '').replace(/%/g, '').replace(CURRENCY_PREFIX_RE, '');
+
+  let multiplier = 1;
+  const suffixMatch = MONETARY_SUFFIX_RE.exec(body);
+  const hasMonetary = suffixMatch !== null;
+  if (suffixMatch) {
+    body = body.slice(0, suffixMatch.index);
+    // 100 lakh == 1 crore
+    multiplier = suffixMatch[1].startsWith('LA') ? 0.01 : 1;
+  }
+
+  if (unit === 'crore') {
+    if (hasPercent) return null;
+  } else if (unit === 'percent' || unit === 'ratio' || unit === 'price') {
+    if (hasMonetary) return null;
+    multiplier = 1;
+    if ((unit === 'ratio' || unit === 'price') && hasPercent) return null;
+  } else {
+    multiplier = 1;
+  }
+
+  if (!NUMERIC_BODY_RE.test(body)) return null;
+  const num = Number(body);
+  if (Number.isNaN(num) || !Number.isFinite(num)) return null;
+  return num * multiplier;
+}
+
+// ---------------------------------------------------------------------------
+// Spreadsheet formula-injection guard
+// ---------------------------------------------------------------------------
+
+const DANGEROUS_LEAD = ['=', '+', '-', '@'];
+
+/**
+ * Neutralise formula injection in a *string* cell: if the first non-whitespace
+ * character is = + - or @, prefix an apostrophe. Numbers pass through
+ * untouched so genuine numeric columns stay numeric in the exported file.
+ * Counterpart of escape_csv_cell() in python/engine.py.
+ */
+export function escapeCsvCell(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'number' || typeof value === 'bigint') return String(value);
+  const text = String(value);
+  const lead = text.replace(/^\s+/, '').charAt(0);
+  return DANGEROUS_LEAD.includes(lead) ? `'${text}` : text;
+}
+
+/** RFC4180 minimal quoting, applied after the injection guard. */
+function csvQuote(text: string): string {
+  if (text.includes(',') || text.includes('"') || text.includes('\n') || text.includes('\r')) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function csvRow(cells: string[]): string {
+  return cells.map(csvQuote).join(',');
+}
+
+/** Text cell: guard then quote. */
+function textCell(value: unknown): string {
+  return escapeCsvCell(value);
+}
+
+// ---------------------------------------------------------------------------
+// Column resolution
+// ---------------------------------------------------------------------------
+
+const COLUMN_ALIASES: Record<string, string[]> = {
+  name: ['name', 'company name', 'company'],
+  sector: ['industry', 'sector', 'industry/sector'],
+  currentPrice: ['current price', 'cmp', 'close price', 'market price', 'price'],
+  marketCap: ['market capitalization', 'market cap', 'mcap', 'mar cap'],
+  salesGrowth: ['sales growth 3years', 'sales growth', 'sales var 3yrs'],
+  profitGrowth: ['profit growth 3years', 'profit growth', 'pat growth 3years', 'net profit growth'],
+  roce: ['return on capital employed', 'roce'],
+  roe: ['return on equity', 'roe'],
+  debtToEquity: ['debt to equity', 'debt / equity', 'debt/equity ratio', 'd/e'],
+  interestCoverage: ['interest coverage ratio', 'interest coverage', 'icr'],
+  operatingCashFlow: [
+    'cash flow from operations',
+    'cash from operating activity',
+    'operating cash flow',
+    'cfo',
+    'ocf',
+  ],
+  promoterHolding: ['promoter holding', 'promoter holding %'],
+  promoterPledge: ['pledged percentage', 'promoter pledge', 'pledge %'],
+  peRatio: ['price to earning', 'price to earnings', 'price/earnings', 'stock p/e', 'p/e ratio', 'p/e', 'pe ratio', 'pe'],
+  pbRatio: ['price to book value', 'price to book', 'p/b ratio', 'p/b', 'pb ratio', 'pb'],
+  dividendYield: ['dividend yield', 'div yield'],
+  // Optional. Present only in exports that carry an absolute revenue column;
+  // "Sales growth 3Years" is a percentage and is a different field.
+  sales: ['sales', 'revenue', 'total revenue', 'total income'],
+  // --- Financial-company metrics (banks, NBFCs). Optional everywhere else. ---
+  // Screener.in spells these differently across screens, so each carries the
+  // spellings seen in the wild; normalizeHeader() strips the trailing "%".
+  returnOnAssets: ['return on assets', 'roa'],
+  grossNpa: ['gross npa', 'gross npa percentage'],
+  netNpa: ['net npa', 'net npa percentage'],
+  capitalAdequacy: ['capital adequacy ratio', 'capital adequacy', 'car', 'crar'],
+  casa: ['casa', 'casa ratio'],
+  // Screener.in has no "net interest margin" ratio; "Financing Margin %" is
+  // its nearest equivalent and is labelled as such wherever it is reported.
+  financingMargin: ['financing margin', 'net interest margin', 'nim'],
+};
+
+const TICKER_PRIMARY_ALIASES = ['nse code', 'nse symbol', 'symbol', 'ticker', 'nse', 'code'];
+const BSE_CODE_ALIASES = ['bse code', 'scrip code', 'bse id', 'bse'];
+
+const EXACT_ONLY_ALIASES = new Set([
+  'pe', 'pb', 'roe', 'roce', 'ocf', 'cfo', 'icr', 'd/e', 'p/e', 'p/b',
+  'cmp', 'code', 'nse', 'bse', 'price', 'company', 'name',
+  // 'sales' would otherwise partial-match "Sales growth 3Years"; 'car' would
+  // match "Cars", 'nim'/'roa'/'casa' are short enough to collide by accident.
+  'sales', 'roa', 'car', 'crar', 'casa', 'nim',
+]);
+
+export const FIELD_UNITS: Record<string, FieldUnit> = {
+  currentPrice: 'price',
+  marketCap: 'crore',
+  operatingCashFlow: 'crore',
+  salesGrowth: 'percent',
+  profitGrowth: 'percent',
+  roce: 'percent',
+  roe: 'percent',
+  promoterHolding: 'percent',
+  promoterPledge: 'percent',
+  dividendYield: 'percent',
+  debtToEquity: 'ratio',
+  interestCoverage: 'ratio',
+  peRatio: 'ratio',
+  pbRatio: 'ratio',
+  sales: 'crore',
+  returnOnAssets: 'percent',
+  grossNpa: 'percent',
+  netNpa: 'percent',
+  capitalAdequacy: 'percent',
+  casa: 'percent',
+  financingMargin: 'percent',
+};
+
+const ZERO_WIDTH_RE = /[​-‍﻿]/g;
+/** Spelled A-Za-z0-9_ to match _NON_WORD_RE in python/engine.py exactly. */
+const NON_WORD_RE = /[^A-Za-z0-9_\s/]/g;
+const WHITESPACE_RE = /\s+/g;
+
+export function normalizeHeader(text: string): string {
+  return String(text)
+    .toLowerCase()
+    .trim()
+    .replace(ZERO_WIDTH_RE, '')
+    .replace(NON_WORD_RE, '')
+    .replace(WHITESPACE_RE, ' ')
+    .trim();
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Best alias match as [kind, rank]; kind 0 = exact, 1 = word-boundary partial. */
+function matchRank(normalizedHeader: string, aliases: string[]): [number, number] | null {
+  let best: [number, number] | null = null;
+  aliases.forEach((alias, rank) => {
+    const aliasNorm = normalizeHeader(alias);
+    if (!aliasNorm) return;
+    let candidate: [number, number] | null = null;
+    if (normalizedHeader === aliasNorm) {
+      candidate = [0, rank];
+    } else if (EXACT_ONLY_ALIASES.has(alias)) {
+      return;
+    } else if (new RegExp(`\\b${escapeRegExp(aliasNorm)}\\b`).test(normalizedHeader)) {
+      candidate = [1, rank];
+    }
+    if (!candidate) return;
+    if (!best || candidate[0] < best[0] || (candidate[0] === best[0] && candidate[1] < best[1])) {
+      best = candidate;
+    }
+  });
+  return best;
+}
+
+/**
+ * Map canonical field names to actual CSV column names. Deterministic and
+ * independent of column order. Counterpart of resolve_columns().
+ *
+ *   'NSE Code' + 'BSE Code' -> ticker=NSE Code, bseCode=BSE Code
+ *   'BSE Code' only         -> ticker=BSE Code, bseCode=BSE Code (shared)
+ *   'NSE Code' only         -> ticker=NSE Code, no bseCode
+ */
+export function detectColumnMapping(headers: string[]): Record<string, string> {
+  const normalized = headers.map(normalizeHeader);
+  const mapping: Record<string, string> = {};
+  const claimed = new Set<number>();
+
+  type Cand = { kind: number; rank: number; idx: number };
+  const bseCands: Cand[] = [];
+  const tickerCands: Cand[] = [];
+
+  normalized.forEach((norm, idx) => {
+    if (!norm) return;
+    const bseHit = matchRank(norm, BSE_CODE_ALIASES);
+    if (bseHit) bseCands.push({ kind: bseHit[0], rank: bseHit[1], idx });
+    const tickHit = matchRank(norm, TICKER_PRIMARY_ALIASES);
+    if (tickHit) tickerCands.push({ kind: tickHit[0], rank: tickHit[1], idx });
+  });
+
+  const byPriority = (a: Cand, b: Cand) =>
+    a.kind - b.kind || a.rank - b.rank || a.idx - b.idx;
+
+  const bseIdxs = new Set(bseCands.map((c) => c.idx));
+  // A BSE column is never eligible as the primary ticker.
+  const tickerPrimary = tickerCands.filter((c) => !bseIdxs.has(c.idx));
+
+  if (bseCands.length) {
+    const best = [...bseCands].sort(byPriority)[0];
+    mapping.bseCode = headers[best.idx];
+    claimed.add(best.idx);
+  }
+  if (tickerPrimary.length) {
+    const best = [...tickerPrimary].sort(byPriority)[0];
+    mapping.ticker = headers[best.idx];
+    claimed.add(best.idx);
+  } else if (mapping.bseCode) {
+    // Only a BSE column exists: share it as the ticker fallback so both the
+    // usable ticker and bseCode stay available for deduplication.
+    mapping.ticker = mapping.bseCode;
+  }
+
+  const fieldOrder = Object.keys(COLUMN_ALIASES);
+  for (const kindPass of [0, 1]) {
+    const candidates: { rank: number; order: number; idx: number; field: string }[] = [];
+    fieldOrder.forEach((field, order) => {
+      if (mapping[field]) return;
+      normalized.forEach((norm, idx) => {
+        if (!norm || claimed.has(idx)) return;
+        const hit = matchRank(norm, COLUMN_ALIASES[field]);
+        if (!hit || hit[0] !== kindPass) return;
+        candidates.push({ rank: hit[1], order, idx, field });
+      });
+    });
+    candidates
+      .sort((a, b) => a.rank - b.rank || a.order - b.order || a.idx - b.idx)
+      .forEach(({ idx, field }) => {
+        if (mapping[field] || claimed.has(idx)) return;
+        mapping[field] = headers[idx];
+        claimed.add(idx);
+      });
+  }
+
+  return mapping;
+}
+
+/**
+ * Parse a fundamentals CSV. Line endings are normalised and the delimiter is
+ * pinned to a comma instead of sniffed, matching pandas.read_csv in
+ * read_fundamentals_csv().
+ */
+export function parseCsv(csvString: string): ScreenerRow[] {
+  const parsed = Papa.parse<ScreenerRow>(csvString.replace(/\r\n?/g, '\n'), {
+    header: true,
+    skipEmptyLines: true,
+    dynamicTyping: false,
+    delimiter: ',',
+    newline: '\n',
+  });
+  return (parsed.data || []) as ScreenerRow[];
+}
+
+// ---------------------------------------------------------------------------
+// Defaults
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_APP_CONFIG: AppConfig = {
+  universe_mode: 'nifty100',
+  custom_symbols: [],
+  custom_filters: [],
+  top_n: 20,
+  minimum_total_score: 65,
+  fundamentals_stale_after_days: 30,
+  enable_technical_confirmation: true,
+  // Off by default: every company that survives the hard red flags is scored
+  // and ranked. Turning this on re-applies the old pass/fail hurdles (minimum
+  // ROCE, growth, leverage, valuation and so on) as a filter over that ranked
+  // list, rather than as the only way to appear in it.
+  strict_screen: false,
+};
+
+export const DEFAULT_SCREENING_CONFIG: ScreeningConfig = {
+  minMarketCapCr: 1000,
+  minSalesGrowthPct: 10.0,
+  minProfitGrowthPct: 12.0,
+  minRocePct: 15.0,
+  minRoePct: 15.0,
+  maxDebtToEquity: 1.0,
+  minInterestCoverage: 3.0,
+  requirePositiveOcf: true,
+  minPromoterHoldingPct: 40.0,
+  maxPromoterPledgePct: 10.0,
+  minPeRatio: 5.0,
+  maxPeRatio: 55.0,
+  maxPbRatio: 12.0,
+  minDividendYieldPct: 0.2,
+  minimum_fundamental_coverage: 80.0,
+};
+
+export const ALLOWED_FILTER_FIELDS = [
+  'marketCap', 'salesGrowth', 'profitGrowth', 'roce', 'roe', 'debtToEquity',
+  'interestCoverage', 'operatingCashFlow', 'promoterHolding', 'promoterPledge',
+  'peRatio', 'pbRatio', 'dividendYield',
+] as const;
+
+export const ALLOWED_FILTER_OPERATORS: FilterOperator[] = ['>', '<', '>=', '<=', '==', '!='];
+
+/**
+ * Sector/industry text marking a company as financial-sector. Screener.in has
+ * many names for them ("Financial - Services", "Capital Markets", "Stock
+ * Brokers", "Other Financial Services", ...) and the leverage and cash-flow
+ * rules transfer to none of them. "financ" covers Finance/Financial/Financing/
+ * Microfinance, "brok" covers broker/broking/brokerage, "insur" insurance and
+ * insurers. "capital market" is spelled in full so "Capital Goods" is untouched.
+ * Counterpart of FINANCIAL_SECTOR_TERMS in python/engine.py.
+ */
+export const FINANCIAL_SECTOR_TERMS = [
+  'bank', 'financ', 'nbfc', 'insur', 'brok', 'capital market', 'asset management',
+  'mutual fund', 'depositor', 'securities', 'stock exchange', 'wealth management',
+  'lending',
+];
+const FINANCIAL_SECTOR_RE = new RegExp(FINANCIAL_SECTOR_TERMS.join('|'), 'i');
+
+// --- Sector grouping -------------------------------------------------------
+/**
+ * Coarse groups, used when a Screener.in industry label is too thin to give a
+ * meaningful median. Screener's labels are fine-grained ("FMCG - Food", "FMCG -
+ * Household Products", "Metals - Non Ferrous"), so a 100-row export splits into
+ * roughly 25 industries and most of them hold one or two companies.
+ *
+ * ORDER IS LOAD-BEARING. The first group with a matching term wins, so a group
+ * is listed before any later one whose terms would also match it:
+ *   "Cables - Power"      -> Industrials (cable), before Utilities (power)
+ *   "Industrial Minerals" -> Metals & Mining (mineral), before Industrials
+ *
+ * Terms match at a word boundary and may be prefixes ("alumini" covers
+ * aluminium and aluminum, "chemical" covers Chemicals). The leading boundary is
+ * what stops "oil" matching "boiler" and "port" matching "airport". Every term
+ * must stay plain lowercase letters and spaces -- no regex metacharacters --
+ * because the two engines build this pattern without an escaping step.
+ * Counterpart of SECTOR_GROUP_TERMS in python/engine.py.
+ */
+export const SECTOR_GROUP_FINANCIALS = 'Financials';
+export const SECTOR_GROUP_TERMS: readonly (readonly [string, readonly string[]])[] = [
+  ['Information Technology', ['computers', 'software', 'information technology',
+    'it services', 'bpo']],
+  ['Healthcare', ['pharma', 'healthcare', 'hospital', 'diagnostic', 'biotech',
+    'medical', 'drug']],
+  ['Automobile', ['automobile', 'auto component', 'auto ancillar', 'tyre',
+    'two wheeler', 'commercial vehicle', 'passenger vehicle']],
+  ['Metals & Mining', ['metal', 'steel', 'mining', 'mineral', 'zinc',
+    'alumini', 'copper', 'ferrous']],
+  ['Construction Materials', ['cement', 'tiles', 'ceramic', 'asbestos']],
+  ['Chemicals', ['chemical', 'fertilis', 'fertiliz', 'paint', 'plastic', 'polymer']],
+  ['Energy', ['oil', 'gas', 'petroleum', 'refiner', 'coal', 'energy']],
+  ['Consumer Durables', ['consumer electronic', 'consumer durable', 'watches',
+    'footwear', 'appliance', 'furniture', 'jewel']],
+  ['FMCG', ['fmcg', 'beverage', 'tobacco', 'cigarette', 'personal product',
+    'household product', 'sugar', 'dairy']],
+  ['Consumer Services', ['retail', 'hotel', 'restaurant', 'travel', 'airline',
+    'aviation', 'media', 'entertainment', 'education']],
+  ['Telecommunication', ['telecom']],
+  ['Realty', ['realty', 'real estate']],
+  ['Industrials', ['capital goods', 'engineering', 'abrasive', 'defence',
+    'infrastructure', 'cable', 'bearing', 'compressor',
+    'industrial', 'logistic', 'port', 'trading', 'packaging',
+    'construction', 'textile', 'paper']],
+  ['Utilities', ['power', 'electric', 'utility', 'renewable']],
+];
+const SECTOR_GROUP_RES: [string, RegExp][] = SECTOR_GROUP_TERMS.map(
+  ([name, terms]) => [name, new RegExp(`\\b(?:${terms.join('|')})`, 'i')],
+);
+
+/**
+ * Coarse group for a Screener.in industry label, or null if nothing matches.
+ *
+ * Financials is decided by FINANCIAL_SECTOR_RE itself rather than by a separate
+ * term list, so a company's group can never disagree with whether the engine
+ * treats it as a financial company. Counterpart of sector_group().
+ */
+export function sectorGroup(sector: string | null | undefined): string | null {
+  const text = sector || '';
+  if (FINANCIAL_SECTOR_RE.test(text)) return SECTOR_GROUP_FINANCIALS;
+  for (const [name, pattern] of SECTOR_GROUP_RES) {
+    if (pattern.test(text)) return name;
+  }
+  return null;
+}
+
+// --- Valuation yardsticks from the loaded file -----------------------------
+/**
+ * Smallest bucket that may serve as a median. Below this the comparison says
+ * more about the sample than about the company.
+ */
+export const MIN_MEDIAN_SAMPLE = 5;
+const MEDIAN_COUNT_KEYS: Record<string, 'peCount' | 'pbCount'> = {
+  peRatio: 'peCount',
+  pbRatio: 'pbCount',
+};
+const MEDIAN_LABELS: Record<string, string> = { peRatio: 'P/E', pbRatio: 'P/B' };
+
+/** Middle value, or the mean of the two middle ones. Null when empty. */
+function median(values: readonly number[]): number | null {
+  const ordered = [...values].sort((a, b) => a - b);
+  const count = ordered.length;
+  if (count === 0) return null;
+  const mid = Math.floor(count / 2);
+  if (count % 2 === 1) return ordered[mid];
+  return (ordered[mid - 1] + ordered[mid]) / 2;
+}
+
+interface MedianEntries {
+  pe: number[];
+  pb: number[];
+}
+
+function medianBucket(entries: MedianEntries): SectorMedian {
+  return {
+    peRatio: median(entries.pe),
+    pbRatio: median(entries.pb),
+    peCount: entries.pe.length,
+    pbCount: entries.pb.length,
+  };
+}
+
+/**
+ * P/E and P/B yardsticks for the loaded file: by industry, by group, overall.
+ *
+ * Only positive ratios feed a median. A negative P/E is a loss and a negative
+ * P/B is negative net worth; neither is a cheap valuation, and both would drag
+ * the yardstick the wrong way. Counterpart of sector_medians().
+ */
+export function sectorMedians(stocks: readonly CleanedStock[]): SectorMedians {
+  const industries = new Map<string, MedianEntries>();
+  const groups = new Map<string, MedianEntries>();
+  const universe: MedianEntries = { pe: [], pb: [] };
+  const bucketFor = (store: Map<string, MedianEntries>, key: string) => {
+    let entry = store.get(key);
+    if (!entry) {
+      entry = { pe: [], pb: [] };
+      store.set(key, entry);
+    }
+    return entry;
+  };
+
+  for (const stock of stocks) {
+    const industry = (stock.sector || '').trim();
+    const group = sectorGroup(industry);
+    const { peRatio: pe, pbRatio: pb } = stock;
+    const buckets: MedianEntries[] = [universe];
+    if (industry) buckets.push(bucketFor(industries, industry));
+    if (group) buckets.push(bucketFor(groups, group));
+    for (const bucket of buckets) {
+      if (pe !== null && pe > 0) bucket.pe.push(pe);
+      if (pb !== null && pb > 0) bucket.pb.push(pb);
+    }
+  }
+
+  const asRecord = (store: Map<string, MedianEntries>) => {
+    const out: Record<string, SectorMedian> = {};
+    for (const [name, entries] of store) out[name] = medianBucket(entries);
+    return out;
+  };
+  return {
+    byIndustry: asRecord(industries),
+    byGroup: asRecord(groups),
+    universe: medianBucket(universe),
+  };
+}
+
+/**
+ * [median, basis text] for one metric: industry, else group, else universe.
+ *
+ * A bucket is used only when at least MIN_MEDIAN_SAMPLE companies in it report
+ * the metric. The basis text always names which bucket was used and why, so a
+ * fallback can never be mistaken for a true sector comparison. Counterpart of
+ * valuation_yardstick().
+ */
+export function valuationYardstick(
+  medians: SectorMedians,
+  sector: string | null | undefined,
+  metric: 'peRatio' | 'pbRatio',
+): [number | null, string] {
+  const countKey = MEDIAN_COUNT_KEYS[metric];
+  const industry = (sector || '').trim();
+  const group = sectorGroup(industry);
+  const industryBucket = ownEntry(medians.byIndustry, industry);
+  const groupBucket = group === null ? undefined : ownEntry(medians.byGroup, group);
+
+  const value = industryBucket ? industryBucket[metric] : null;
+  const count = industryBucket ? industryBucket[countKey] : 0;
+  if (value !== null && count >= MIN_MEDIAN_SAMPLE) {
+    return [value, `${industry} median ${fmt1(value)} (n=${count})`];
+  }
+
+  const groupValue = groupBucket ? groupBucket[metric] : null;
+  const groupCount = groupBucket ? groupBucket[countKey] : 0;
+  if (groupValue !== null && groupCount >= MIN_MEDIAN_SAMPLE) {
+    return [groupValue, `${group} group median ${fmt1(groupValue)} (industry n=${count})`];
+  }
+
+  const universeValue = medians.universe[metric];
+  if (universeValue === null) {
+    return [null, `no ${MEDIAN_LABELS[metric]} yardstick (the file has no positive ${MEDIAN_LABELS[metric]})`];
+  }
+  return [universeValue, `universe median ${fmt1(universeValue)} (group n=${groupCount})`];
+}
+
+const FILTER_FIELD_SET = new Set<string>(ALLOWED_FILTER_FIELDS);
+const FILTER_OP_SET = new Set<string>(ALLOWED_FILTER_OPERATORS);
+
+/**
+ * Validate a custom-filter list. Returns human-readable errors, never throws,
+ * including for malformed entries from an imported config file. Counterpart of
+ * validate_custom_filters().
+ */
+export function validateCustomFilters(filters: readonly unknown[] | undefined): string[] {
+  const errors: string[] = [];
+  for (const raw of filters || []) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      errors.push(`Invalid custom filter: ${jsonText(raw)}`);
+      continue;
+    }
+    const { field, operator, value } = raw as Record<string, unknown>;
+    if (typeof field !== 'string' || !FILTER_FIELD_SET.has(field)) {
+      errors.push(`Invalid custom filter field: ${jsonText(field)}`);
+    } else if (typeof operator !== 'string' || !FILTER_OP_SET.has(operator)) {
+      errors.push(`Invalid custom filter operator: ${jsonText(operator)}`);
+    } else if (parseStrictDecimal(value) === null) {
+      errors.push(`Invalid numeric value in custom filter for ${field}: ${jsonText(value)}`);
+    }
+  }
+  return errors;
+}
+
+/** Trim, upper-case and drop blank symbols. Counterpart of normalise_symbols(). */
+export function normaliseSymbols(symbols: readonly unknown[] | undefined): string[] {
+  return (symbols || []).map((s) => String(s).trim().toUpperCase()).filter(Boolean);
+}
+
+// ---------------------------------------------------------------------------
+// Saved configuration (shared file format with python/engine.py)
+// ---------------------------------------------------------------------------
+
+/**
+ * Documented range of every numeric setting. Counterpart of CONFIG_LIMITS in
+ * python/engine.py (the parity suite asserts they are equal). The config panel
+ * clamps its inputs to these bounds; imported files are validated against them.
+ */
+export const CONFIG_LIMITS: Record<string, { min: number; max: number }> = {
+  top_n: { min: 1, max: 100 },
+  minimum_total_score: { min: 0, max: 100 },
+  fundamentals_stale_after_days: { min: 1, max: 365 },
+  minMarketCapCr: { min: 0, max: 100000 },
+  minSalesGrowthPct: { min: -100, max: 100 },
+  minProfitGrowthPct: { min: -100, max: 100 },
+  minRocePct: { min: 0, max: 100 },
+  minRoePct: { min: 0, max: 100 },
+  maxDebtToEquity: { min: 0, max: 10 },
+  minInterestCoverage: { min: 0, max: 100 },
+  minPromoterHoldingPct: { min: 0, max: 100 },
+  maxPromoterPledgePct: { min: 0, max: 100 },
+  minPeRatio: { min: 0, max: 200 },
+  maxPeRatio: { min: 0, max: 500 },
+  maxPbRatio: { min: 0, max: 100 },
+  minDividendYieldPct: { min: 0, max: 30 },
+  minimum_fundamental_coverage: { min: 0, max: 100 },
+};
+const WHOLE_NUMBER_SETTINGS = new Set(['top_n']);
+const BOOLEAN_SETTINGS = new Set([
+  'enable_technical_confirmation', 'requirePositiveOcf', 'strict_screen',
+]);
+const UNIVERSE_MODES = ['nifty100', 'custom'];
+const CONFIG_SECTIONS = ['schema_version', 'app', 'screening'];
+export const CONFIG_FILENAME = 'config.json';
+
+/** The saved-configuration file both engines read: data-store/config/config.json. */
+export interface ConfigDocument {
+  schema_version: string;
+  app: AppConfig;
+  screening: ScreeningConfig;
+}
+
+function pickKeys<T extends object>(source: T, template: T): T {
+  const out = {} as T;
+  for (const key of Object.keys(template) as (keyof T)[]) out[key] = source[key];
+  return out;
+}
+
+/** Counterpart of config_document(). */
+export function buildConfigDocument(app: AppConfig, screening: ScreeningConfig): ConfigDocument {
+  return {
+    schema_version: SCHEMA_VERSION,
+    app: pickKeys(app, DEFAULT_APP_CONFIG),
+    screening: pickKeys(screening, DEFAULT_SCREENING_CONFIG),
+  };
+}
+
+/** Why `value` is unacceptable for `key`, or null. Counterpart of _setting_error(). */
+function settingError(section: string, key: string, value: unknown): string | null {
+  const label = `${section}.${key}`;
+  const limits = Object.prototype.hasOwnProperty.call(CONFIG_LIMITS, key) ? CONFIG_LIMITS[key] : undefined;
+  if (limits) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return `${label} must be a number`;
+    if (WHOLE_NUMBER_SETTINGS.has(key) && !Number.isInteger(value)) return `${label} must be a whole number`;
+    if (value < limits.min || value > limits.max) {
+      return `${label} must be between ${limits.min} and ${limits.max}`;
+    }
+    return null;
+  }
+  if (BOOLEAN_SETTINGS.has(key)) {
+    return typeof value === 'boolean' ? null : `${label} must be true or false`;
+  }
+  if (key === 'universe_mode') {
+    return typeof value === 'string' && UNIVERSE_MODES.includes(value)
+      ? null
+      : `${label} must be one of: ${UNIVERSE_MODES.join(', ')}`;
+  }
+  if (key === 'custom_symbols') {
+    return Array.isArray(value) && value.every((s) => typeof s === 'string')
+      ? null
+      : `${label} must be a list of symbols`;
+  }
+  if (key === 'custom_filters') {
+    if (!Array.isArray(value)) return `${label} must be a list`;
+    const problems = validateCustomFilters(value);
+    return problems.length ? problems.join('; ') : null;
+  }
+  return `Unknown ${section} setting: ${key}`;
+}
+
+/**
+ * Validate a saved configuration and merge it over the defaults. Counterpart
+ * of validate_config_document(): every key is optional, but unknown sections
+ * or keys, wrong types and out-of-range values are errors -- never silently
+ * clamped.
+ */
+export function validateConfigDocument(document: unknown): {
+  app: AppConfig;
+  screening: ScreeningConfig;
+  errors: string[];
+} {
+  const app: AppConfig = { ...DEFAULT_APP_CONFIG, custom_symbols: [], custom_filters: [] };
+  const screening: ScreeningConfig = { ...DEFAULT_SCREENING_CONFIG };
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+    return { app, screening, errors: ['Configuration must be a JSON object'] };
+  }
+  const doc = document as Record<string, unknown>;
+  // Keys are checked in code-point order: JavaScript lists integer-like keys
+  // first whatever the file order, so file order cannot be shared with Python.
+  const errors = Object.keys(doc)
+    .sort(compareCodePoints)
+    .filter((key) => !CONFIG_SECTIONS.includes(key))
+    .map((key) => `Unknown configuration section: ${key}`);
+  const version = 'schema_version' in doc ? doc.schema_version : SCHEMA_VERSION;
+  if (version !== SCHEMA_VERSION) {
+    errors.push(`Unsupported schema_version ${jsonText(version)} (expected ${SCHEMA_VERSION})`);
+  }
+  const sections: [string, Record<string, unknown>][] = [
+    ['app', app as unknown as Record<string, unknown>],
+    ['screening', screening as unknown as Record<string, unknown>],
+  ];
+  for (const [section, target] of sections) {
+    const values = section in doc ? doc[section] : {};
+    if (values === null || typeof values !== 'object' || Array.isArray(values)) {
+      errors.push(`${section} must be an object`);
+      continue;
+    }
+    const record = values as Record<string, unknown>;
+    for (const key of Object.keys(record).sort(compareCodePoints)) {
+      const value = record[key];
+      if (!Object.prototype.hasOwnProperty.call(target, key)) {
+        errors.push(`Unknown ${section} setting: ${key}`);
+        continue;
+      }
+      const problem = settingError(section, key, value);
+      if (problem) errors.push(problem);
+      else if (key === 'custom_symbols') target[key] = normaliseSymbols(value as unknown[]);
+      else if (key === 'custom_filters') target[key] = (value as object[]).map((f) => ({ ...f }));
+      else target[key] = value;
+    }
+  }
+  // A minimum P/E above the maximum rejects every company, so it is a config
+  // error rather than a screen that quietly returns nothing.
+  if (screening.minPeRatio > screening.maxPeRatio) {
+    errors.push(
+      `screening.minPeRatio (${screening.minPeRatio}) must not be above screening.maxPeRatio (${screening.maxPeRatio})`,
+    );
+  }
+  return { app, screening, errors };
+}
+
+// ---------------------------------------------------------------------------
+// Technical indicators and price history
+// ---------------------------------------------------------------------------
+
+export const SESSIONS_52_WEEK = 252;
+export const SESSIONS_6_MONTH = 126;
+/** Nifty 50, the relative-strength benchmark. Counterpart of BENCHMARK_SYMBOL. */
+export const BENCHMARK_SYMBOL = '^NSEI';
+/**
+ * Open, High and Low were added so true range, ATR and ADX can be computed
+ * honestly instead of being approximated from closes. Readers treat all three as
+ * optional: a four-column Date,Ticker,Close,Volume file written by an earlier
+ * version still loads, and the indicators that need a high and a low report
+ * themselves unavailable on it rather than substituting the close.
+ */
+export const PRICE_HISTORY_COLUMNS = [
+  'Date', 'Ticker', 'Open', 'High', 'Low', 'Close', 'Volume',
+] as const;
+const ISO_DATE_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/**
+ * YYYY-MM-DD naming a real Gregorian date. Counterpart of _is_real_date(); plain
+ * arithmetic, because Date maps years 0-99 onto 1900-1999.
+ */
+function isRealDate(text: string): boolean {
+  if (!ISO_DATE_RE.test(text)) return false;
+  const year = Number(text.slice(0, 4));
+  const month = Number(text.slice(5, 7));
+  const day = Number(text.slice(8));
+  if (month < 1 || month > 12) return false;
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  return day >= 1 && day <= MONTH_DAYS[month - 1] + (month === 2 && leap ? 1 : 0);
+}
+const TECHNICAL_KEYS: (keyof TechnicalAvailability)[] = [
+  'sma50', 'sma200', 'smaCross', 'relativeStrength6M', 'high52Week',
+];
+
+export function emptyTechnicals(source = 'unavailable'): TechnicalIndicators {
+  return {
+    currentPrice: null,
+    sma50: null,
+    sma200: null,
+    isAboveSma50: null,
+    isAboveSma200: null,
+    isSma50Above200: null,
+    relativeStrength6M: null,
+    volumeRatio20D: null,
+    distFrom52WHighPct: null,
+    volatility30D: null,
+    high52Week: null,
+    source,
+    as_of: null,
+    history_rows: 0,
+    available: {
+      sma50: false, sma200: false, smaCross: false,
+      relativeStrength6M: false, high52Week: false,
+    },
+    data_status: 'UNAVAILABLE',
+  };
+}
+
+type MaybeNumber = number | null | undefined;
+
+function finiteOrNaN(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : NaN;
+}
+
+/** Right-align values to `length` entries so the latest sessions line up. */
+function alignToEnd<T>(values: readonly T[], length: number, pad: T): T[] {
+  const out = new Array<T>(length).fill(pad);
+  const take = Math.min(length, values.length);
+  for (let offset = 1; offset <= take; offset += 1) {
+    out[length - offset] = values[values.length - offset];
+  }
+  return out;
+}
+
+/** Left-to-right sum divided by n. Counterpart of _sequential_mean(); see there for why. */
+function sequentialMean(values: readonly number[]): number {
+  let total = 0;
+  for (const value of values) total += value;
+  return total / values.length;
+}
+
+/**
+ * Compute indicators from position-aligned series. Counterpart of
+ * compute_technical_indicators(): benchmark[i] and volumes[i] belong to the
+ * session of prices[i] (null/NaN where absent), and series of different lengths
+ * are aligned at their most recent end. A 200-session maximum is NOT a 52-week
+ * high: with fewer than 252 valid sessions high52Week stays null and scores zero.
+ */
+export function computeTechnicalIndicators(
+  prices: readonly MaybeNumber[],
+  benchmark?: readonly MaybeNumber[] | null,
+  volumes?: readonly MaybeNumber[] | null,
+  source = 'injected',
+  dates?: readonly string[] | null,
+  highs?: readonly MaybeNumber[] | null,
+  lows?: readonly MaybeNumber[] | null,
+): TechnicalIndicators {
+  const tech = emptyTechnicals(source);
+  const closes = (prices || []).map(finiteOrNaN);
+  const n = closes.length;
+  const valid: number[] = [];
+  closes.forEach((close, i) => {
+    if (!Number.isNaN(close)) valid.push(i);
+  });
+  if (valid.length === 0) return tech;
+
+  const series = valid.map((i) => closes[i]);
+  const current = series[series.length - 1];
+  tech.history_rows = series.length;
+  tech.currentPrice = current;
+  if (dates) tech.as_of = alignToEnd<string | null>(dates, n, null)[valid[valid.length - 1]];
+
+  if (series.length >= 50) {
+    tech.sma50 = sequentialMean(series.slice(-50));
+    tech.isAboveSma50 = current > tech.sma50;
+    tech.available.sma50 = true;
+  }
+  if (series.length >= 200) {
+    const sma200 = sequentialMean(series.slice(-200));
+    tech.sma200 = sma200;
+    tech.isAboveSma200 = current > sma200;
+    tech.available.sma200 = true;
+    if (tech.sma50 !== null) {
+      tech.isSma50Above200 = tech.sma50 > sma200;
+      tech.available.smaCross = true;
+    }
+  }
+  if (series.length >= SESSIONS_52_WEEK) {
+    const high = Math.max(...series.slice(-SESSIONS_52_WEEK));
+    tech.high52Week = high;
+    if (high > 0) {
+      tech.distFrom52WHighPct = ((current - high) / high) * 100;
+      tech.available.high52Week = true;
+    }
+  }
+
+  // Annualised volatility of up to the last 30 daily returns (needs 20).
+  const returns: number[] = [];
+  for (let i = Math.max(1, series.length - 30); i < series.length; i += 1) {
+    if (series[i - 1] !== 0) returns.push(series[i] / series[i - 1] - 1);
+  }
+  if (returns.length >= 20) {
+    const mean = sequentialMean(returns);
+    let squares = 0;
+    for (const value of returns) {
+      const deviation = value - mean;
+      squares += deviation * deviation;
+    }
+    tech.volatility30D = Math.sqrt(squares / (returns.length - 1)) * Math.sqrt(SESSIONS_52_WEEK) * 100;
+  }
+
+  // Latest session's volume against the mean of the last 20 sessions that
+  // report volume, up to and including it; a blank latest volume gives no ratio.
+  if (volumes) {
+    const aligned = alignToEnd(volumes.map(finiteOrNaN), n, NaN);
+    const last = valid[valid.length - 1];
+    const latest = aligned[last];
+    const window = aligned.slice(0, last + 1).filter((v) => !Number.isNaN(v)).slice(-20);
+    if (!Number.isNaN(latest) && window.length >= 20) {
+      const average = sequentialMean(window);
+      if (average > 0) tech.volumeRatio20D = latest / average;
+    }
+  }
+
+  if (benchmark) {
+    const bench = alignToEnd(benchmark.map(finiteOrNaN), n, NaN);
+    const pairs = valid.filter((i) => !Number.isNaN(bench[i])).map((i) => [closes[i], bench[i]]);
+    if (pairs.length >= SESSIONS_6_MONTH) {
+      const [pastStock, pastBench] = pairs[pairs.length - SESSIONS_6_MONTH];
+      const [currStock, currBench] = pairs[pairs.length - 1];
+      if (pastStock !== 0 && pastBench !== 0) {
+        const stockRet = (currStock - pastStock) / pastStock;
+        const benchRet = (currBench - pastBench) / pastBench;
+        tech.relativeStrength6M = (stockRet - benchRet) * 100;
+        tech.available.relativeStrength6M = true;
+      }
+    }
+  }
+
+  const availableCount = TECHNICAL_KEYS.filter((k) => tech.available[k]).length;
+  tech.data_status =
+    availableCount === TECHNICAL_KEYS.length ? 'COMPLETE' : availableCount > 0 ? 'PARTIAL' : 'UNAVAILABLE';
+  return tech;
+}
+
+/**
+ * Counterpart of calculate_technical_score(). A null `tech` means the run had
+ * no price history at all -- a fact about the run, shown once, so it raises no
+ * per-stock warning. An UNAVAILABLE record means history was loaded but this
+ * stock is not in it, and that is flagged.
+ */
+export function calculateTechnicalScore(
+  tech: TechnicalIndicators | null | undefined,
+  isEnabled: boolean,
+): TechnicalScoreResult {
+  if (!isEnabled) {
+    return { score: null, maxScore: 100, breakdown: ['Technical screening disabled'], warnings: [] };
+  }
+  if (!tech) {
+    return { score: null, maxScore: 100, breakdown: ['No price history loaded'], warnings: [] };
+  }
+  if (tech.data_status === 'UNAVAILABLE') {
+    const rows = tech.history_rows || 0;
+    return {
+      score: null,
+      maxScore: 100,
+      breakdown: [
+        rows > 0
+          ? `Only ${rows} sessions of price history; indicators need at least 50`
+          : 'Technical data unavailable',
+      ],
+      warnings: ['Technical Data Missing'],
+    };
+  }
+
+  const avail = tech.available;
+  let score = 0;
+  const breakdown: string[] = [];
+  const warnings: string[] = [];
+
+  if (avail.sma200 && tech.isAboveSma200) { score += 30; breakdown.push('Price > 200 SMA (+30)'); }
+  if (avail.sma50 && tech.isAboveSma50) { score += 20; breakdown.push('Price > 50 SMA (+20)'); }
+  if (avail.smaCross && tech.isSma50Above200) { score += 20; breakdown.push('50 SMA > 200 SMA (+20)'); }
+  if (avail.relativeStrength6M && tech.relativeStrength6M !== null && tech.relativeStrength6M > 0) {
+    score += 15;
+    breakdown.push('Positive 6M RS vs benchmark (+15)');
+  }
+  if (avail.high52Week) {
+    if (tech.distFrom52WHighPct !== null && tech.distFrom52WHighPct > -15) {
+      score += 15;
+      breakdown.push('Within 15% of 52W high (+15)');
+    }
+  } else {
+    breakdown.push(`52W high unavailable (needs ${SESSIONS_52_WEEK} sessions) (+0)`);
+  }
+
+  if (tech.data_status !== 'COMPLETE') {
+    const missing = TECHNICAL_KEYS.filter((k) => !avail[k]);
+    warnings.push(`Technical Data Partial (${missing.join(', ')})`);
+  }
+
+  return { score: round1(clamp(score, 0, 100)), maxScore: 100, breakdown, warnings };
+}
+
+/**
+ * One ticker's sessions, sorted by date. opens/highs/lows are null on every
+ * session of a file written before the OHLCV widening.
+ */
+export interface PriceSeries {
+  dates: string[];
+  closes: number[];
+  volumes: (number | null)[];
+  opens: (number | null)[];
+  highs: (number | null)[];
+  lows: (number | null)[];
+}
+
+/** Ticker -> sessions. The benchmark is stored under BENCHMARK_SYMBOL. */
+export type PriceHistory = Record<string, PriceSeries>;
+
+function ownEntry<T>(record: Record<string, T>, key: string): T | undefined {
+  return Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
+}
+
+/**
+ * Parse Date,Ticker,Close[,Volume] text into per-ticker series. Counterpart of
+ * parse_price_history_csv(): headers are case-insensitive ("Symbol" is accepted
+ * for Ticker), rows with a malformed date, blank ticker or non-numeric close
+ * are skipped and counted, and a later row for the same ticker and date wins.
+ * Throws when a required column is missing.
+ */
+export function parsePriceHistoryCsv(text: string): { history: PriceHistory; skipped: number } {
+  const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  // One rule for both engines: \r\n and a lone \r both end a line, and only
+  // commas separate fields -- Papa would otherwise sniff both.
+  const rows = (Papa.parse<string[]>(body.replace(/\r\n?/g, '\n'), {
+    header: false,
+    delimiter: ',',
+    newline: '\n',
+  }).data || []) as string[][];
+  const names = (rows[0] || []).map((cell) => String(cell).trim().toLowerCase());
+  const find = (...aliases: string[]): number | null => {
+    for (const alias of aliases) {
+      const index = names.indexOf(alias);
+      if (index !== -1) return index;
+    }
+    return null;
+  };
+  const dateCol = find('date');
+  const tickerCol = find('ticker', 'symbol');
+  const closeCol = find('close');
+  const volumeCol = find('volume');
+  // Optional: a file written before the OHLCV widening has none of these, and
+  // the indicators that need a high and a low then report unavailable.
+  const openCol = find('open');
+  const highCol = find('high');
+  const lowCol = find('low');
+  if (dateCol === null || tickerCol === null || closeCol === null) {
+    throw new Error('Price history CSV needs Date, Ticker and Close columns (Volume is optional)');
+  }
+
+  type Point = [number, number | null, number | null, number | null, number | null];
+  const pointsByTicker = new Map<string, Map<string, Point>>();
+  let skipped = 0;
+  for (const row of rows.slice(1)) {
+    if (row.join('').trim() === '') continue;
+    const cell = (index: number | null) => (index !== null && index < row.length ? String(row[index]) : '');
+    const date = cell(dateCol).trim();
+    const ticker = cell(tickerCol).trim().toUpperCase();
+    const close = parseStrictDecimal(cell(closeCol));
+    if (!isRealDate(date) || !ticker || close === null) {
+      skipped += 1;
+      continue;
+    }
+    if (!pointsByTicker.has(ticker)) pointsByTicker.set(ticker, new Map());
+    pointsByTicker.get(ticker)!.set(date, [
+      close,
+      parseStrictDecimal(cell(volumeCol)),
+      parseStrictDecimal(cell(openCol)),
+      parseStrictDecimal(cell(highCol)),
+      parseStrictDecimal(cell(lowCol)),
+    ]);
+  }
+
+  const history: PriceHistory = {};
+  for (const [ticker, points] of pointsByTicker) {
+    const dates = [...points.keys()].sort(compareCodePoints);
+    history[ticker] = {
+      dates,
+      closes: dates.map((d) => points.get(d)![0]),
+      volumes: dates.map((d) => points.get(d)![1]),
+      opens: dates.map((d) => points.get(d)![2]),
+      highs: dates.map((d) => points.get(d)![3]),
+      lows: dates.map((d) => points.get(d)![4]),
+    };
+  }
+  return { history, skipped };
+}
+
+/**
+ * Indicators for each ticker from a parsed price history. Counterpart of
+ * technicals_from_history(): the benchmark is aligned to each stock's own
+ * dates, so relative strength compares sessions where both actually traded.
+ */
+export function technicalsFromHistory(
+  history: PriceHistory,
+  tickers: readonly string[],
+): Record<string, TechnicalIndicators> {
+  const bench = ownEntry(history, BENCHMARK_SYMBOL);
+  const benchByDate = bench ? new Map(bench.dates.map((d, i) => [d, bench.closes[i]])) : null;
+  const out: Record<string, TechnicalIndicators> = {};
+  for (const ticker of tickers) {
+    const entry = ownEntry(history, ticker);
+    if (!entry) {
+      out[ticker] = emptyTechnicals('not in price history');
+      continue;
+    }
+    const benchAligned = benchByDate ? entry.dates.map((d) => benchByDate.get(d) ?? null) : null;
+    out[ticker] = computeTechnicalIndicators(
+      entry.closes, benchAligned, entry.volumes, 'price history', entry.dates,
+      entry.highs, entry.lows,
+    );
+  }
+  return out;
+}
+
+/** Headline facts about a loaded price history, for status lines. */
+export function describePriceHistory(history: PriceHistory): {
+  tickers: number;
+  asOf: string | null;
+  hasBenchmark: boolean;
+} {
+  let asOf: string | null = null;
+  let tickers = 0;
+  for (const [ticker, series] of Object.entries(history)) {
+    if (ticker !== BENCHMARK_SYMBOL) tickers += 1;
+    const last = series.dates[series.dates.length - 1];
+    if (last && (asOf === null || compareCodePoints(last, asOf) > 0)) asOf = last;
+  }
+  return { tickers, asOf, hasBenchmark: ownEntry(history, BENCHMARK_SYMBOL) !== undefined };
+}
+
+// ---------------------------------------------------------------------------
+// Row parsing and deduplication
+// ---------------------------------------------------------------------------
+
+function textOf(row: ScreenerRow, col: string | undefined, fallback = ''): string {
+  if (!col) return fallback;
+  const raw = row[col];
+  if (raw === null || raw === undefined) return fallback;
+  const text = String(raw).trim();
+  return text === '' ? fallback : text;
+}
+
+export function parseScreenerRows(
+  rows: ScreenerRow[],
+  mapping: Record<string, string>,
+): CleanedStock[] {
+  return rows.map((row, i) => {
+    const num = (field: string) =>
+      mapping[field] ? cleanNumeric(row[mapping[field]], FIELD_UNITS[field] || 'plain') : null;
+    return {
+      id: `stock-${i}`,
+      name: textOf(row, mapping.name, 'Unknown'),
+      ticker: textOf(row, mapping.ticker).toUpperCase(),
+      bseCode: textOf(row, mapping.bseCode).toUpperCase() || null,
+      sector: textOf(row, mapping.sector),
+      currentPrice: num('currentPrice'),
+      marketCap: num('marketCap'),
+      salesGrowth: num('salesGrowth'),
+      profitGrowth: num('profitGrowth'),
+      roce: num('roce'),
+      roe: num('roe'),
+      debtToEquity: num('debtToEquity'),
+      interestCoverage: num('interestCoverage'),
+      operatingCashFlow: num('operatingCashFlow'),
+      promoterHolding: num('promoterHolding'),
+      promoterPledge: num('promoterPledge'),
+      peRatio: num('peRatio'),
+      pbRatio: num('pbRatio'),
+      dividendYield: num('dividendYield'),
+      sales: num('sales'),
+      returnOnAssets: num('returnOnAssets'),
+      grossNpa: num('grossNpa'),
+      netNpa: num('netNpa'),
+      capitalAdequacy: num('capitalAdequacy'),
+      casa: num('casa'),
+      financingMargin: num('financingMargin'),
+      technicals: null,
+      rawRow: row,
+    };
+  });
+}
+
+/**
+ * Numeric fields compared between two rows for the same company. Any
+ * disagreement means the export contradicts itself about that company.
+ */
+const DEDUPE_COMPARED_FIELDS = [
+  'currentPrice', 'marketCap', 'salesGrowth', 'profitGrowth', 'roce', 'roe',
+  'debtToEquity', 'interestCoverage', 'operatingCashFlow', 'promoterHolding',
+  'promoterPledge', 'peRatio', 'pbRatio', 'dividendYield', 'sales',
+  'returnOnAssets', 'grossNpa', 'netNpa', 'capitalAdequacy', 'casa',
+  'financingMargin',
+] as const;
+
+/**
+ * True when two rows for one company report different numbers. cleanNumeric()
+ * never yields NaN, so plain inequality is safe. Counterpart of _rows_disagree().
+ */
+function rowsDisagree(first: CleanedStock, second: CleanedStock): boolean {
+  const a = first as unknown as Record<string, unknown>;
+  const b = second as unknown as Record<string, unknown>;
+  for (const field of DEDUPE_COMPARED_FIELDS) {
+    if (a[field] !== b[field]) return true;
+  }
+  return false;
+}
+
+/**
+ * Counterpart of dedupe_stocks(): ticker, then BSE code, then normalised name.
+ *
+ * The first row seen survives. When a dropped duplicate reports different
+ * numbers from the survivor, the survivor is marked duplicateConflict, which
+ * hardRedFlags() turns into a rejection: with two disagreeing rows for one
+ * company there is no way to tell which is real.
+ */
+export function dedupeStocks(stocks: CleanedStock[]): {
+  unique: CleanedStock[];
+  duplicatesRemoved: number;
+} {
+  const byTicker = new Map<string, CleanedStock>();
+  const byBse = new Map<string, CleanedStock>();
+  const byName = new Map<string, CleanedStock>();
+  const unique: CleanedStock[] = [];
+  let duplicatesRemoved = 0;
+
+  for (const stock of stocks) {
+    const ticker = (stock.ticker || '').toUpperCase();
+    const bse = (stock.bseCode || '').toUpperCase();
+    const rawName = stock.name || '';
+    const nameKey = rawName.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const isUnknown = !nameKey || rawName === 'Unknown';
+
+    // Checked in the same order as before, so which rows count as duplicates
+    // is unchanged; only the conflict marking is new.
+    let existing: CleanedStock | undefined;
+    if (ticker && byTicker.has(ticker)) existing = byTicker.get(ticker);
+    else if (bse && byBse.has(bse)) existing = byBse.get(bse);
+    else if (!isUnknown && byName.has(nameKey)) existing = byName.get(nameKey);
+
+    if (existing !== undefined) {
+      duplicatesRemoved += 1;
+      if (rowsDisagree(existing, stock)) existing.duplicateConflict = true;
+      continue;
+    }
+    if (ticker) byTicker.set(ticker, stock);
+    if (bse) byBse.set(bse, stock);
+    if (!isUnknown) byName.set(nameKey, stock);
+    unique.push(stock);
+  }
+  return { unique, duplicatesRemoved };
+}
+
+// ---------------------------------------------------------------------------
+// Scoring
+// ---------------------------------------------------------------------------
+
+const COVERAGE_FIELDS_BASE = [
+  'marketCap', 'salesGrowth', 'profitGrowth', 'roce', 'roe',
+  'operatingCashFlow', 'peRatio', 'pbRatio', 'promoterHolding',
+] as const;
+const COVERAGE_FIELDS_NON_FINANCIAL = ['debtToEquity', 'interestCoverage'] as const;
+
+// --- Financial-company metrics ---------------------------------------------
+/**
+ * Banks and NBFCs are scored on their own model rather than excluded, but only
+ * when the export actually carries the metrics that model needs. Without them a
+ * lender is reported as "not scored" rather than scored wrongly on ratios that
+ * do not describe it.
+ *
+ * CASA and financing margin are deliberately NOT scored, only reported: an NBFC
+ * has no CASA at all, so awarding points for it would penalise every NBFC for
+ * being an NBFC. Counterpart of the same constants in python/engine.py.
+ */
+export const BANK_REQUIRED_FIELDS = [
+  'returnOnAssets', 'grossNpa', 'netNpa', 'capitalAdequacy',
+] as const;
+export const BANK_OPTIONAL_FIELDS = ['casa', 'financingMargin'] as const;
+export const BANK_FIELD_LABELS: Record<string, string> = {
+  returnOnAssets: 'Return on assets',
+  grossNpa: 'Gross NPA %',
+  netNpa: 'Net NPA %',
+  capitalAdequacy: 'Capital adequacy ratio',
+  casa: 'CASA %',
+  financingMargin: 'Financing margin %',
+};
+
+/**
+ * Required financial-company metrics this row does not carry, in order.
+ * Non-empty means the company cannot be scored on the financial model.
+ * Counterpart of bank_metric_gaps().
+ */
+export function bankMetricGaps(stock: CleanedStock): string[] {
+  const record = stock as unknown as Record<string, unknown>;
+  return BANK_REQUIRED_FIELDS.filter(
+    (field) => record[field] === null || record[field] === undefined,
+  ).map((field) => BANK_FIELD_LABELS[field]);
+}
+
+/**
+ * Reasons a company's numbers cannot be trusted, in a fixed order.
+ *
+ * A non-empty list rejects the company outright and stops it being scored.
+ * These are not "unattractive" findings -- an expensive stock still gets a
+ * score -- they are "this row is not usable as evidence". Counterpart of
+ * hard_red_flags().
+ */
+export function hardRedFlags(
+  stock: CleanedStock,
+  config: ScreeningConfig,
+  isFinancial: boolean,
+  coverage: number,
+): string[] {
+  const flags: string[] = [];
+  const {
+    marketCap: mcap, promoterHolding: ph, promoterPledge: pp,
+    pbRatio: pb, debtToEquity: de, operatingCashFlow: ocf, sales,
+  } = stock;
+
+  // 1. Negative net worth. P/B and D/E change sign, not magnitude, so a
+  //    "cheap" P/B of -0.3 is insolvency rather than a bargain.
+  if ((pb !== null && pb < 0) || (de !== null && de < 0)) flags.push('Negative net worth');
+  // 2. Pledged promoter stake above the configured limit.
+  if (pp !== null && pp > config.maxPromoterPledgePct) flags.push('High Promoter Pledge');
+  // 3. Operating cash flow, for NON-FINANCIAL companies only. For a bank or
+  //    NBFC a negative OCF is ordinary -- a growing loan book consumes cash --
+  //    so applying this rule to lenders would reject the healthy ones.
+  if (config.requirePositiveOcf && !isFinancial) {
+    if (ocf === null) flags.push('OCF missing');
+    else if (ocf <= 0) flags.push('Negative OCF');
+  }
+  // 4. Too little of the row is present to score it honestly.
+  if (coverage < config.minimum_fundamental_coverage) {
+    flags.push(`Insufficient Data (${fmt1(coverage)}%)`);
+  }
+  // 5. Revenue of zero or less: every growth rate and margin divides by it.
+  //    Checked only when the export carries an absolute revenue column.
+  if (sales !== null && sales <= 0) flags.push('Non-positive Sales');
+  // 6. Impossible shareholding percentages mean the row itself is corrupt.
+  if (ph !== null && (ph < 0 || ph > 100)) flags.push('Impossible Promoter Holding');
+  if (pp !== null && (pp < 0 || pp > 100)) flags.push('Impossible Promoter Pledge');
+  // 7. A company cannot be worth nothing and still be listed.
+  if (mcap !== null && mcap <= 0) flags.push('Non-positive Market Cap');
+  // 8. Internally contradictory: a promoter cannot pledge a stake it does not
+  //    hold. This replaces a "P/B < 0 while book value > 0" check, which would
+  //    need a book-value column the Screener.in export does not carry.
+  if (pp !== null && pp > 0 && ph !== null && ph === 0) {
+    flags.push('Pledge without promoter holding');
+  }
+  // 9. Two rows for the same company disagreed on their numbers, so there is
+  //    no way to tell which one is real. Set by dedupeStocks().
+  if (stock.duplicateConflict) flags.push('Conflicting duplicate rows');
+  return flags;
+}
+
+/**
+ * Coverage for a financial company counts the metrics its own model uses,
+ * instead of the leverage and interest-cover columns that do not describe one.
+ */
+const COVERAGE_FIELDS_FINANCIAL: readonly string[] = [...BANK_REQUIRED_FIELDS];
+
+/** The five sub-scores, capped 30/25/20/15/10. */
+export interface ScoreParts {
+  financialQuality: number;
+  growth: number;
+  balanceSheetSafety: number;
+  valuation: number;
+  governance: number;
+}
+
+const ZERO_PARTS: ScoreParts = {
+  financialQuality: 0, growth: 0, balanceSheetSafety: 0, valuation: 0, governance: 0,
+};
+
+/** One scored line: "ROCE 25.0% (+15.0)". Counterpart of _award(). */
+function award(label: string, value: number, unit: string, awarded: number): string {
+  return `${label} ${fmt1(value)}${unit} (+${fmt1(awarded)})`;
+}
+
+/**
+ * Sector-relative valuation, worth 10 for P/E and 5 for P/B.
+ *
+ * A ratio of half the yardstick earns full marks, the yardstick itself earns
+ * half, and half again above it earns nothing. Judging against the sector is
+ * the point: a P/E of 30 is dear for a bank and cheap for a fast-growing
+ * software company. Counterpart of _valuation_points().
+ */
+function valuationPoints(
+  stock: CleanedStock,
+  medians: SectorMedians,
+  lines: string[],
+): number {
+  let total = 0;
+  const metrics: [('peRatio' | 'pbRatio'), string, number][] = [
+    ['peRatio', 'P/E', 10],
+    ['pbRatio', 'P/B', 5],
+  ];
+  for (const [metric, label, cap] of metrics) {
+    const value = stock[metric];
+    const [yardstick, basis] = valuationYardstick(medians, stock.sector, metric);
+    if (value === null) {
+      lines.push(`${label} missing, so no valuation points (+0.0)`);
+      continue;
+    }
+    if (value <= 0) {
+      lines.push(`${label} ${fmt1(value)} is not meaningful, so no valuation points (+0.0)`);
+      continue;
+    }
+    if (yardstick === null || yardstick <= 0) {
+      lines.push(`${label} ${fmt1(value)}: ${basis} (+0.0)`);
+      continue;
+    }
+    const awarded = clamp(cap * (1.5 - value / yardstick), 0, cap);
+    total += awarded;
+    lines.push(`${label} ${fmt1(value)} vs ${basis} (+${fmt1(awarded)})`);
+  }
+  return total;
+}
+
+/** Growth, worth 25. Shared by both scoring models. Counterpart of _growth_points(). */
+function growthPoints(stock: CleanedStock, lines: string[]): number {
+  let total = 0;
+  const metrics: [('salesGrowth' | 'profitGrowth'), string][] = [
+    ['salesGrowth', 'Sales growth'],
+    ['profitGrowth', 'Profit growth'],
+  ];
+  for (const [metric, label] of metrics) {
+    const value = stock[metric];
+    if (value === null) {
+      lines.push(`${label} missing (+0.0)`);
+    } else if (value <= 0) {
+      lines.push(`${label} ${fmt1(value)}% (+0.0)`);
+    } else {
+      const awarded = clamp((value / 15) * 12.5, 0, 12.5);
+      total += awarded;
+      lines.push(award(label, value, '%', awarded));
+    }
+  }
+  return clamp(total, 0, 25);
+}
+
+/** Governance, worth 10. Shared by both models. Counterpart of _governance_points(). */
+function governancePoints(stock: CleanedStock, lines: string[]): number {
+  let total = 0;
+  const ph = stock.promoterHolding;
+  const pp = stock.promoterPledge;
+  if (ph !== null && ph > 0) {
+    const awarded = clamp((ph / 75) * 5, 0, 5);
+    total += awarded;
+    lines.push(award('Promoter holding', ph, '%', awarded));
+  } else {
+    lines.push('Promoter holding missing (+0.0)');
+  }
+  if (pp !== null && pp >= 0) {
+    const awarded = pp === 0 ? 5 : clamp(5 - pp, 0, 5);
+    total += awarded;
+    lines.push(pp === 0 ? 'No promoter pledge (+5.0)' : award('Promoter pledge', pp, '%', awarded));
+  } else {
+    lines.push('Promoter pledge missing (+0.0)');
+  }
+  return clamp(total, 0, 10);
+}
+
+/**
+ * Graded sub-scores for a non-financial company: 30/25/20/15/10.
+ * Counterpart of score_general(). The sub-scores are built in the same source
+ * order as the Python dict literal, so scoreLines come out identically.
+ */
+export function scoreGeneral(
+  stock: CleanedStock,
+  config: ScreeningConfig,
+  medians: SectorMedians,
+): { parts: ScoreParts; lines: string[] } {
+  const lines: string[] = [];
+  let quality = 0;
+  const qualityMetrics: [('roce' | 'roe'), string][] = [['roce', 'ROCE'], ['roe', 'ROE']];
+  for (const [metric, label] of qualityMetrics) {
+    const value = stock[metric];
+    if (value !== null && value > 0) {
+      const awarded = clamp((value / 20) * 15, 0, 15);
+      quality += awarded;
+      lines.push(award(label, value, '%', awarded));
+    } else {
+      lines.push(`${label} missing or not positive (+0.0)`);
+    }
+  }
+
+  let safety = 0;
+  const de = stock.debtToEquity;
+  if (de !== null && de >= 0) {
+    const awarded = clamp(10 - de * 5, 0, 10);
+    safety += awarded;
+    lines.push(award('D/E', de, '', awarded));
+  } else {
+    lines.push('Debt/Equity missing (+0.0)');
+  }
+  const icr = stock.interestCoverage;
+  if (icr !== null && icr > 0) {
+    const awarded = clamp((icr / 5) * 10, 0, 10);
+    safety += awarded;
+    lines.push(award('Interest cover', icr, 'x', awarded));
+  } else {
+    lines.push('Interest coverage missing (+0.0)');
+  }
+
+  return {
+    parts: {
+      financialQuality: clamp(quality, 0, 30),
+      growth: growthPoints(stock, lines),
+      balanceSheetSafety: clamp(safety, 0, 20),
+      valuation: clamp(valuationPoints(stock, medians, lines), 0, 15),
+      governance: governancePoints(stock, lines),
+    },
+    lines,
+  };
+}
+
+/**
+ * Graded sub-scores for a bank or NBFC, on the same 30/25/20/15/10 scale.
+ *
+ * Quality is return on assets and return on equity; safety is capital adequacy
+ * and net NPA. A 1.5% return on assets is strong for a lender, capital adequacy
+ * is scored above the 9% regulatory floor, and net NPA is scored down from a
+ * clean book to 2%.
+ *
+ * CASA and financing margin are reported but score nothing -- an NBFC has no
+ * CASA at all, so paying points for it would penalise every NBFC for being one.
+ * Counterpart of score_financial().
+ */
+export function scoreFinancial(
+  stock: CleanedStock,
+  config: ScreeningConfig,
+  medians: SectorMedians,
+): { parts: ScoreParts; lines: string[] } {
+  const lines: string[] = [];
+  let quality = 0;
+  const roa = stock.returnOnAssets;
+  if (roa !== null && roa > 0) {
+    const awarded = clamp((roa / 1.5) * 15, 0, 15);
+    quality += awarded;
+    lines.push(award('Return on assets', roa, '%', awarded));
+  } else {
+    lines.push('Return on assets missing or not positive (+0.0)');
+  }
+  const roe = stock.roe;
+  if (roe !== null && roe > 0) {
+    const awarded = clamp((roe / 20) * 15, 0, 15);
+    quality += awarded;
+    lines.push(award('ROE', roe, '%', awarded));
+  } else {
+    lines.push('ROE missing or not positive (+0.0)');
+  }
+
+  let safety = 0;
+  const car = stock.capitalAdequacy;
+  if (car !== null) {
+    const awarded = clamp(((car - 9) / 7) * 10, 0, 10);
+    safety += awarded;
+    lines.push(award('Capital adequacy', car, '%', awarded));
+  } else {
+    lines.push('Capital adequacy missing (+0.0)');
+  }
+  const netNpa = stock.netNpa;
+  if (netNpa !== null) {
+    const awarded = clamp(((2 - netNpa) / 2) * 10, 0, 10);
+    safety += awarded;
+    lines.push(award('Net NPA', netNpa, '%', awarded));
+  } else {
+    lines.push('Net NPA missing (+0.0)');
+  }
+
+  // Reported, never scored.
+  if (stock.grossNpa !== null) {
+    lines.push(`Gross NPA ${fmt1(stock.grossNpa)}% (reported, not scored)`);
+  }
+  const reported: [('casa' | 'financingMargin'), string][] = [
+    ['casa', 'CASA'],
+    ['financingMargin', 'Financing margin'],
+  ];
+  for (const [field, label] of reported) {
+    const value = stock[field];
+    if (value !== null) lines.push(`${label} ${fmt1(value)}% (reported, not scored)`);
+  }
+
+  return {
+    parts: {
+      financialQuality: clamp(quality, 0, 30),
+      growth: growthPoints(stock, lines),
+      balanceSheetSafety: clamp(safety, 0, 20),
+      valuation: clamp(valuationPoints(stock, medians, lines), 0, 15),
+      governance: governancePoints(stock, lines),
+    },
+    lines,
+  };
+}
+
+/**
+ * The old pass/fail hurdles, applied only when strict_screen is on. These are
+ * preferences, not data-integrity problems, so by default they cost points
+ * rather than rejecting a company. Counterpart of strict_screen_failures().
+ */
+export function strictScreenFailures(
+  stock: CleanedStock,
+  config: ScreeningConfig,
+  isFinancial: boolean,
+): string[] {
+  const reasons: string[] = [];
+  const {
+    marketCap: mcap, salesGrowth: sg, profitGrowth: pg, roce, roe,
+    debtToEquity: de, interestCoverage: icr, peRatio: pe, pbRatio: pb,
+    promoterHolding: ph,
+  } = stock;
+
+  if (mcap === null) reasons.push('Market Cap missing');
+  else if (mcap < config.minMarketCapCr) reasons.push('Low Market Cap');
+  if (sg === null) reasons.push('Sales Growth missing');
+  else if (sg < config.minSalesGrowthPct) reasons.push('Low Sales Growth');
+  if (pg === null) reasons.push('Profit Growth missing');
+  else if (pg < config.minProfitGrowthPct) reasons.push('Low Profit Growth');
+  if (roce === null) reasons.push('ROCE missing');
+  else if (roce < config.minRocePct) reasons.push('Low ROCE');
+  if (roe === null) reasons.push('ROE missing');
+  else if (roe < config.minRoePct) reasons.push('Low ROE');
+  if (!isFinancial) {
+    if (de === null) reasons.push('Debt/Equity missing');
+    else if (de > config.maxDebtToEquity) reasons.push('High D/E');
+    if (icr === null) reasons.push('Interest Coverage missing');
+    else if (icr < config.minInterestCoverage) reasons.push('Low Interest Coverage');
+  }
+  if (pe === null) {
+    reasons.push('P/E Ratio missing');
+  } else {
+    if (pe < config.minPeRatio) reasons.push('P/E below minimum');
+    if (pe > config.maxPeRatio) reasons.push('P/E above maximum');
+  }
+  if (pb === null) reasons.push('P/B Ratio missing');
+  else if (pb > config.maxPbRatio) reasons.push('P/B above maximum');
+  if (ph === null) reasons.push('Promoter Holding missing');
+  else if (ph < config.minPromoterHoldingPct) reasons.push('Low Promoter Holding');
+  return reasons;
+}
+
+function category(name: string, score: number, maxScore: number): CategoryScore {
+  return {
+    name,
+    score: round1(score),
+    maxScore,
+    percentage: round1((score / maxScore) * 100),
+  };
+}
+
+/** Factual rationale from real factor contributions. Counterpart of build_explanation(). */
+export function buildExplanation(
+  stock: CleanedStock,
+  total: number,
+  parts: { fq: number; growth: number; balance: number; valuation: number; governance: number },
+  reasons: string[],
+  warningFlags: string[],
+): string {
+  const contributions: [string, number, number][] = [
+    ['financial quality', parts.fq, 30],
+    ['growth', parts.growth, 25],
+    ['balance-sheet safety', parts.balance, 20],
+    ['valuation', parts.valuation, 15],
+    ['governance', parts.governance, 10],
+  ];
+  const ranked = [...contributions].sort((a, b) => {
+    const ratio = b[1] / b[2] - a[1] / a[2];
+    return ratio !== 0 ? ratio : compareCodePoints(a[0], b[0]);
+  });
+  const strongest = ranked[0];
+  const weakest = ranked[ranked.length - 1];
+
+  const out: string[] = [];
+  out.push(`Total fundamental score ${fmt1(total)}/100.`);
+  out.push(
+    `Strongest factor: ${strongest[0]} at ${fmt1(strongest[1])}/${strongest[2]}; ` +
+      `weakest: ${weakest[0]} at ${fmt1(weakest[1])}/${weakest[2]}.`,
+  );
+  const metrics: string[] = [];
+  ([
+    ['ROCE', 'roce', '%'],
+    ['ROE', 'roe', '%'],
+    ['D/E', 'debtToEquity', ''],
+    ['P/E', 'peRatio', ''],
+    ['promoter holding', 'promoterHolding', '%'],
+  ] as [string, keyof CleanedStock, string][]).forEach(([label, key, suffix]) => {
+    const value = stock[key];
+    if (typeof value === 'number') metrics.push(`${label} ${fmt1(value)}${suffix}`);
+  });
+  if (metrics.length) out.push(`Key inputs: ${metrics.join(', ')}.`);
+  out.push(reasons.length ? `Rejected because: ${reasons.join('; ')}.` : 'Passed every configured screening rule.');
+  if (warningFlags.length) out.push(`Warnings: ${warningFlags.join(', ')}.`);
+  return out.join(' ');
+}
+
+/**
+ * Screen and score one stock. Counterpart of ScreeningEngine.evaluate().
+ *
+ * Three outcomes, decided in this order:
+ *   not scored -- a financial company whose export lacks the metrics the
+ *                 financial model needs. Saying so is honest; scoring it on
+ *                 ratios that do not describe a lender is not.
+ *   rejected   -- a hard red flag fired: the numbers cannot be trusted, so
+ *                 there is nothing worth scoring.
+ *   scored     -- graded sub-scores, each awarded point carrying its own line.
+ *
+ * The old pass/fail hurdles are preferences rather than data-integrity
+ * problems, so they cost points instead of rejecting, and only reject when
+ * strict_screen is on.
+ *
+ * medians comes from sectorMedians() over the whole loaded file and is what
+ * makes valuation sector-relative. Evaluating a stock on its own, with no
+ * medians, therefore scores no valuation points and says so in its score lines.
+ */
+export function evaluateStock(
+  stock: CleanedStock,
+  config: ScreeningConfig,
+  appConfig: AppConfig,
+  medians: SectorMedians = sectorMedians([]),
+): StockEvaluation {
+  const reasons: string[] = [];
+  const warningFlags: string[] = [];
+
+  const isFinancial = FINANCIAL_SECTOR_RE.test(stock.sector || '');
+
+  for (const filter of appConfig.custom_filters || []) {
+    const value = (stock as unknown as Record<string, number | null>)[filter.field];
+    const limit = parseStrictDecimal(filter.value);
+    if (limit === null) {
+      reasons.push(`Invalid numeric value in custom filter for ${filter.field}: ${jsonText(filter.value)}`);
+      continue;
+    }
+    if (typeof value !== 'number' || value === null) {
+      reasons.push(`Missing value for ${filter.field}`);
+      continue;
+    }
+    const ok =
+      filter.operator === '>' ? value > limit
+      : filter.operator === '<' ? value < limit
+      : filter.operator === '>=' ? value >= limit
+      : filter.operator === '<=' ? value <= limit
+      : filter.operator === '==' ? value === limit
+      : value !== limit;
+    if (!ok) {
+      const inverse: Record<FilterOperator, string> = {
+        '>': '<=', '<': '>=', '>=': '<', '<=': '>', '==': '!=', '!=': '==',
+      };
+      // `${limit}` is String(limit); Python reproduces it with js_number_to_string().
+      reasons.push(`${filter.field} ${inverse[filter.operator]} ${limit}`);
+    }
+  }
+
+  const { marketCap: mcap, promoterPledge: pp, dividendYield: div } = stock;
+
+  // Coverage counts the fields the company's own model actually uses.
+  const fields: string[] = [...COVERAGE_FIELDS_BASE];
+  fields.push(...(isFinancial ? COVERAGE_FIELDS_FINANCIAL : COVERAGE_FIELDS_NON_FINANCIAL));
+  const available = fields.filter(
+    (f) => (stock as unknown as Record<string, unknown>)[f] !== null,
+  ).length;
+  const coverage = (available / fields.length) * 100;
+
+  const gaps = isFinancial ? bankMetricGaps(stock) : [];
+  // Reported before coverage, so a bank whose export simply lacks the bank
+  // columns is told exactly which ones are missing rather than being dismissed
+  // as an incomplete row.
+  const notScored = gaps.length ? `Not scored: missing bank metrics (${gaps.join(', ')})` : null;
+  const redFlags = notScored ? [] : hardRedFlags(stock, config, isFinancial, coverage);
+
+  let parts: ScoreParts;
+  let scoreLines: string[];
+  if (notScored) {
+    reasons.push(notScored);
+    warningFlags.push('Missing Bank Metrics');
+    parts = { ...ZERO_PARTS };
+    scoreLines = [];
+  } else if (redFlags.length) {
+    reasons.push(...redFlags);
+    parts = { ...ZERO_PARTS };
+    scoreLines = [];
+  } else {
+    const scored = (isFinancial ? scoreFinancial : scoreGeneral)(stock, config, medians);
+    parts = scored.parts;
+    scoreLines = scored.lines;
+    if (appConfig.strict_screen) {
+      reasons.push(...strictScreenFailures(stock, config, isFinancial));
+    }
+  }
+
+  const fq = parts.financialQuality;
+  const growth = parts.growth;
+  const balance = parts.balanceSheetSafety;
+  const valuation = parts.valuation;
+  const governance = parts.governance;
+  const total = clamp(fq + growth + balance + valuation + governance, 0, 100);
+
+  const wasScored = notScored === null && redFlags.length === 0;
+  if (wasScored && total < appConfig.minimum_total_score) {
+    reasons.push(`Low Total Score: ${fmt1(total)}`);
+  }
+
+  if (div !== null && div < config.minDividendYieldPct) warningFlags.push('Low Dividend Yield');
+  if (mcap !== null && mcap < 500) warningFlags.push('Micro Cap');
+  if (pp !== null && pp > 0) warningFlags.push('Promoter Pledged');
+
+  const technicalScore = calculateTechnicalScore(
+    stock.technicals,
+    appConfig.enable_technical_confirmation,
+  );
+  // Technical availability warnings belong in the displayed flag set, not a
+  // separate list nobody reads.
+  warningFlags.push(...technicalScore.warnings);
+
+  return {
+    stock,
+    passed: reasons.length === 0,
+    rejectionReasons: reasons,
+    warningFlags,
+    score: round1(total),
+    coveragePct: round1(coverage),
+    redFlags,
+    notScored,
+    scoringModel: isFinancial ? 'financial' : 'general',
+    scoreLines,
+    sectorGroup: sectorGroup(stock.sector),
+    technicalScore,
+    categoryScores: {
+      financialQuality: category('Financial', fq, 30),
+      growth: category('Growth', growth, 25),
+      balanceSheetSafety: category('Safety', balance, 20),
+      valuation: category('Valuation', valuation, 15),
+      governance: category('Governance', governance, 10),
+    },
+    explanation: buildExplanation(stock, total, { fq, growth, balance, valuation, governance }, reasons, warningFlags),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Data inspection
+// ---------------------------------------------------------------------------
+
+/** Column headers that carry the date the data describes. */
+const FUNDAMENTALS_DATE_ALIASES = ['date', 'as on', 'as of', 'as at', 'report date', 'data date'];
+const FILENAME_DATE_RE = /([0-9]{4}-[0-9]{2}-[0-9]{2})/;
+
+export type FundamentalsDateSource = 'data date' | 'file name' | 'file timestamp';
+
+/** Local date as YYYY-MM-DD. */
+function isoDate(when: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`;
+}
+
+/** Whole days from a YYYY-MM-DD date to today, both taken as local midnights. */
+function daysSince(date: string): number {
+  const [year, month, day] = date.split('-').map(Number);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return Math.round((today - new Date(year, month - 1, day).getTime()) / 86400000);
+}
+
+/**
+ * The date the fundamentals describe and where that date came from, in order:
+ * a date column inside the export ("Date", "As on", ...), an ISO date in the
+ * file name, then the file's timestamp. Copying an old export resets its
+ * timestamp, so the timestamp is the last resort and is always reported.
+ * Counterpart of fundamentals_as_of() in python/engine.py.
+ */
+export function fundamentalsAsOf(
+  rows: ScreenerRow[],
+  fileName: string,
+  lastModifiedTimestamp?: number,
+): { date: string | null; source: FundamentalsDateSource | null } {
+  const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
+  for (const header of headers) {
+    if (FUNDAMENTALS_DATE_ALIASES.includes(normalizeHeader(header))) {
+      const dates = rows
+        .map((row) => String(row[header] ?? '').trim())
+        .filter(isRealDate)
+        .sort(compareCodePoints);
+      if (dates.length > 0) return { date: dates[dates.length - 1], source: 'data date' };
+    }
+  }
+  const match = FILENAME_DATE_RE.exec(fileName || '');
+  if (match && isRealDate(match[1])) return { date: match[1], source: 'file name' };
+  if (typeof lastModifiedTimestamp === 'number') {
+    return { date: isoDate(new Date(lastModifiedTimestamp)), source: 'file timestamp' };
+  }
+  return { date: null, source: null };
+}
+
+const INSPECTED_FIELDS = [
+  'name', 'ticker', 'bseCode', 'sector', 'currentPrice', 'marketCap',
+  'salesGrowth', 'profitGrowth', 'roce', 'roe', 'debtToEquity',
+  'interestCoverage', 'operatingCashFlow', 'promoterHolding', 'promoterPledge',
+  'peRatio', 'pbRatio', 'dividendYield',
+];
+
+export function inspectData(
+  rows: ScreenerRow[],
+  filename: string,
+  appConfig: AppConfig,
+  lastModifiedTimestamp?: number,
+): DataInspectionReport {
+  const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
+  const mapping = detectColumnMapping(headers);
+  const missingFields = INSPECTED_FIELDS.filter((f) => !mapping[f]);
+
+  const asOf = fundamentalsAsOf(rows, filename, lastModifiedTimestamp);
+  const fileAgeDays = asOf.date === null ? null : daysSince(asOf.date);
+  const isStale = fileAgeDays !== null && fileAgeDays > appConfig.fundamentals_stale_after_days;
+  const modDateStr = asOf.date ?? 'Not provided';
+
+  const seen = new Set<string>();
+  let duplicateRows = 0;
+  for (const row of rows) {
+    const canonical = JSON.stringify(row, Object.keys(row).sort());
+    if (seen.has(canonical)) duplicateRows += 1;
+    else seen.add(canonical);
+  }
+
+  const columns: ColumnProfile[] = headers.map((header) => {
+    let mappedField: string | null = null;
+    for (const [field, col] of Object.entries(mapping)) {
+      if (col === header) { mappedField = field; break; }
+    }
+    let nonNullCount = 0;
+    const sampleValues: string[] = [];
+    let hasCurrency = false;
+    let hasPercentage = false;
+    let hasNumeric = false;
+    let needsConversion = false;
+
+    for (const row of rows) {
+      const val = row[header];
+      if (val === undefined || val === null || val === '') continue;
+      nonNullCount += 1;
+      const text = String(val).trim();
+      if (sampleValues.length < 3) sampleValues.push(text);
+      if (typeof val === 'number') { hasNumeric = true; continue; }
+      const lower = text.toLowerCase();
+      if (/[₹$€£]/.test(text) || /crore|\bcr\b|\blakh\b/.test(lower)) hasCurrency = true;
+      else if (text.includes('%')) hasPercentage = true;
+      if (/[₹$€£%,\s]|crore|\bcr\b|\blakh\b/.test(lower)) needsConversion = true;
+      const cleaned = lower.replace(/[₹$€£%,\s]|crore|\bcr\b|\blakh\b/g, '');
+      if (cleaned !== '' && !Number.isNaN(Number(cleaned))) hasNumeric = true;
+    }
+
+    const detectedType: ColumnProfile['detectedType'] = hasCurrency
+      ? 'currency'
+      : hasPercentage
+      ? 'percentage'
+      : hasNumeric
+      ? 'numeric'
+      : 'text';
+
+    const nullCount = rows.length - nonNullCount;
+    return {
+      name: header,
+      mappedField,
+      detectedType,
+      nonNullCount,
+      nullCount,
+      nullPercentage: rows.length > 0 ? round1((nullCount / rows.length) * 100) : 0,
+      sampleValues,
+      needsConversion: detectedType === 'text' ? false : needsConversion,
+    };
+  });
+
+  return {
+    filename,
+    totalRows: rows.length,
+    totalColumns: headers.length,
+    duplicateRows,
+    columns,
+    detectedTickerCol: mapping.ticker || null,
+    detectedNameCol: mapping.name || null,
+    detectedBseCodeCol: mapping.bseCode || null,
+    missingFields,
+    fileAgeDays,
+    fileModifiedDate: modDateStr,
+    dataDate: asOf.date,
+    dateSource: asOf.source,
+    isStale,
+    configErrors: validateCustomFilters(appConfig.custom_filters),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline
+// ---------------------------------------------------------------------------
+
+export interface PipelineResult {
+  evaluations: StockEvaluation[];
+  watchlist: StockEvaluation[];
+  rejected: StockEvaluation[];
+  inspectionReport: DataInspectionReport;
+  duplicatesCount: number;
+  /** Unique rows dropped because their ticker is not in the active universe. */
+  outsideUniverseCount: number;
+  /** Passed every rule but ranks below top_n; ranked, never dropped. */
+  passedBelowCutOff: StockEvaluation[];
+}
+
+/** Canonical watchlist ordering: score descending, then ticker ascending. */
+export function sortByScoreThenTicker(items: StockEvaluation[]): StockEvaluation[] {
+  return [...items].sort(
+    (a, b) => b.score - a.score || compareCodePoints(a.stock.ticker, b.stock.ticker),
+  );
+}
+
+/**
+ * Run the full screen. Counterpart of ScreeningEngine.prepare() + screen().
+ * priceHistory is a parsed price-history CSV, or null/undefined when the run
+ * has none -- technical confirmation then reports "No price history loaded"
+ * once instead of flagging every stock.
+ */
+export function processScreenerPipeline(
+  rows: ScreenerRow[],
+  appConfig: AppConfig,
+  screeningConfig: ScreeningConfig,
+  lastModifiedTimestamp?: number,
+  priceHistory?: PriceHistory | null,
+  fileName?: string,
+): PipelineResult {
+  const inspectionReport = inspectData(rows, fileName ?? 'screener.csv', appConfig, lastModifiedTimestamp);
+  if (inspectionReport.configErrors.length > 0) {
+    return {
+      evaluations: [], watchlist: [], rejected: [], passedBelowCutOff: [],
+      inspectionReport, duplicatesCount: 0, outsideUniverseCount: 0,
+    };
+  }
+
+  const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
+  const mapping = detectColumnMapping(headers);
+  const parsed = parseScreenerRows(rows, mapping);
+  const { unique, duplicatesRemoved } = dedupeStocks(parsed);
+
+  const allowed = new Set(
+    appConfig.universe_mode === 'nifty100'
+      ? NIFTY100_FALLBACK_SYMBOLS
+      : normaliseSymbols(appConfig.custom_symbols),
+  );
+  let universe = allowed.size > 0 ? unique.filter((s) => allowed.has(s.ticker.toUpperCase())) : unique;
+  const outsideUniverseCount = unique.length - universe.length;
+
+  if (priceHistory) {
+    const technicals = technicalsFromHistory(priceHistory, universe.map((s) => s.ticker));
+    universe = universe.map((s) => ({ ...s, technicals: technicals[s.ticker] }));
+  }
+
+  // One set of yardsticks for the whole run, computed from the companies
+  // actually being screened, so valuation is judged against this file's sectors
+  // rather than a hard-coded notion of "expensive".
+  const medians = sectorMedians(universe);
+  const evaluations = universe.map((s) => evaluateStock(s, screeningConfig, appConfig, medians));
+
+  // Every passing stock is ranked, then the list is split at top_n: the ones
+  // below the cut-off are reported separately rather than dropped.
+  const passed = sortByScoreThenTicker(evaluations.filter((e) => e.passed))
+    .map((item, idx) => ({ ...item, rank: idx + 1 }));
+  const cutOff = appConfig.top_n > 0 ? appConfig.top_n : passed.length;
+  const watchlist = passed.slice(0, cutOff);
+  const passedBelowCutOff = passed.slice(cutOff);
+
+  const rejected = sortByScoreThenTicker(evaluations.filter((e) => !e.passed));
+
+  return {
+    evaluations, watchlist, passedBelowCutOff, rejected, inspectionReport,
+    duplicatesCount: duplicatesRemoved, outsideUniverseCount,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Delta tracking
+// ---------------------------------------------------------------------------
+
+export const RANKING_CHANGE_COLUMNS = [
+  'Ticker', 'Name', 'ChangeType', 'PreviousRank', 'CurrentRank', 'RankDelta',
+  'PreviousScore', 'CurrentScore', 'ScoreDelta', 'NewWarnings',
+] as const;
+
+/**
+ * Snapshot entries usable for delta tracking; malformed ones are dropped. A
+ * hand-edited or half-written saved run must never blank the app.
+ * Counterpart of valid_snapshot_entries() in python/engine.py.
+ */
+export function validSnapshotEntries(data: unknown): WatchlistSnapshotEntry[] {
+  if (!Array.isArray(data)) return [];
+  const entries: WatchlistSnapshotEntry[] = [];
+  for (const raw of data) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const { ticker, name, rank, score, warningFlags } = raw as Record<string, unknown>;
+    if (typeof ticker !== 'string' || ticker === '') continue;
+    if (typeof rank !== 'number' || !Number.isFinite(rank)) continue;
+    if (typeof score !== 'number' || !Number.isFinite(score)) continue;
+    entries.push({
+      ticker,
+      name: typeof name === 'string' ? name : ticker,
+      rank,
+      score,
+      warningFlags: Array.isArray(warningFlags)
+        ? warningFlags.filter((flag): flag is string => typeof flag === 'string')
+        : [],
+    });
+  }
+  return entries;
+}
+
+/** Browser storage key holding the saved run the next run is compared against. */
+export const SAVED_RUN_KEY = 'previousWatchlist';
+
+/** What "Save run" stores: the watchlist plus what produced it. */
+export interface SavedRun {
+  savedAt: string | null;
+  fileName: string | null;
+  appConfig: AppConfig | null;
+  screeningConfig: ScreeningConfig | null;
+  entries: WatchlistSnapshotEntry[];
+}
+
+/**
+ * Read a saved run: the object form, or the bare array older versions stored.
+ * Null when nothing usable is in it, so a bad value is discarded rather than
+ * thrown at the delta code.
+ */
+export function parseSavedRun(data: unknown): SavedRun | null {
+  const blank = { savedAt: null, fileName: null, appConfig: null, screeningConfig: null };
+  if (Array.isArray(data)) {
+    const entries = validSnapshotEntries(data);
+    return entries.length > 0 ? { ...blank, entries } : null;
+  }
+  if (data === null || typeof data !== 'object') return null;
+  const record = data as Record<string, unknown>;
+  const entries = validSnapshotEntries(record.entries);
+  if (entries.length === 0) return null;
+  return {
+    savedAt: typeof record.savedAt === 'string' ? record.savedAt : null,
+    fileName: typeof record.fileName === 'string' ? record.fileName : null,
+    appConfig: (record.appConfig as AppConfig | undefined) ?? null,
+    screeningConfig: (record.screeningConfig as ScreeningConfig | undefined) ?? null,
+    entries,
+  };
+}
+
+/** Reduce a watchlist to the persisted snapshot shape (no rawRow). */
+export function toSnapshot(watchlist: StockEvaluation[]): WatchlistSnapshotEntry[] {
+  return watchlist.map((item, idx) => ({
+    ticker: item.stock.ticker,
+    name: item.stock.name,
+    rank: item.rank ?? idx + 1,
+    score: item.score,
+    warningFlags: item.warningFlags,
+  }));
+}
+
+/**
+ * Canonical delta computation. Counterpart of compute_ranking_changes().
+ * RankDelta = previousRank - currentRank (positive means moved up); null where
+ * an entry or removal makes the comparison undefined.
+ */
+export function computeRankingChanges(
+  current: WatchlistSnapshotEntry[],
+  previous: WatchlistSnapshotEntry[] | null,
+): RankingChange[] {
+  const prevMap = new Map<string, WatchlistSnapshotEntry>();
+  for (const item of previous || []) prevMap.set(item.ticker, item);
+
+  const changes: RankingChange[] = [];
+  const seen = new Set<string>();
+
+  for (const item of [...current].sort((a, b) => a.rank - b.rank)) {
+    seen.add(item.ticker);
+    const prev = prevMap.get(item.ticker);
+    if (!prev) {
+      changes.push({
+        ticker: item.ticker,
+        name: item.name || item.ticker,
+        changeType: 'NEW_ENTRY',
+        previousRank: null,
+        currentRank: item.rank,
+        rankDelta: null,
+        previousScore: null,
+        currentScore: item.score,
+        scoreDelta: null,
+        newWarnings: [...item.warningFlags],
+      });
+      continue;
+    }
+    const prevWarnings = new Set(prev.warningFlags);
+    changes.push({
+      ticker: item.ticker,
+      name: item.name || item.ticker,
+      changeType:
+        item.rank < prev.rank ? 'RANK_UP' : item.rank > prev.rank ? 'RANK_DOWN' : 'STABLE',
+      previousRank: prev.rank,
+      currentRank: item.rank,
+      rankDelta: prev.rank - item.rank,
+      previousScore: prev.score,
+      currentScore: item.score,
+      scoreDelta: round1(item.score - prev.score),
+      newWarnings: item.warningFlags.filter((w) => !prevWarnings.has(w)),
+    });
+  }
+
+  const removed = [...prevMap.values()]
+    .filter((p) => !seen.has(p.ticker))
+    .sort((a, b) => a.rank - b.rank);
+  for (const prev of removed) {
+    changes.push({
+      ticker: prev.ticker,
+      name: prev.name || prev.ticker,
+      changeType: 'REMOVED_ENTRY',
+      previousRank: prev.rank,
+      currentRank: null,
+      rankDelta: null,
+      previousScore: prev.score,
+      currentScore: null,
+      scoreDelta: null,
+      newWarnings: [],
+    });
+  }
+  return changes;
+}
+
+/** Columns that hold numbers and must stay numeric in the export. */
+const DELTA_NUMERIC_COLUMNS = new Set([
+  'PreviousRank', 'CurrentRank', 'RankDelta', 'PreviousScore', 'CurrentScore', 'ScoreDelta',
+]);
+
+function deltaCell(column: string, change: RankingChange): string {
+  switch (column) {
+    case 'Ticker': return change.ticker;
+    case 'Name': return change.name;
+    case 'ChangeType': return change.changeType;
+    case 'PreviousRank': return change.previousRank === null ? '' : String(change.previousRank);
+    case 'CurrentRank': return change.currentRank === null ? '' : String(change.currentRank);
+    case 'RankDelta': return change.rankDelta === null ? '' : String(change.rankDelta);
+    case 'PreviousScore': return fmt1(change.previousScore);
+    case 'CurrentScore': return fmt1(change.currentScore);
+    case 'ScoreDelta': return fmt1(change.scoreDelta);
+    case 'NewWarnings': return change.newWarnings.join(', ');
+    default: return '';
+  }
+}
+
+/** Byte-identical to ranking_changes_to_csv() in python/engine.py. */
+export function generateRankingChangesCsv(changes: RankingChange[]): string {
+  const lines = [csvRow([...RANKING_CHANGE_COLUMNS])];
+  for (const change of changes) {
+    lines.push(
+      csvRow(
+        RANKING_CHANGE_COLUMNS.map((col) => {
+          const cell = deltaCell(col, change);
+          // Numeric columns are written as numbers; a negative delta must not
+          // become text just because it starts with a minus sign.
+          return DELTA_NUMERIC_COLUMNS.has(col) ? cell : textCell(cell);
+        }),
+      ),
+    );
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+export const WATCHLIST_CSV_COLUMNS = [
+  'Rank', 'Ticker', 'Name', 'Sector', 'CurrentPrice', 'MarketCapCr', 'Score',
+  'TechScore', 'Coverage', 'FinancialQuality', 'Growth', 'BalanceSheet',
+  'Valuation', 'Governance', 'WarningFlags',
+] as const;
+
+export const REJECTED_CSV_COLUMNS = [
+  'Ticker', 'Name', 'Sector', 'Score', 'Coverage', 'RejectionReasons', 'WarningFlags',
+] as const;
+
+/** Byte-identical to watchlist_to_csv() in python/engine.py. */
+export function generateWatchlistCsv(rows: StockEvaluation[]): string {
+  const lines = [csvRow([...WATCHLIST_CSV_COLUMNS])];
+  rows.forEach((item, idx) => {
+    const c = item.categoryScores;
+    lines.push(csvRow([
+      String(item.rank ?? idx + 1),
+      textCell(item.stock.ticker),
+      textCell(item.stock.name),
+      textCell(item.stock.sector),
+      fmt1(item.stock.currentPrice),
+      fmt1(item.stock.marketCap),
+      fmt1(item.score),
+      item.technicalScore.score === null ? '' : fmt1(item.technicalScore.score),
+      fmt1(item.coveragePct),
+      fmt1(c.financialQuality.score),
+      fmt1(c.growth.score),
+      fmt1(c.balanceSheetSafety.score),
+      fmt1(c.valuation.score),
+      fmt1(c.governance.score),
+      textCell(item.warningFlags.join(', ')),
+    ]));
+  });
+  return `${lines.join('\n')}\n`;
+}
+
+/** Byte-identical to rejected_to_csv() in python/engine.py. */
+export function generateRejectedCsv(rows: StockEvaluation[]): string {
+  const lines = [csvRow([...REJECTED_CSV_COLUMNS])];
+  for (const item of rows) {
+    lines.push(csvRow([
+      textCell(item.stock.ticker),
+      textCell(item.stock.name),
+      textCell(item.stock.sector),
+      fmt1(item.score),
+      fmt1(item.coveragePct),
+      textCell(item.rejectionReasons.join('; ')),
+      textCell(item.warningFlags.join(', ')),
+    ]));
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+// ---------------------------------------------------------------------------
+// HTML report
+// ---------------------------------------------------------------------------
+
+/** Escape every user-derived string before it reaches the DOM or a report. */
+export function escapeHtml(unsafe: unknown): string {
+  return String(unsafe ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+export function generateHtmlReport(
+  watchlist: StockEvaluation[],
+  belowCutOff: StockEvaluation[],
+  rejected: StockEvaluation[],
+  report: DataInspectionReport,
+  appConfig: AppConfig,
+): string {
+  const candidateRows = (items: StockEvaluation[]) =>
+    items
+      .map(
+        (item, idx) => `
+    <tr>
+      <td>${item.rank ?? idx + 1}</td>
+      <td>${escapeHtml(item.stock.ticker)}</td>
+      <td>${escapeHtml(item.stock.name)}</td>
+      <td>${escapeHtml(item.stock.sector)}</td>
+      <td class="score">${escapeHtml(fmt1(item.score))}</td>
+      <td>${escapeHtml(item.technicalScore.score === null ? 'N/A' : fmt1(item.technicalScore.score))}</td>
+      <td class="warning">${escapeHtml(item.warningFlags.join(', '))}</td>
+    </tr>
+    <tr class="rationale"><td colspan="7">${escapeHtml(item.explanation)}</td></tr>`,
+      )
+      .join('');
+  const rows = candidateRows(watchlist);
+
+  const rejectedRows = rejected
+    .slice(0, 50)
+    .map(
+      (item) => `
+    <tr>
+      <td>${escapeHtml(item.stock.ticker)}</td>
+      <td>${escapeHtml(fmt1(item.score))}</td>
+      <td class="warning">${escapeHtml(item.rejectionReasons.join('; '))}</td>
+    </tr>`,
+    )
+    .join('');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Indian Stock Screening Report</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1200px; margin: 0 auto; padding: 20px; }
+    h1, h2 { color: #1e3a8a; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 30px; font-size: 14px; }
+    th, td { padding: 10px; border-bottom: 1px solid #e2e8f0; text-align: left; }
+    th { background-color: #f8fafc; font-weight: 600; color: #475569; }
+    .score { font-weight: bold; color: #059669; }
+    .warning { color: #dc2626; font-size: 12px; }
+    .rationale td { font-size: 12px; color: #475569; background: #f8fafc; }
+    .header-box { background: #f0f9ff; border: 1px solid #bae6fd; padding: 20px; border-radius: 8px; margin-bottom: 30px; }
+  </style>
+</head>
+<body>
+  <div class="header-box">
+    <h1>Indian Equity Screening Report</h1>
+    <p><strong>Generated:</strong> ${escapeHtml(new Date().toISOString())}</p>
+    <p><strong>Universe mode:</strong> ${escapeHtml(appConfig.universe_mode)}</p>
+    <p><strong>Universe snapshot:</strong> cached, as of ${escapeHtml(NIFTY100_PROVENANCE.as_of_date)}</p>
+    <p><strong>Rows scanned:</strong> ${report.totalRows}</p>
+    <p><strong>Candidates passed:</strong> ${watchlist.length + belowCutOff.length}</p>
+  </div>
+  <h2>Top candidates (top ${appConfig.top_n})</h2>
+  <table>
+    <tr><th>Rank</th><th>Ticker</th><th>Name</th><th>Sector</th><th>Score</th><th>Tech</th><th>Warnings</th></tr>${rows}
+  </table>
+  ${belowCutOff.length === 0 ? '' : `<h2>Passed, below the top ${appConfig.top_n}</h2>
+  <table>
+    <tr><th>Rank</th><th>Ticker</th><th>Name</th><th>Sector</th><th>Score</th><th>Tech</th><th>Warnings</th></tr>${candidateRows(belowCutOff)}
+  </table>`}
+  <h2>Rejected sample (first 50)</h2>
+  <table>
+    <tr><th>Ticker</th><th>Score</th><th>Rejection reasons</th></tr>${rejectedRows}
+  </table>
+</body>
+</html>`;
+}

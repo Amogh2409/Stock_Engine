@@ -1,0 +1,7 @@
+# OPTIONAL extras, needed only for the notebook's live-data path and for the
+# opt-in network tests (RUN_NETWORK_TESTS=1). The release gate does NOT install
+# these and does NOT depend on them.
+-r requirements-test.txt
+requests==2.34.2
+yfinance==1.7.0
+matplotlib==3.11.1

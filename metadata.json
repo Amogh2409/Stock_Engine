@@ -1,0 +1,6 @@
+{
+  "name": "Indian Stock Screener",
+  "description": "Explainable quantitative screening and scoring system for Indian equities using Screener.in data exports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

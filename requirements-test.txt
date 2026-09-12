@@ -1,0 +1,13 @@
+# Pinned Python dependencies for the offline verification gate.
+#
+# These are the ONLY packages the engine needs to import and to run its full
+# offline test suite. run_checks.sh installs exactly this file into a throwaway
+# virtualenv, so a green run is reproducible.
+#
+# The engine imports pandas and numpy at module scope; everything else it needs
+# is imported lazily inside the function that uses it, which is what keeps the
+# offline test path free of network and plotting dependencies.
+numpy==2.5.3
+pandas==3.0.5
+python-dateutil==2.9.0.post0
+pytz==2026.3.post1
