@@ -3342,6 +3342,106 @@ def setup_storage_paths(base_dir=None, mount_drive=True):
     return paths
 
 
+# --- Point-in-time archive of fundamentals exports --------------------------
+# A Screener.in export describes the day it was taken, and the next one
+# replaces it. That is what makes the fundamental half of the scoring
+# permanently untestable: a backtest has to know what was knowable at the time,
+# and an overwritten file records nothing. Archiving turns each manual upload
+# into a point-in-time observation, which is the only route by which a
+# fundamental backtest ever becomes possible. Nothing else in this repository
+# creates that history, and no amount of price data substitutes for it.
+FUNDAMENTALS_ARCHIVE_DIRNAME = "archive"
+ARCHIVE_MANIFEST_NAME = "manifest.jsonl"
+
+
+def fundamentals_fingerprint(path):
+    """SHA-256 of an export's bytes. Identity is content, not file name."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def archive_fundamentals(paths, source_file, frame, today=None):
+    """Preserve a dated, immutable copy of the export a run used.
+
+    Copies land in
+        <fundamentals>/archive/<YYYY-MM>/<data-date>_<sha12>.csv
+    and are dated by what the data describes -- a date column inside the export
+    if it has one, else the file name, else the file's timestamp -- rather than
+    by when the archiving happened, so a late upload is filed under the month it
+    reports on.
+
+    The archive is a SUBdirectory and FundamentalsAdapter.list_available() lists
+    only the top level, so an archived copy can never be mistaken for the export
+    a later run should screen.
+
+    Returns (path, note). Archiving the same bytes twice is a no-op: the content
+    fingerprint is in the file name, so a repeated run recognises its own work
+    instead of accumulating near-identical copies. Two genuinely different
+    exports bearing the same date both survive, under different fingerprints.
+    """
+    as_of, date_source = fundamentals_as_of(frame, source_file)
+    digest = fundamentals_fingerprint(source_file)
+    month_dir = paths["fundamentals"] / FUNDAMENTALS_ARCHIVE_DIRNAME / as_of.strftime("%Y-%m")
+    target = month_dir / ("%s_%s.csv" % (as_of.isoformat(), digest[:12]))
+
+    if target.exists():
+        return target, "already archived; identical bytes for %s" % as_of.isoformat()
+
+    month_dir.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(Path(source_file).read_bytes())
+
+    record = {
+        "archived_at": (today or datetime.date.today()).isoformat(),
+        "as_of": as_of.isoformat(),
+        "as_of_source": date_source,
+        "sha256": digest,
+        "rows": int(len(frame)),
+        "columns": int(len(frame.columns)),
+        "original_name": Path(source_file).name,
+        "archived_path": str(target),
+    }
+    manifest = paths["fundamentals"] / FUNDAMENTALS_ARCHIVE_DIRNAME / ARCHIVE_MANIFEST_NAME
+    with open(manifest, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+    return target, "archived as of %s (dated by %s)" % (as_of.isoformat(), date_source)
+
+
+def read_archive_manifest(paths):
+    """Every archived export, oldest first. Malformed lines are skipped, not fatal."""
+    manifest = paths["fundamentals"] / FUNDAMENTALS_ARCHIVE_DIRNAME / ARCHIVE_MANIFEST_NAME
+    if not manifest.exists():
+        return []
+    records = []
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        line = js_trim(line)
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            continue
+    records.sort(key=lambda r: (str(r.get("as_of") or ""), str(r.get("sha256") or "")))
+    return records
+
+
+def describe_archive(paths):
+    """One line on how much point-in-time history exists, and what it is worth.
+
+    The count is the honest measure of whether a fundamental backtest is yet
+    possible. One export is a snapshot; twelve monthly exports are a year of
+    history and the beginning of a real test.
+    """
+    records = read_archive_manifest(paths)
+    if not records:
+        return ("Fundamentals archive: empty. Until exports accumulate here the "
+                "fundamental half of the score cannot be backtested at all.")
+    months = sorted({str(r.get("as_of", ""))[:7] for r in records if r.get("as_of")})
+    return ("Fundamentals archive: %d export%s spanning %d month%s (%s to %s). "
+            "A fundamental backtest needs about twelve."
+            % (len(records), "" if len(records) == 1 else "s",
+               len(months), "" if len(months) == 1 else "s",
+               months[0] if months else "n/a", months[-1] if months else "n/a"))
+
+
 class _Tee:
     """Duplicate a text stream to a log file.
 
@@ -4104,6 +4204,48 @@ class EngineTests(unittest.TestCase):
             engine_for_tests().evaluate(dict(_FULL_STOCK, pbRatio=-0.3))["redFlags"],
             ["Negative net worth"])
 
+    def test_archiving_an_export_is_idempotent_and_never_overwrites(self):
+        """The archive is the only route to a testable fundamental half.
+
+        A Screener.in export describes the day it was taken and the next one
+        replaces it, so without a preserved copy the fundamental score can
+        never be backtested. Two properties make the archive trustworthy:
+        re-running must not accumulate near-identical copies, and two genuinely
+        different exports must never silently overwrite one another just
+        because they carry the same date.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = {"fundamentals": Path(tmp)}
+            source = Path(tmp) / "export.csv"
+            source.write_text("Name,NSE Code,Date,ROCE\nAlpha,AAA,2026-09-13,25%\n",
+                              encoding="utf-8")
+            frame = read_fundamentals_csv(source)
+
+            first, first_note = archive_fundamentals(paths, source, frame)
+            self.assertTrue(first.exists())
+            self.assertIn("archived as of 2026-09-13", first_note)
+            # Dated by what the data describes, not by when it was filed.
+            self.assertIn("2026-09", str(first.parent))
+
+            repeat, repeat_note = archive_fundamentals(paths, source, frame)
+            self.assertEqual(first, repeat)
+            self.assertIn("already archived", repeat_note)
+            self.assertEqual(len(read_archive_manifest(paths)), 1)
+
+            other = Path(tmp) / "other.csv"
+            other.write_text("Name,NSE Code,Date,ROCE\nBeta,BBB,2026-09-13,30%\n",
+                             encoding="utf-8")
+            second, _ = archive_fundamentals(paths, other, read_fundamentals_csv(other))
+            self.assertNotEqual(first, second)
+            self.assertTrue(first.exists() and second.exists())
+            self.assertEqual(len(read_archive_manifest(paths)), 2)
+
+            # The archive is a subdirectory, so a copy can never be mistaken
+            # for the export a later run should screen.
+            listed = [p.name for p in FundamentalsAdapter(Path(tmp)).list_available()]
+            self.assertEqual(sorted(listed), ["export.csv", "other.csv"])
+            self.assertIn("2 exports", describe_archive(paths))
+
     def test_a_reported_zero_is_a_value_not_a_gap(self):
         """A published zero must never be described as a missing figure.
 
@@ -4381,6 +4523,13 @@ def run_pipeline(paths, app_config, screening_config, allow_network=False, stamp
     if age_days > app_config.get("fundamentals_stale_after_days", 30):
         print("WARNING: fundamentals are stale (%d days). Re-export from Screener.in." % age_days)
 
+    # Preserve this export before anything else happens to it. A Screener.in
+    # export describes the day it was taken and the next one replaces it, so
+    # without this the fundamental half of the score can never be backtested.
+    archived_path, archive_note = archive_fundamentals(paths, source_file, frame, today=today)
+    print("Fundamentals archive: %s -> %s" % (archive_note, archived_path))
+    print(describe_archive(paths))
+
     universe = None
     if app_config.get("universe_mode") == "nifty100":
         universe = universe_provider.get_universe("nifty100", allow_network=allow_network)
@@ -4506,6 +4655,8 @@ def build_arg_parser():
                         help="read and write all run data and logs under DIR")
     parser.add_argument("--config", metavar="FILE",
                         help="settings file (default: <data root>/config/%s)" % CONFIG_FILENAME)
+    parser.add_argument("--archive", action="store_true",
+                        help="archive the newest fundamentals export and exit, without screening")
     return parser
 
 
@@ -4528,6 +4679,22 @@ def main(argv=None):
         suite = unittest.TestLoader().loadTestsFromTestCase(EngineTests)
         outcome = unittest.TextTestRunner(verbosity=2).run(suite)
         return 0 if outcome.wasSuccessful() else 1
+
+    if args.archive:
+        # Archiving on its own, for when you have an export to bank but no
+        # reason to run a screen. Deliberately does no network work.
+        paths = setup_storage_paths(base_dir=args.data_dir, mount_drive=True)
+        adapter = FundamentalsAdapter(paths["fundamentals"])
+        available = adapter.list_available()
+        if not available:
+            print("No fundamentals CSV found in %s. Nothing to archive." % paths["fundamentals"])
+            return 2
+        source_file = available[0]
+        frame = adapter.load(source_file)
+        archived_path, note = archive_fundamentals(paths, source_file, frame)
+        print("%s -> %s" % (note, archived_path))
+        print(describe_archive(paths))
+        return 0
 
     allow_network = not args.offline
     paths = setup_storage_paths(base_dir=args.data_dir, mount_drive=True)
