@@ -287,7 +287,12 @@ export function runPythonParity(job: ParityJob): ParityPayload {
 
 /** Read the sample CSV without importing the TS module (keeps the fixture honest). */
 export function readSampleCsvFromSource(): string {
-  const file = path.resolve(__dirname, '..', '..', 'data', 'sampleScreenerData.ts');
+  // Same reasoning as VENV_PYTHON and DRIVER above. This one survived the
+  // first pass at the __dirname conversion because it sits inside a function
+  // rather than at module scope, so an ESM import of the module does not throw
+  // on it -- it would only fail when called, and it is only ever called from
+  // Vitest, where the CJS transpilation makes __dirname work anyway.
+  const file = path.resolve(process.cwd(), 'src', 'data', 'sampleScreenerData.ts');
   const text = readFileSync(file, 'utf8');
   const match = /`([\s\S]*?)`/.exec(text);
   if (!match) throw new Error('Could not extract the sample CSV literal from sampleScreenerData.ts');
