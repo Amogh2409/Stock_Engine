@@ -310,8 +310,8 @@ delta does not become text.
 ## Scoring
 
 100 points across five factors: financial quality 30, growth 25,
-balance-sheet safety 20, valuation 15, governance 10. **Every company that
-survives the hard red flags is scored and ranked.** Each awarded point carries
+balance-sheet safety 20, valuation 15, governance 10. **Every company is scored
+and ranked, including the ones a red flag disqualifies.** Each awarded point carries
 its own one-line reason (`scoreLines`), and every candidate also carries a
 generated rationale naming its strongest and weakest factors, its key input
 metrics, and any rejection reasons or warnings.
@@ -321,8 +321,20 @@ metrics, and any rejection reasons or warnings.
 | Outcome | When | Result |
 |---|---|---|
 | **Not scored** | A financial company whose export lacks the metrics its model needs | `Not scored: missing bank metrics (…)`, naming each absent column |
-| **Rejected** | A hard red flag fired — the numbers cannot be trusted | Score 0, no sub-scores, no score lines |
+| **Rejected** | A hard red flag fired — the numbers cannot be trusted | Scored and explained, but never selectable |
 | **Scored** | Everything else | Graded sub-scores, each point explained |
+
+A rejected company is still scored, so a comparison across the whole index can
+show its fundamentals beside the reason it is disqualified: "Vedanta scores 43.1
+but its promoters have pledged" says more than a bare 0.0. The score is built
+only from the fields that remain trustworthy — negative net worth earns nothing
+for D/E, and a negative P/B is reported as "not meaningful".
+
+**A score is not a licence to buy.** Whether a company may be held is carried by
+`passed` and `redFlags`, never by the score alone. Anything that selects
+companies — the watchlist today, and any future signal or backtest code — must
+filter on those fields first. Sorting on score alone walks a pledged promoter
+stake and an unusable balance sheet straight back in at rank 20.
 
 ### Hard red flags
 

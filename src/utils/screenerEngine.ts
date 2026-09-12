@@ -442,10 +442,15 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   custom_symbols: [],
   custom_filters: [],
   top_n: 20,
-  // Lowered from 65 when the quality and growth scales were widened. The wider
-  // scales moved every score down by roughly 15 points, so the old 65 would
-  // have silently rejected companies that used to qualify: on the bundled
-  // sample, 9 of 11 passed at the old 65 and 9 of 11 pass at this 50.
+  // PROVISIONAL, not a validated figure. Lowered from 65 so that widening the
+  // quality and growth scales did not silently tighten the screen: the scales
+  // moved every score down, so the threshold had to move with them or the
+  // default would start rejecting companies that used to qualify. That
+  // rescaling argument holds, but this particular number does not rest on
+  // anything solid -- it was picked so the bundled sample passes the same 9 of
+  // 11 companies it passed at 65, and that sample's figures are invented.
+  // Recalibrate against a real Screener.in export, or when the composite score
+  // takes over what this threshold gates.
   minimum_total_score: 50,
   fundamentals_stale_after_days: 30,
   enable_technical_confirmation: true,
