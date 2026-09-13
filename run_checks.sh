@@ -210,6 +210,13 @@ PYEOF
 # 12. Offline python test suite (notebook EngineTests + standalone contracts).
 step_in "${BUILD_DIR}" "offline python test suite" "${VENV_PY}" test_python.py
 
+# 12a. The backtest's own mechanics: look-ahead, execution timing, cost accounting,
+# p-values from t, Bonferroni. This is the only code that measures whether the
+# engine predicts anything, and until now it was the only code outside the gate
+# everything else must pass -- so a change that silently broke the measurement
+# would have shipped green. Offline and fixture-driven: no prices, no network.
+step_in "${BUILD_DIR}" "backtest self-test" "${VENV_PY}" python/backtest.py --self-test
+
 # 13. Cross-engine sample parity, run explicitly as its own gate.
 step_in "${BUILD_DIR}" "cross-engine sample parity suite" npx vitest run src/tests/parity.test.ts
 
@@ -363,6 +370,7 @@ step_in "${FRESH}" "[repack] typescript lint" npm run lint
 step_in "${FRESH}" "[repack] frontend and parity test suite" npm test
 step_in "${FRESH}" "[repack] production build" npm run build
 step_in "${FRESH}" "[repack] offline python test suite" "${VENV_PY}" test_python.py
+step_in "${FRESH}" "[repack] backtest self-test" "${VENV_PY}" python/backtest.py --self-test
 
 mark_step "[repack] notebook byte comparison"
 log "--- STEP: [repack] regenerate notebook and byte-compare ---"
