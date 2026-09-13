@@ -59,6 +59,11 @@ const APP_CONFIG: AppConfig = {
   enable_technical_confirmation: false,
   technical_weight_pct: 40,
   strict_screen: false,
+  // The shipped defaults, so parity exercises sizing as it will actually run
+  // rather than at settings chosen to make a comparison easy.
+  target_volatility_pct: 12,
+  max_position_weight_pct: 10,
+  max_sector_weight_pct: 25,
 };
 const SCREENING_CONFIG: ScreeningConfig = { ...DEFAULT_SCREENING_CONFIG };
 
@@ -389,6 +394,10 @@ function tsEvaluationFields(ev: StockEvaluation): Omit<ParityEvaluation, 'ticker
     sectorGroup: ev.sectorGroup,
     sectorRelativeStrength6M: ev.sectorRelativeStrength6M,
     sectorRelativeStrengthBasis: ev.sectorRelativeStrengthBasis,
+    positionWeightPct: ev.positionWeightPct,
+    stopPrice: ev.stopPrice,
+    stopDistancePct: ev.stopDistancePct,
+    sizingBasis: ev.sizingBasis,
     techScore: ev.technicalScore.score,
     techBreakdown: ev.technicalScore.breakdown,
     technicalBlocks: ev.technicalScore.blocks,

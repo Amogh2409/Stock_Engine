@@ -223,6 +223,17 @@ export interface AppConfig {
    * default, so every company surviving the hard red flags is scored and ranked.
    */
   strict_screen: boolean;
+  /**
+   * Annualised volatility the sized basket aims at, which decides how much of
+   * the account is deployed. TSaM p.53 offers 12% ("a modest risk level") and
+   * p.1048 offers "typically about 15%", then calls 15% aggressive in its own
+   * example; 12% is a choice within that range, not a derivation.
+   */
+  target_volatility_pct: number;
+  /** Most of the account any one position may take. Convention, per TSaM p.1040. */
+  max_position_weight_pct: number;
+  /** Most of the account any one sector group may take. Convention, per TSaM p.1040. */
+  max_sector_weight_pct: number;
 }
 
 export interface CategoryScore {
@@ -287,6 +298,24 @@ export interface StockEvaluation {
   sectorRelativeStrength6M: number | null;
   /** Which peer bucket the comparison used, or why there was none. */
   sectorRelativeStrengthBasis: string;
+  /**
+   * Share of total capital this position should take, or null when it was not
+   * sized. Only the watchlist is sized -- a weight is a share of a basket, so a
+   * company below the cut-off has no weight rather than a weight of zero.
+   *
+   * Equal risk by volatility, per TSaM p.1103 and Table 24.1 at p.1104, scaled
+   * to a portfolio volatility target and then capped. Null also when the
+   * portfolio's volatility could not be measured: relative weights on their own
+   * would read as "invest all of this", a claim about total exposure that
+   * nothing has measured.
+   */
+  positionWeightPct: number | null;
+  /** Stop level set in advance, per TSaM p.1032 principle 2. Null without an ATR. */
+  stopPrice: number | null;
+  /** How far the stop sits below the price, as a percentage. */
+  stopDistancePct: number | null;
+  /** Which measure sized this position, or why it could not be sized. */
+  sizingBasis: string;
   technicalScore: TechnicalScoreResult;
   categoryScores: CategoryScores;
   /** Factual rationale built from real factor contributions. Never empty. */

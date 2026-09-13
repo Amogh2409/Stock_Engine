@@ -437,6 +437,33 @@ export function parseCsv(csvString: string): ScreenerRow[] {
 }
 
 // ---------------------------------------------------------------------------
+// Position sizing defaults
+// ---------------------------------------------------------------------------
+// Declared above DEFAULT_APP_CONFIG because that object needs them. The
+// reasoning behind each, and what it does not rest on, is beside sizePositions()
+// below and in knowledge/rulebook.md. Counterparts in python/engine.py.
+
+/**
+ * TSaM p.53 offers 12%, calling it "a modest risk level"; p.1048 offers
+ * "typically about 15%" and then calls 15% aggressive in its own worked
+ * example. Amogh chose 12% from that range. Recorded as a choice between two
+ * figures the book gives, not as a derivation -- a later reader should see both
+ * the range and that a human picked within it.
+ */
+export const DEFAULT_TARGET_VOLATILITY_PCT = 12.0;
+
+/**
+ * Convention, both of them. TSaM p.1040 warns that a portfolio concentrating on
+ * fewer groups carries greater risk, which is the argument FOR having caps; it
+ * names no level, so these two numbers are ours. They matter because the p.1032
+ * risk ceiling is not a concentration limit: at a 6% stop it permits 83% of
+ * capital in a single name, so without these a fully "compliant" portfolio
+ * could hold three positions.
+ */
+export const DEFAULT_MAX_POSITION_WEIGHT_PCT = 10.0;
+export const DEFAULT_MAX_SECTOR_WEIGHT_PCT = 25.0;
+
+// ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
 
@@ -467,6 +494,15 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   // ROCE, growth, leverage, valuation and so on) as a filter over that ranked
   // list, rather than as the only way to appear in it.
   strict_screen: false,
+  // Position sizing. See the constants above for the sources: the target is a
+  // choice between two figures TSaM offers (12% at p.53, "typically about 15%"
+  // at p.1048), and the two caps are convention built on p.1040's warning about
+  // concentration rather than on any level it states. The 5% per-position RISK
+  // ceiling from p.1032 is deliberately NOT here: a setting that let a config
+  // file exceed the book's hard limit would make the limit decorative.
+  target_volatility_pct: DEFAULT_TARGET_VOLATILITY_PCT,
+  max_position_weight_pct: DEFAULT_MAX_POSITION_WEIGHT_PCT,
+  max_sector_weight_pct: DEFAULT_MAX_SECTOR_WEIGHT_PCT,
 };
 
 export const DEFAULT_SCREENING_CONFIG: ScreeningConfig = {
@@ -850,6 +886,12 @@ export const CONFIG_LIMITS: Record<string, { min: number; max: number }> = {
   maxPbRatio: { min: 0, max: 100 },
   minDividendYieldPct: { min: 0, max: 30 },
   minimum_fundamental_coverage: { min: 0, max: 100 },
+  // Upper bounds are generous on purpose: 100 for either cap means "no cap",
+  // which is a coherent thing to ask for, and 50 for the target covers the 18%
+  // TSaM p.53 mentions some hedge funds run at with room to spare.
+  target_volatility_pct: { min: 1, max: 50 },
+  max_position_weight_pct: { min: 1, max: 100 },
+  max_sector_weight_pct: { min: 1, max: 100 },
 };
 const WHOLE_NUMBER_SETTINGS = new Set(['top_n']);
 const BOOLEAN_SETTINGS = new Set([
@@ -967,6 +1009,16 @@ export function validateConfigDocument(document: unknown): {
   }
   // A minimum P/E above the maximum rejects every company, so it is a config
   // error rather than a screen that quietly returns nothing.
+  // A per-position cap above the per-group cap asks for something the sizing
+  // pass cannot honour: the group cap is applied after the position cap, so the
+  // larger number would silently never bind. Self-contradicting rather than
+  // merely unusual, so it is an error, exactly like the P/E pair below.
+  if (app.max_position_weight_pct > app.max_sector_weight_pct) {
+    errors.push(
+      `app.max_position_weight_pct (${app.max_position_weight_pct}) must not be above `
+      + `app.max_sector_weight_pct (${app.max_sector_weight_pct})`,
+    );
+  }
   if (screening.minPeRatio > screening.maxPeRatio) {
     errors.push(
       `screening.minPeRatio (${screening.minPeRatio}) must not be above screening.maxPeRatio (${screening.maxPeRatio})`,
@@ -1729,6 +1781,351 @@ export interface PriceSeries {
 
 /** Ticker -> sessions. The benchmark is stored under BENCHMARK_SYMBOL. */
 export type PriceHistory = Record<string, PriceSeries>;
+
+// ---------------------------------------------------------------------------
+// Position sizing
+// ---------------------------------------------------------------------------
+// Equal-risk sizing, from TSaM Chapter 24 (p.1103, worked as Table 24.1 on
+// p.1104) with its risk ceiling from Chapter 23 (p.1032). knowledge/rulebook.md
+// carries the full citations and, more usefully, what each number does not rest
+// on. Counterparts in python/engine.py.
+//
+// Why equal risk rather than anything cleverer: p.1054 states the condition
+// plainly -- "unless you can select which trades are most likely to be better
+// than another, equal risk is the most conservative approach". We have not
+// demonstrated that we can select. The backtest measured the TECHNICAL score
+// and found no ranking edge; the fundamental half has never been tested at all.
+// Those are different findings and only the weaker one is ours -- no
+// demonstrated selection ability, not a demonstrated absence of it -- but an
+// untested half fails p.1054's condition exactly as an edgeless one does.
+//
+// Read the sourcing honestly. This sizing layer is the best-cited code in the
+// system and it sits directly on a scoring layer that is roughly half
+// convention. These citations lend that layer nothing. The argument runs the
+// other way: equal risk is what the book prescribes precisely BECAUSE the
+// selection underneath it is unproven.
+
+/**
+ * TSaM p.1032, principle 1: "No trade should ever risk more than 5% of the
+ * invested capital." A ceiling on RISK, not on position size; the two are the
+ * same number only when the stop sits 100% away. At a 6% stop this permits 83%
+ * of capital in one name, so it is not a concentration limit and must not be
+ * mistaken for one. Deliberately not configurable: a setting that let a config
+ * file exceed the book's hard limit would make the limit decorative.
+ */
+export const MAX_RISK_PER_POSITION_PCT = 5.0;
+
+/**
+ * Convention. ATR as the basis for a stop is sourced -- TSaM p.852 describes ATR
+ * as used to place stops -- but this multiple is not. 2.0 is inherited market
+ * practice, exactly like the 50/200 pair and ADX 25, and should be read as
+ * unjustified rather than as measured.
+ */
+export const STOP_ATR_MULTIPLE = 2.0;
+
+/**
+ * The portfolio return series needs enough overlapping sessions before its
+ * standard deviation means anything. Below this the deployment fraction would
+ * be noise wearing the clothes of a risk measurement, so it is not computed at
+ * all.
+ */
+export const SESSIONS_FOR_PORTFOLIO_VOLATILITY = 60;
+
+/** What one run's sizing pass concluded, for display beside the weights. */
+export interface SizingSummary {
+  measure: 'atrPct' | 'volatility30D' | null;
+  targetVolatilityPct: number;
+  portfolioVolatilityPct: number | null;
+  deploymentPct: number | null;
+  investedPct: number | null;
+  basis: string;
+}
+
+/**
+ * {date: simple return} for one ticker's parsed series. Counterpart of
+ * _returns_by_date().
+ *
+ * The finite guards look redundant against PriceSeries, whose closes are typed
+ * number[], but Python's parsed series can carry None and the two engines have
+ * to skip the same sessions. A pair that cannot produce a return is skipped
+ * rather than contributing a zero, for the same reason a missing indicator is
+ * null and not 0: an absent measurement must not read as a measured flat day.
+ */
+function returnsByDate(entry: PriceSeries | undefined): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!entry) return out;
+  const dates = entry.dates || [];
+  const closes = entry.closes || [];
+  const n = Math.min(dates.length, closes.length);
+  for (let i = 1; i < n; i += 1) {
+    const previous = closes[i - 1];
+    const current = closes[i];
+    if (!Number.isFinite(previous) || !Number.isFinite(current) || previous === 0) continue;
+    out.set(dates[i], current / previous - 1);
+  }
+  return out;
+}
+
+/**
+ * [annualised volatility %, basis] of the weighted portfolio. Counterpart of
+ * portfolio_volatility_pct().
+ *
+ * Built from the portfolio's OWN daily return series over the sessions where
+ * every constituent traded, then one standard deviation of that series. This is
+ * exactly sqrt(w' COV w) without ever forming a covariance matrix, and the
+ * difference is not cosmetic: the matrix form is n*n products summed in an
+ * order both engines would have to agree on, while a single return series is
+ * one sequential sum, which is the discipline the rest of this file follows.
+ *
+ * It matters that this is the real thing rather than a weighted average of the
+ * individual volatilities. Measured on 19 Nifty names, average pairwise
+ * correlation was 0.24, the true portfolio volatility 13.0% and the
+ * weighted-average approximation 22.8%. At a 12% target those imply 92.5% and
+ * 52.7% of capital invested -- so the approximation would have parked nearly
+ * half the account permanently while looking conservative.
+ */
+export function portfolioVolatilityPct(
+  weights: Record<string, number>,
+  history: PriceHistory | null | undefined,
+): [number | null, string] {
+  const store = history || {};
+  const tickers = Object.keys(weights).sort(compareCodePoints);
+  if (tickers.length === 0) return [null, 'no holdings to measure'];
+
+  const perTicker = new Map<string, Map<string, number>>();
+  for (const ticker of tickers) {
+    const returns = returnsByDate(ownEntry(store, ticker));
+    if (returns.size === 0) return [null, `${ticker} has no usable return series`];
+    perTicker.set(ticker, returns);
+  }
+
+  let common: string[] | null = null;
+  for (const ticker of tickers) {
+    const returns = perTicker.get(ticker) as Map<string, number>;
+    common = common === null
+      ? [...returns.keys()]
+      : common.filter((date) => returns.has(date));
+  }
+  const all = (common || []).slice().sort(compareCodePoints);
+  if (all.length < SESSIONS_FOR_PORTFOLIO_VOLATILITY) {
+    return [null, `only ${all.length} sessions common to all ${tickers.length} holdings, `
+      + `needs ${SESSIONS_FOR_PORTFOLIO_VOLATILITY}`];
+  }
+  // Most recent year only. The price file starts at HISTORY_START (2015), so
+  // the untrimmed intersection runs to about 2890 sessions, and a volatility
+  // averaged over eleven years barely moves. That would quietly destroy the
+  // point of the target: deployment is supposed to fall when volatility rises,
+  // and an eleven-year mean cannot rise. It also mismatched every other measure
+  // here -- ATR(14) and volatility30D are short-window -- so the deployment
+  // fraction was being computed on a different timescale from the weights it
+  // scaled. The window length is Convention: no book in this repo fixes one,
+  // and 252 is chosen to match the annualisation everywhere else.
+  const dates = all.slice(-SESSIONS_52_WEEK);
+
+  const series: number[] = [];
+  for (const date of dates) {
+    let total = 0;
+    for (const ticker of tickers) {
+      total += weights[ticker] * (perTicker.get(ticker) as Map<string, number>).get(date)!;
+    }
+    series.push(total);
+  }
+  const mean = sequentialMean(series);
+  let squares = 0;
+  for (const value of series) {
+    const deviation = value - mean;
+    squares += deviation * deviation;
+  }
+  const variance = squares / (series.length - 1);
+  const value = Math.sqrt(variance) * Math.sqrt(SESSIONS_52_WEEK) * 100;
+  return [value, `${dates.length} sessions common to ${tickers.length} holdings`];
+}
+
+/** The four fields a sized position carries. */
+export interface PositionSizing {
+  positionWeightPct: number | null;
+  stopPrice: number | null;
+  stopDistancePct: number | null;
+  sizingBasis: string;
+}
+
+/**
+ * Equal-risk position sizes for the companies actually being bought.
+ * Counterpart of size_positions().
+ *
+ * items is the ranked watchlist -- the names that would actually be purchased --
+ * because a weight means nothing except relative to the rest of the basket. This
+ * runs after ranking and after the top_n cut, which is also why it can never
+ * influence a score: it does not exist until the selection is final.
+ *
+ * Four steps, in this order, because both engines must apply them identically:
+ *
+ *   1. Equal risk. Weight proportional to 1/volatility, normalised to sum to
+ *      one, exactly as TSaM Table 24.1 (p.1104) works it -- "% of smallest" is
+ *      min_vol/own_vol and "Scale" divides each by their total. ATR is the
+ *      measure when available (p.1103 prefers it when high, low and close are
+ *      present); annualised standard deviation is the book's own fallback when
+ *      only closes are.
+ *   2. Deployment. The volatility target scales the whole basket down until the
+ *      portfolio's own volatility meets it. Long-only and unleveraged, so this
+ *      can only ever reduce exposure and never raise it, which is also
+ *      Kaufman's advice at p.1092: use these methods only to reduce leverage.
+ *   3. Risk ceiling, TSaM p.1032 principle 1, applied per position.
+ *   4. Concentration caps, per p.1040.
+ *
+ * Capped weight is NOT redistributed across the uncapped names; it stays in
+ * cash. Redistribution needs iteration to converge, and an iteration count is
+ * one more thing two engines would have to agree on exactly.
+ *
+ * Returns a Map rather than mutating, and the caller applies it to every view of
+ * an evaluation. python/engine.py mutates the watchlist dicts, which are aliased
+ * into its evaluations list, so the weights appear in both there; returning a
+ * Map reproduces that deliberately instead of leaving the two engines disagreeing
+ * about which lists carry weights.
+ */
+export function sizePositions(
+  items: readonly StockEvaluation[],
+  history: PriceHistory | null | undefined,
+  appConfig: AppConfig,
+): { summary: SizingSummary; sizing: Map<string, PositionSizing> } {
+  const target = appConfig.target_volatility_pct;
+  const maxPosition = appConfig.max_position_weight_pct;
+  const maxSector = appConfig.max_sector_weight_pct;
+  const sizing = new Map<string, PositionSizing>();
+  const summary: SizingSummary = {
+    measure: null,
+    targetVolatilityPct: target,
+    portfolioVolatilityPct: null,
+    deploymentPct: null,
+    investedPct: null,
+    basis: '',
+  };
+  const unsized = (basis: string): PositionSizing => ({
+    positionWeightPct: null, stopPrice: null, stopDistancePct: null, sizingBasis: basis,
+  });
+  if (items.length === 0) {
+    summary.basis = 'no companies to size';
+    return { summary, sizing };
+  }
+
+  const measureFor = (item: StockEvaluation, key: 'atrPct' | 'volatility30D'): number | null => {
+    const value = item.stock.technicals ? item.stock.technicals[key] : null;
+    if (value === null || value === undefined || !Number.isFinite(value)) return null;
+    return value > 0 ? value : null;
+  };
+
+  // The measure is chosen once for the whole run, never per name. atrPct is a
+  // daily range and volatility30D is annualised, so normalising a mixture of the
+  // two would produce weights that describe nothing.
+  let measureKey: 'atrPct' | 'volatility30D' = 'atrPct';
+  let usable = items.filter((i) => measureFor(i, measureKey) !== null);
+  if (usable.length === 0) {
+    measureKey = 'volatility30D';
+    usable = items.filter((i) => measureFor(i, measureKey) !== null);
+  }
+  if (usable.length === 0) {
+    summary.basis = 'no company has a usable volatility measure';
+    for (const item of items) sizing.set(item.stock.ticker, unsized('no volatility measure'));
+    return { summary, sizing };
+  }
+  summary.measure = measureKey;
+
+  // Step 1: Table 24.1, "% of smallest" then "Scale".
+  const values = new Map<string, number>();
+  for (const item of usable) values.set(item.stock.ticker, measureFor(item, measureKey) as number);
+  const smallest = Math.min(...values.values());
+  const raw = new Map<string, number>();
+  for (const [ticker, value] of values) raw.set(ticker, smallest / value);
+  let rawTotal = 0;
+  for (const ticker of [...raw.keys()].sort(compareCodePoints)) rawTotal += raw.get(ticker) as number;
+  const scale: Record<string, number> = {};
+  for (const [ticker, value] of raw) scale[ticker] = value / rawTotal;
+
+  // Step 2: deployment, measured on the equal-risk weights before any cap,
+  // because the caps describe concentration and this describes total exposure.
+  const [portfolioVol, portfolioBasis] = portfolioVolatilityPct(scale, history);
+  if (portfolioVol === null || portfolioVol <= 0) {
+    // No deployment fraction means no honest position size. Reporting the
+    // relative weights alone would read as "invest all of this", which is a
+    // claim about total exposure that nothing here has measured.
+    summary.basis = `no position sizes: ${portfolioBasis}`;
+    for (const item of usable) {
+      sizing.set(item.stock.ticker, unsized(`portfolio volatility unavailable (${portfolioBasis})`));
+    }
+    return { summary, sizing };
+  }
+  const deployment = Math.min(1, target / portfolioVol);
+  summary.portfolioVolatilityPct = round1(portfolioVol);
+  summary.deploymentPct = round1(deployment * 100);
+  summary.basis = portfolioBasis;
+
+  const weights = new Map<string, number>();
+  for (const item of usable) {
+    const ticker = item.stock.ticker;
+    let weight = scale[ticker] * deployment * 100;
+    // Step 3: risk ceiling. weight% of capital losing stop% is weight*stop/100
+    // of capital, so the cap binds at weight = 100 * MAX_RISK / stop.
+    const atrPct = measureFor(item, 'atrPct');
+    if (atrPct !== null) {
+      const stopPct = STOP_ATR_MULTIPLE * atrPct;
+      if (stopPct > 0) weight = Math.min(weight, (MAX_RISK_PER_POSITION_PCT * 100) / stopPct);
+    }
+    // Step 4a: per-position cap.
+    weights.set(ticker, Math.min(weight, maxPosition));
+  }
+
+  // Step 4b: per-group cap. Members are scaled proportionally so the ordering
+  // within a group is preserved; the shortfall stays in cash.
+  const groups = new Map<string, string[]>();
+  for (const item of usable) {
+    const group = item.sectorGroup;
+    if (!group) continue;
+    const list = groups.get(group);
+    if (list) list.push(item.stock.ticker);
+    else groups.set(group, [item.stock.ticker]);
+  }
+  for (const group of [...groups.keys()].sort(compareCodePoints)) {
+    const members = (groups.get(group) as string[]).slice().sort(compareCodePoints);
+    let groupTotal = 0;
+    for (const ticker of members) groupTotal += weights.get(ticker) as number;
+    if (groupTotal > maxSector && groupTotal > 0) {
+      const factor = maxSector / groupTotal;
+      for (const ticker of members) weights.set(ticker, (weights.get(ticker) as number) * factor);
+    }
+  }
+
+  let invested = 0;
+  for (const item of usable) {
+    const ticker = item.stock.ticker;
+    const weight = weights.get(ticker) as number;
+    invested += weight;
+    const atrPct = measureFor(item, 'atrPct');
+    if (atrPct === null) {
+      // p.1032 principle 2 wants an exit known in advance, and without a high
+      // and a low there is no ATR to place one against. Saying so is better than
+      // inventing a percentage stop the books do not support.
+      sizing.set(ticker, {
+        positionWeightPct: round1(weight),
+        stopPrice: null,
+        stopDistancePct: null,
+        sizingBasis: 'equal risk by annualised volatility; no ATR, so no stop',
+      });
+      continue;
+    }
+    const stopPct = STOP_ATR_MULTIPLE * atrPct;
+    const price = item.stock.currentPrice;
+    sizing.set(ticker, {
+      positionWeightPct: round1(weight),
+      stopPrice: price !== null && Number.isFinite(price) && price > 0
+        ? round1(price * (1 - stopPct / 100))
+        : null,
+      stopDistancePct: round1(stopPct),
+      sizingBasis: `equal risk by ATR, stop ${STOP_ATR_MULTIPLE}x ATR`,
+    });
+  }
+  summary.investedPct = round1(invested);
+  return { summary, sizing };
+}
 
 function ownEntry<T>(record: Record<string, T>, key: string): T | undefined {
   return Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
@@ -2659,6 +3056,15 @@ export function evaluateStock(
     // plainly rather than implying a comparison that never happened.
     sectorRelativeStrength6M: null,
     sectorRelativeStrengthBasis: 'not compared',
+    // Also filled in by the pipeline, and for the same reason: a position
+    // weight is a share of a basket, so it cannot exist until the basket does.
+    // Only the watchlist is sized, so a company below the cut-off keeps these
+    // defaults, and 'not sized' says that rather than implying a weight of zero
+    // was calculated for it.
+    positionWeightPct: null,
+    stopPrice: null,
+    stopDistancePct: null,
+    sizingBasis: 'not sized',
     coveragePct: round1(coverage),
     redFlags,
     notScored,
@@ -2849,6 +3255,13 @@ export interface PipelineResult {
    * run has a technical score, because then every composite is comparable.
    */
   fundamentalOnly: StockEvaluation[];
+  /**
+   * What the sizing pass concluded for this run: which volatility measure it
+   * used, the portfolio's own volatility, and how much of the account that put
+   * to work. Null figures mean it could not be measured, never that it measured
+   * zero.
+   */
+  sizing: SizingSummary;
 }
 
 /** Canonical watchlist ordering: score descending, then ticker ascending. */
@@ -2879,6 +3292,14 @@ export function processScreenerPipeline(
     return {
       evaluations: [], watchlist: [], rejected: [], passedBelowCutOff: [],
       fundamentalOnly: [],
+      sizing: {
+        measure: null,
+        targetVolatilityPct: appConfig.target_volatility_pct,
+        portfolioVolatilityPct: null,
+        deploymentPct: null,
+        investedPct: null,
+        basis: 'configuration is invalid, nothing was screened',
+      },
       inspectionReport, duplicatesCount: 0, outsideUniverseCount: 0,
     };
   }
@@ -2958,8 +3379,31 @@ export function processScreenerPipeline(
 
   const rejected = sortByScoreThenTicker(evaluations.filter((e) => !e.passed));
 
+  // Position sizing is cross-sectional like the block above, but it runs later
+  // still, because a weight is a share of a basket and the basket is not decided
+  // until the cut-off is applied. Only the watchlist is sized: a company below
+  // the cut-off is not being bought, so it has no weight rather than a weight of
+  // zero. Nothing here can reach a score -- the scores were final before this.
+  const { summary: sizing, sizing: sizingByTicker } = sizePositions(watchlist, priceHistory, appConfig);
+  // Applied to every view, not just the watchlist. python/engine.py mutates the
+  // watchlist dicts and those same objects are aliased into its evaluations
+  // list, so the weights appear in both there. These arrays are independent
+  // copies made by .map(), so without this the two engines would disagree about
+  // which lists carry weights -- and the parity driver reads them off
+  // evaluations.
+  const withSizing = (item: StockEvaluation): StockEvaluation => {
+    const fields = sizingByTicker.get(item.stock.ticker);
+    return fields ? { ...item, ...fields } : item;
+  };
+
   return {
-    evaluations, watchlist, passedBelowCutOff, fundamentalOnly, rejected, inspectionReport,
+    evaluations: evaluations.map(withSizing),
+    watchlist: watchlist.map(withSizing),
+    passedBelowCutOff,
+    fundamentalOnly,
+    rejected: rejected.map(withSizing),
+    inspectionReport,
+    sizing,
     duplicatesCount: duplicatesRemoved, outsideUniverseCount,
   };
 }
@@ -3163,6 +3607,10 @@ export const WATCHLIST_CSV_COLUMNS = [
   // has no technical score at all: an empty cell says "not measured", a zero
   // would say "measured and found wanting".
   'Trend', 'Momentum', 'Volume', 'RelStrength',
+  // Position sizing. Blank rather than zero when a company could not be sized,
+  // for the same reason the block columns are: an empty cell reads as "not
+  // measured", a zero reads as "measured and found to be nothing".
+  'WeightPct', 'StopPrice', 'StopDistancePct', 'SizingBasis',
   'WarningFlags',
 ] as const;
 
@@ -3205,6 +3653,10 @@ export function generateWatchlistCsv(rows: StockEvaluation[]): string {
       blockCell(item, 'momentum'),
       blockCell(item, 'volume'),
       blockCell(item, 'relStrength'),
+      item.positionWeightPct === null ? '' : fmt1(item.positionWeightPct),
+      item.stopPrice === null ? '' : fmt1(item.stopPrice),
+      item.stopDistancePct === null ? '' : fmt1(item.stopDistancePct),
+      textCell(item.sizingBasis),
       textCell(item.warningFlags.join(', ')),
     ]));
   });

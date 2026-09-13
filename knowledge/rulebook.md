@@ -508,8 +508,177 @@ of position size.
 
 A screener is not a trading system, and it is legitimate for it to stop at
 selection. But the product goal is buy/sell guidance with percentage
-allocations, and by this page that goal needs an exit rule and a sizing rule
-that do not yet exist anywhere in the codebase.
+allocations, and by this page that goal needs an exit rule and a sizing rule.
+
+**The sizing rule now exists** and is set out below. The exit rule still does
+not: what follows places a stop in advance, which is p.1032 principle 2, but
+nothing yet acts on it, because the engine has no idea what anyone owns.
+
+---
+
+# Position sizing
+
+The best-sourced part of this system, and it is important to read that the right
+way round.
+
+This section has real page numbers, a worked table and a decision sentence,
+while the scoring layer beneath it is roughly half Convention and was measured
+to have no ranking edge. The citations here lend that layer **nothing**. The
+argument runs the other way, and it is stronger stated plainly: equal risk is
+what the book prescribes *precisely because* the selection underneath is
+unproven.
+
+### Why equal risk — **Sourced**, and the condition is ours
+
+TSaM p.1054: "Unless you can select which trades are most likely to be better
+than another, equal risk is the most conservative approach." p.1103 gives three
+ways to allocate equal risk — equal dollar amounts, equal risk by annualised
+standard deviation, equal risk by average true range — and states that **ATR is
+the best measure when high, low and closing prices are available**, annualised
+standard deviation when only closes are, and that equal dollar weighting, "once
+an industry standard, is rarely used."
+
+Be exact about why p.1054's condition applies to us. The backtest measured the
+**technical** score and found no ranking edge. The fundamental half has never
+been tested at all. So what we have is **no demonstrated selection ability** —
+not a demonstrated *absence* of it. Those are different claims and only the
+weaker one is ours. An untested half fails p.1054's condition exactly as an
+edgeless one does, so equal risk follows for both halves; but nobody should
+later cite this file as having measured something about fundamentals that
+nobody measured.
+
+### The weights — **Sourced**, reproduced from the book's own table
+
+Table 24.1 (p.1104) works it: "% of smallest" is `min_vol / own_vol`, and
+"Scale" divides each by their total. So **weight ∝ 1/volatility, normalised**.
+Both engines are tested against that table's printed figures rather than
+against each other, so a shared mistake fails the test instead of passing it.
+
+### Target volatility, 12% — **Adapted**, and a human chose it
+
+p.53 gives 12%, calling it "a modest risk level", and says every result in the
+book is shown at it. p.1048 gives "typically about 15%" and then calls 15%
+aggressive in its own worked example. The book offers a range; **Amogh chose
+12%** from it. Not a derivation, and a later reader should see both the range
+and the chooser.
+
+Long-only and unleveraged, the target can only reduce exposure, never raise it —
+which is also Kaufman's advice at p.1092, to use such methods only to reduce
+leverage.
+
+### Measuring the portfolio, not averaging its parts — the costly detail
+
+Deployment needs the portfolio's volatility, and the obvious shortcut is to
+average the constituents' volatilities weighted by size. That shortcut is
+wrong, not merely imprecise. Measured on 19 real Nifty 100 names:
+
+| | portfolio volatility | invested at a 12% target |
+| --- | --- | --- |
+| Actual, from the portfolio's own return series | **13.0%** | **92.5%** |
+| Weighted average of the parts | 22.8% | 52.7% |
+
+Average pairwise correlation was **0.24**, not the ~0.5 assumed. The shortcut
+would have parked nearly half the account permanently while looking
+conservative. The engine therefore builds the weighted portfolio's daily return
+series and takes its standard deviation — arithmetically `sqrt(w' COV w)`
+without forming a covariance matrix, which also keeps it to one sequential sum
+that both engines can agree on bit for bit.
+
+Caveat recorded rather than buried: that 0.24 is one calm year. p.1101 says
+outright that "diversification can disappear under stress", and when
+correlations rise the measured portfolio volatility rises with them and
+deployment falls. That is the mechanism working, not failing.
+
+### The measurement window, 252 sessions — **Convention**, and the first version was wrong
+
+No book here fixes a window length, so 252 is ours, chosen to match the
+annualisation used everywhere else.
+
+It is recorded as its own entry because the first implementation had no window
+at all, and the bug was invisible in every test. The price file starts at
+`HISTORY_START` (2015), so the sessions common to all holdings ran to about
+**2890** — eleven and a half years — and the deployment fraction was therefore
+an eleven-year average volatility. Every unit test passed, both engines agreed
+exactly, and the number was wrong in the way that mattered most: **deployment
+is supposed to fall when volatility rises, and an eleven-year mean cannot
+rise.** The crisis brake, which is the entire reason a 12% target is worth
+having over no target, was inert.
+
+It also mismatched the rest of the pass. ATR(14) and `volatility30D` are
+short-window measures, so the deployment fraction was being computed on a
+completely different timescale from the weights it scaled.
+
+On the real nine-name run the fix moved portfolio volatility from 17.1% to
+14.9% and deployment from 70.3% to 80.6%. It was caught only by reading the
+`basis` string in an actual run output — "2890 sessions common to 9 holdings" —
+and noticing the number was impossible for a one-year download. No test would
+have found it, because every test fixture was shorter than the window that was
+missing.
+
+### The 5% risk ceiling — **Sourced**, and it never binds
+
+p.1032 principle 1: "No trade should ever risk more than 5% of the invested
+capital." A ceiling on **risk**, not on position size; the two coincide only
+when the stop sits 100% away. At a 6% stop it permits 83% of capital in one
+name.
+
+On the real 19-name run the largest per-position risk was **0.18%** against
+that 5% ceiling. It does not bind, and will not at any realistic ATR once the
+volatility target has already scaled positions to around 5% each. So the only
+genuinely **Sourced** ceiling in this section is decorative in practice, and the
+constraints actually shaping the portfolio are the two Convention caps below.
+Anyone crediting p.1032 with protecting this portfolio is crediting the wrong
+rule.
+
+### Stop at 2 × ATR — **Convention**
+
+ATR as the basis for a stop is sourced: p.852 describes ATR as used to place
+stops, take profits, or set the current level of risk. **The multiple is not.**
+2.0 is inherited market practice, exactly like the 50/200 pair and ADX 25.
+
+### Position cap 10%, sector cap 25% — **Convention**
+
+p.1040 warns that a portfolio concentrating on fewer groups carries greater
+risk, which is the argument *for* having caps. It names **no level**, so both
+numbers are ours. They matter more than their status suggests: as shown above
+the sourced risk ceiling never binds, so these two unsourced numbers are what
+actually constrain concentration. On the 19-name run the sector cap bound
+Financials at exactly 25.0%.
+
+Capped weight is **not redistributed** to the uncapped names; it stays in cash.
+Redistribution needs iteration to converge, and an iteration count is one more
+thing two engines must agree on exactly.
+
+### What was rejected, and why it is not an oversight
+
+**Optimal f / Kelly** is the most-discussed sizing method in TSaM — 26 mentions
+of optimal f, 24 of risk of ruin, against one statement of the 5% ceiling. It is
+deliberately not used. It requires the win probability `P` and the payoff ratio
+`B` from the system's own trade history, and ours is contaminated by the
+feedback failure recorded above and measured no edge, so any `f` computed from
+it would be a leverage number resting on a foundation this file already
+describes as unusable. Kaufman's own worked example lands on **25% of capital
+per trade**, and Elder's critique (p.1092) is that trading above optimal f goes
+broke eventually while trading below it loses profits geometrically. Kaufman's
+fallback for exactly this situation is on the same page: "the simple solution is
+to keep trading the same amount, with a reserve sufficiently large to absorb
+most extreme, adverse price moves."
+
+Worth recording separately: Elder's three conclusions from that section — never
+average down, never meet margin calls, **liquidate the worst position first** —
+restate p.1032 principles 5 and 6. "Liquidate the worst first" therefore has two
+independent citations, more than almost any rule in this file.
+
+### A rule that is in no book here — **Convention**, and it was nearly written in
+
+The first draft of this section defaulted to risking **1% of capital per
+position**. That number appears **nowhere in any of the seven books in
+`Books_TO_study/`**: a search of all of them, with the pattern verified against
+a known match first, returns zero hits for 1% or 2% risk-per-trade phrasing and
+exactly one hit for a percentage of capital — the 5% ceiling at p.1032. It is
+practitioner folklore, and it was about to be written in as a default with
+citation-shaped confidence. It is recorded here because catching it is worth
+more than the section it nearly entered.
 
 ---
 

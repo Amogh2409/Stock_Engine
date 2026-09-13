@@ -91,6 +91,17 @@ def run_screen(engine, pd, spec, expected_rows=None):
                 # engines would otherwise be invisible.
                 "sectorRelativeStrength6M": item["sectorRelativeStrength6M"],
                 "sectorRelativeStrengthBasis": item["sectorRelativeStrengthBasis"],
+                # Position sizing, attached after the top_n cut. Compared here
+                # because a weight computed differently in the two engines would
+                # otherwise be invisible until it reached someone's money, and
+                # because the two engines reach these fields differently: Python
+                # mutates the evaluation dicts in place, TypeScript rebuilds
+                # them, so "both produce the same numbers" is a real assertion
+                # and not a restatement of one implementation.
+                "positionWeightPct": item["positionWeightPct"],
+                "stopPrice": item["stopPrice"],
+                "stopDistancePct": item["stopDistancePct"],
+                "sizingBasis": item["sizingBasis"],
                 "techScore": item["techScore"],
                 "techBreakdown": list(item["techBreakdown"]),
                 # The four block subtotals, so the engines are compared on the
@@ -119,6 +130,12 @@ def run_screen(engine, pd, spec, expected_rows=None):
         "passed_below_csv": engine.watchlist_to_csv(result["passed_below_cutoff"]),
         "rejected_csv": engine.rejected_to_csv(result["rejected"]),
         "technicals": None if history is None else engine.technicals_from_history(history, tickers),
+        # The run-level sizing summary. Worth comparing separately from the
+        # per-company weights: the deployment fraction is one number derived
+        # from a long sequential sum over the portfolio's return series, which
+        # is exactly the shape of calculation where two engines drift in the
+        # last bits without any individual weight looking wrong.
+        "sizing": result["sizing"],
     }
 
 
@@ -166,6 +183,12 @@ def main():
         "watchlist": base["watchlist"],
         "watchlist_csv": base["watchlist_csv"],
         "rejected_csv": base["rejected_csv"],
+        # The primary screen's sizing summary. run_screen() already projects one
+        # per extra screen, but the base screen's was not lifted here, so the
+        # deployment fraction and portfolio volatility of the main run went
+        # uncompared -- the half of sizing most likely to drift quietly, since it
+        # is a single number off a long sequential sum.
+        "sizing": base["sizing"],
         "ranking_changes_csv": engine.ranking_changes_to_csv(changes),
         "screens": {spec["label"]: run_screen(engine, pd, spec) for spec in job.get("screens", [])},
         "universe": {

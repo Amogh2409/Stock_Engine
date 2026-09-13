@@ -39,11 +39,14 @@ import {
   generateRankingChangesCsv,
   generateWatchlistCsv,
   parseStrictDecimal,
+  portfolioVolatilityPct,
+  PriceSeries,
   processScreenerPipeline,
   relativeStrengthYardstick,
   round1,
   sectorMedians,
   sectorRelativeStrength,
+  sizePositions,
   sortByScoreThenTicker,
   validateCustomFilters,
 } from '../utils/screenerEngine';
@@ -63,6 +66,166 @@ function makeStock(overrides: Partial<CleanedStock> = {}): CleanedStock {
 
 const APP = { ...DEFAULT_APP_CONFIG, minimum_total_score: 0, enable_technical_confirmation: false };
 const prices = (n: number) => Array.from({ length: n }, (_, i) => 100 + i * 0.5);
+
+describe('Position sizing', () => {
+  /**
+   * Synthetic history with enough common sessions to measure a portfolio.
+   * portfolioVolatilityPct() refuses below SESSIONS_FOR_PORTFOLIO_VOLATILITY and
+   * short-circuits before any weight is assigned, so a fixture with too few
+   * sessions would make every assertion below vacuously pass on null.
+   */
+  const sizedHistory = (tickers: string[], sessions = 120, step = 0.001) => {
+    const dates = Array.from({ length: sessions }, (_, i) =>
+      `2025-${String(1 + Math.floor(i / 28)).padStart(2, '0')}-${String(1 + (i % 28)).padStart(2, '0')}`);
+    const history: Record<string, PriceSeries> = {};
+    tickers.forEach((ticker, index) => {
+      const closes: number[] = [];
+      let price = 100;
+      for (let i = 0; i < sessions; i += 1) {
+        price *= 1 + ((i + index) % 2 === 0 ? step : -step);
+        closes.push(price);
+      }
+      history[ticker] = {
+        dates: [...dates],
+        closes,
+        volumes: Array(sessions).fill(null),
+        opens: Array(sessions).fill(null),
+        highs: Array(sessions).fill(null),
+        lows: Array(sessions).fill(null),
+      };
+    });
+    return history;
+  };
+
+  const sizable = (ticker: string, atrPct: number | null, volatility30D: number | null) => ({
+    ...evaluateStock(
+      makeStock({ ticker, sector: '', technicals: { ...emptyTechnicals(), atrPct, volatility30D } }),
+      DEFAULT_SCREENING_CONFIG, APP, sectorMedians([]),
+    ),
+  });
+
+  const loose = { ...APP, target_volatility_pct: 50, max_position_weight_pct: 100, max_sector_weight_pct: 100 };
+
+  it('reproduces the worked table in the book', () => {
+    // TSaM Table 24.1 (p.1104) sizes BAC, MSFT and AAPL from annualised standard
+    // deviations of 59.12%, 23.78% and 27.90%, printing Scale as 0.18/0.44/0.38.
+    // These expectations come from the printed table, not from either engine, so
+    // if the arithmetic is wrong the test fails rather than agreeing with the
+    // same mistake twice. 17.8 and not 17.9: the printed 0.18 is itself rounded
+    // from an exact 0.17841, so reading a third digit out of two printed ones
+    // would invent precision the book never carried.
+    const items = [
+      sizable('AAPL', null, 27.90), sizable('BAC', null, 59.12), sizable('MSFT', null, 23.78),
+    ];
+    const { summary, sizing } = sizePositions(items, sizedHistory(['AAPL', 'BAC', 'MSFT']), loose);
+    expect(summary.measure).toBe('volatility30D');
+    expect(summary.deploymentPct).toBe(100);
+    expect(sizing.get('BAC')!.positionWeightPct).toBe(17.8);
+    expect(sizing.get('MSFT')!.positionWeightPct).toBe(44.4);
+    expect(sizing.get('AAPL')!.positionWeightPct).toBe(37.8);
+  });
+
+  it('prefers ATR over standard deviation, choosing once for the whole run', () => {
+    // p.1103: ATR is the better measure when high, low and close are available;
+    // annualised sigma is the documented fallback when only closes are. Mixing
+    // them per name would normalise a daily range against an annualised figure.
+    const byAtr = sizePositions(
+      [sizable('AAA', 2, 40), sizable('BBB', 1, 10)], sizedHistory(['AAA', 'BBB']), loose,
+    );
+    expect(byAtr.summary.measure).toBe('atrPct');
+    expect(byAtr.sizing.get('AAA')!.positionWeightPct).toBe(33.3);
+    expect(byAtr.sizing.get('BBB')!.positionWeightPct).toBe(66.7);
+
+    const bySigma = sizePositions(
+      [sizable('AAA', null, 40), sizable('BBB', null, 10)], sizedHistory(['AAA', 'BBB']), loose,
+    );
+    expect(bySigma.summary.measure).toBe('volatility30D');
+    expect(bySigma.sizing.get('AAA')!.positionWeightPct).toBe(20);
+    expect(bySigma.sizing.get('BBB')!.positionWeightPct).toBe(80);
+  });
+
+  it('caps a sector group and leaves the shortfall in cash', () => {
+    // Four equal-volatility names in one group: equal risk wants 25% each and
+    // the group wants 100%. The cap pulls the group to 40% and the other 60%
+    // stays uninvested -- NOT redistributed, which would need iteration for two
+    // engines to agree on.
+    const tickers = ['AAA', 'BBB', 'CCC', 'DDD'];
+    const items = tickers.map((t) => ({
+      ...sizable(t, 2, null), sectorGroup: 'Information Technology',
+    }));
+    const { sizing } = sizePositions(items, sizedHistory(tickers), {
+      ...loose, max_sector_weight_pct: 40,
+    });
+    tickers.forEach((t) => expect(sizing.get(t)!.positionWeightPct).toBe(10));
+  });
+
+  it('places the stop a multiple of ATR below the price', () => {
+    const item = { ...sizable('AAA', 2, null), stock: { ...sizable('AAA', 2, null).stock, currentPrice: 500 } };
+    const { sizing } = sizePositions([item], sizedHistory(['AAA']), loose);
+    expect(sizing.get('AAA')!.stopDistancePct).toBe(4);
+    expect(sizing.get('AAA')!.stopPrice).toBe(480);
+    expect(sizing.get('AAA')!.sizingBasis).toContain('ATR');
+  });
+
+  it('gives no weight at all when the portfolio cannot be measured', () => {
+    // Relative weights alone would read as "invest all of this", a claim about
+    // total exposure that nothing has measured. Null plus a stated reason is the
+    // honest answer, exactly as a missing indicator is null rather than zero.
+    const { summary, sizing } = sizePositions(
+      [sizable('AAA', 2, null), sizable('BBB', 2, null)],
+      sizedHistory(['AAA', 'BBB'], 30), APP,
+    );
+    expect(summary.deploymentPct).toBeNull();
+    expect(sizing.get('AAA')!.positionWeightPct).toBeNull();
+    expect(sizing.get('AAA')!.sizingBasis).toContain('portfolio volatility unavailable');
+  });
+
+  it('reports an unsizable company as blank rather than zero', () => {
+    const { summary, sizing } = sizePositions(
+      [sizable('AAA', null, null)], sizedHistory(['AAA']), APP,
+    );
+    expect(summary.measure).toBeNull();
+    expect(sizing.get('AAA')!.positionWeightPct).toBeNull();
+    expect(sizing.get('AAA')!.sizingBasis).toBe('no volatility measure');
+  });
+
+  it('measures the portfolio, not the average of its parts', () => {
+    // Two perfectly anti-correlated series: the weighted portfolio is flat, so
+    // its volatility is near zero however volatile each leg is. A weighted
+    // average of the individual volatilities would report something large, which
+    // is precisely the approximation this function exists to avoid.
+    const dates = Array.from({ length: 80 }, (_, i) => `2025-01-${String(i + 1).padStart(2, '0')}`);
+    const up: number[] = []; const down: number[] = [];
+    let a = 100; let b = 100;
+    for (let i = 0; i < 80; i += 1) {
+      const move = i % 2 === 0 ? 0.02 : -0.02;
+      a *= 1 + move; b *= 1 - move; up.push(a); down.push(b);
+    }
+    const series = (closes: number[]): PriceSeries => ({
+      dates: [...dates], closes, volumes: Array(80).fill(null),
+      opens: Array(80).fill(null), highs: Array(80).fill(null), lows: Array(80).fill(null),
+    });
+    const [value, basis] = portfolioVolatilityPct(
+      { AAA: 0.5, BBB: 0.5 }, { AAA: series(up), BBB: series(down) },
+    );
+    expect(value).toBeLessThan(1);
+    expect(basis).toContain('79 sessions');
+  });
+
+  it('measures only the most recent year', () => {
+    // The price file starts at HISTORY_START (2015), so the untrimmed
+    // intersection runs to roughly 2890 sessions and its standard deviation is
+    // an eleven-year average. Deployment is meant to FALL when volatility
+    // rises, and an eleven-year mean cannot rise; it would also measure the
+    // portfolio on a different timescale from the ATR(14) weights it scales.
+    // 300 sessions in, 252 measured.
+    const [value, basis] = portfolioVolatilityPct(
+      { AAA: 0.5, BBB: 0.5 }, sizedHistory(['AAA', 'BBB'], 300),
+    );
+    expect(value).not.toBeNull();
+    expect(basis).toBe('252 sessions common to 2 holdings');
+  });
+});
 
 describe('Unit-aware number parsing', () => {
   it('resolves crore and lakh against the crore contract', () => {

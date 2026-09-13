@@ -113,6 +113,17 @@ export interface ParityEvaluation {
   sectorGroup: string | null;
   sectorRelativeStrength6M: number | null;
   sectorRelativeStrengthBasis: string;
+  // Position sizing, attached after the top_n cut. Compared because a weight
+  // computed differently in the two engines would otherwise stay invisible
+  // until it reached someone's money, and because the engines reach these
+  // fields by different routes: Python mutates the evaluation dicts, which are
+  // aliased into its watchlist, while TypeScript rebuilds them from a Map. That
+  // makes "both produce the same numbers" a real assertion rather than a
+  // restatement of one implementation.
+  positionWeightPct: number | null;
+  stopPrice: number | null;
+  stopDistancePct: number | null;
+  sizingBasis: string;
   techScore: number | null;
   techBreakdown: string[];
   technicalBlocks: TechnicalBlocks | null;
@@ -133,6 +144,21 @@ export interface ParityScreen {
   passed_below_csv: string;
   rejected_csv: string;
   technicals: Record<string, Record<string, unknown>> | null;
+  /**
+   * The run-level sizing summary. Worth comparing separately from the
+   * per-company weights: the deployment fraction is one number derived from a
+   * long sequential sum over the portfolio's return series, which is exactly
+   * the shape of calculation where two engines drift in the last bits without
+   * any individual weight looking wrong.
+   */
+  sizing: {
+    measure: string | null;
+    targetVolatilityPct: number;
+    portfolioVolatilityPct: number | null;
+    deploymentPct: number | null;
+    investedPct: number | null;
+    basis: string;
+  };
 }
 
 export interface ParityPayload {
@@ -144,6 +170,8 @@ export interface ParityPayload {
   watchlist_csv: string;
   rejected_csv: string;
   ranking_changes_csv: string;
+  /** The primary screen's sizing summary, same shape as ParityScreen['sizing']. */
+  sizing: ParityScreen['sizing'];
   screens: Record<string, ParityScreen>;
   universe: {
     count: number;

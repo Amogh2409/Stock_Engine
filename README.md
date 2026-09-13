@@ -60,6 +60,9 @@ data-store/
   fundamentals/   <- your Screener.in CSV exports go here
   config/         config.json (optional saved settings, see below)
   reports/        watchlist_<stamp>.csv, rejected_<stamp>.csv, ranking_changes.csv
+                  (the watchlist carries WeightPct, StopPrice, StopDistancePct
+                   and SizingBasis; weights sum to less than 100 whenever the
+                   volatility target holds part of the account in cash)
   watchlists/     latest_watchlist.json  (what the next run compares against)
   logs/           run_<stamp>.log  + run_<stamp>.json
   cache/          cached NSE constituent list
@@ -191,6 +194,32 @@ types and out-of-range values are **errors, never clamped**: the run stops with
 exit code 2 and the log lists every problem, and the browser applies nothing
 from a file with a problem. Both engines validate against the same ranges
 (`CONFIG_LIMITS`), which the parity suite asserts are identical.
+
+Three `app` keys control position sizing:
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `target_volatility_pct` | `12` | Annualised volatility the sized basket aims at. Since the engine is long-only and never leveraged, this only ever *reduces* exposure: the shortfall stays in cash. TSaM p.53 offers 12% and calls it modest; p.1048 offers "typically about 15%" and then calls 15% aggressive. |
+| `max_position_weight_pct` | `10` | Most of the account any one company may take. |
+| `max_sector_weight_pct` | `25` | Most of the account any one sector group may take. Capped weight is **not** redistributed — it stays in cash. |
+
+`max_position_weight_pct` above `max_sector_weight_pct` is a config error, since
+the group cap is applied second and the larger number could never bind.
+
+The run summary reports two percentages that are easy to confuse:
+`deploymentPct` is the scale factor the volatility target applies **before** the
+caps, and `investedPct` is what actually survives them. The gap between them is
+weight the caps removed, and like the volatility shortfall it stays in cash
+rather than being redistributed. Portfolio volatility is measured over the most
+recent 252 sessions, not over the whole price file — an eleven-year average
+could never rise, so deployment could never fall when it should.
+
+The 5% per-position **risk** ceiling (TSaM p.1032) is deliberately not
+configurable: a setting that let a config file exceed the book's hard limit
+would make the limit decorative. Note it is a ceiling on risk, not on position
+size — at a 6% stop it permits 83% of capital in one name, so concentration is
+governed by the two caps above, not by it. `knowledge/rulebook.md` records which
+of these numbers a book actually supports; most of them it does not.
 
 ---
 

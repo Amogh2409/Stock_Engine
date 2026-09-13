@@ -647,6 +647,29 @@ def dedupe_stocks(stocks):
 
 
 # === SECTION:config:Validated Configuration ===
+# --- Position sizing defaults ---------------------------------------------
+# Defined here rather than beside size_positions() further down, because
+# DEFAULT_APP_CONFIG below needs them and this file is evaluated top to bottom.
+# The reasoning behind each, and what it does not rest on, is in the sizing
+# block above CONFIG_LIMITS and in knowledge/rulebook.md.
+
+# TSaM p.53 offers 12%, calling it "a modest risk level"; p.1048 offers
+# "typically about 15%" and then calls 15% aggressive in its own worked example.
+# Amogh chose 12% from that range. Recorded as a choice between two figures the
+# book gives, not as a derivation -- a later reader should see both the range
+# and that a human picked within it.
+DEFAULT_TARGET_VOLATILITY_PCT = 12.0
+
+# Convention, both of them. TSaM p.1040 warns that a portfolio concentrating on
+# fewer groups carries greater risk, which is the argument FOR having caps; it
+# names no level, so these two numbers are ours. They matter because the p.1032
+# risk ceiling is not a concentration limit: at a 6% stop it permits 83% of
+# capital in a single name, so without these a fully "compliant" portfolio could
+# hold three positions.
+DEFAULT_MAX_POSITION_WEIGHT_PCT = 10.0
+DEFAULT_MAX_SECTOR_WEIGHT_PCT = 25.0
+
+
 DEFAULT_APP_CONFIG = {
     "universe_mode": "nifty100",
     "custom_symbols": [],
@@ -674,6 +697,16 @@ DEFAULT_APP_CONFIG = {
     # ROCE, growth, leverage, valuation and so on) as a filter over that ranked
     # list, rather than as the only way to appear in it.
     "strict_screen": False,
+    # Position sizing. See the sizing block above CONFIG_LIMITS for the sources:
+    # the target is a choice between two figures TSaM offers (12% at p.53,
+    # "typically about 15%" at p.1048), and the two caps are convention built on
+    # p.1040's warning about concentration rather than on any level it states.
+    # The 5% per-position RISK ceiling from p.1032 is deliberately NOT here: a
+    # setting that let a config file exceed the book's hard limit would make the
+    # limit decorative.
+    "target_volatility_pct": DEFAULT_TARGET_VOLATILITY_PCT,
+    "max_position_weight_pct": DEFAULT_MAX_POSITION_WEIGHT_PCT,
+    "max_sector_weight_pct": DEFAULT_MAX_SECTOR_WEIGHT_PCT,
 }
 
 DEFAULT_SCREENING_CONFIG = {
@@ -959,6 +992,293 @@ def relative_strength_yardstick(buckets, sector):
     return universe_value, "whole universe (group n=%d)" % group_count
 
 
+# --- Position sizing ------------------------------------------------------
+# Equal-risk sizing, from TSaM Chapter 24 (p.1103, worked as Table 24.1 on
+# p.1104) with its risk ceiling from Chapter 23 (p.1032). knowledge/rulebook.md
+# carries the full citations and, more usefully, what each number does not rest
+# on.
+#
+# Why equal risk rather than anything cleverer: p.1054 states the condition
+# plainly -- "unless you can select which trades are most likely to be better
+# than another, equal risk is the most conservative approach". We have not
+# demonstrated that we can select. The backtest measured the TECHNICAL score
+# and found no ranking edge; the fundamental half has never been tested at all.
+# Those are different findings and only the weaker one is ours -- no
+# demonstrated selection ability, not a demonstrated absence of it -- but an
+# untested half fails p.1054's condition exactly as an edgeless one does.
+#
+# Read the sourcing honestly. This sizing layer is the best-cited code in the
+# system and it sits directly on a scoring layer that is roughly half
+# convention. These citations lend that layer nothing. The argument runs the
+# other way: equal risk is what the book prescribes precisely BECAUSE the
+# selection underneath it is unproven.
+
+# The three configurable defaults this section uses -- the volatility target and
+# the two concentration caps -- are defined above DEFAULT_APP_CONFIG, because
+# that dict needs them and this file is evaluated top to bottom.
+
+# TSaM p.1032, principle 1: "No trade should ever risk more than 5% of the
+# invested capital." A ceiling on RISK, not on position size; the two are the
+# same number only when the stop sits 100% away. At a 6% stop this permits 83%
+# of capital in one name, so it is not a concentration limit and must not be
+# mistaken for one -- that job belongs to the caps below. Deliberately not
+# configurable: a setting that let a config file exceed the book's hard limit
+# would make the limit decorative.
+MAX_RISK_PER_POSITION_PCT = 5.0
+
+# Convention. ATR as the basis for a stop is sourced -- TSaM p.852 describes ATR
+# as used to place stops -- but this multiple is not. 2.0 is inherited market
+# practice, exactly like the 50/200 pair and ADX 25, and should be read as
+# unjustified rather than as measured.
+STOP_ATR_MULTIPLE = 2.0
+
+# The portfolio return series needs enough overlapping sessions before its
+# standard deviation means anything. Below this the deployment fraction would
+# be noise wearing the clothes of a risk measurement, so it is not computed at
+# all. Mirrors the engine's existing refusal to score technicals below 200
+# sessions rather than scoring them low.
+SESSIONS_FOR_PORTFOLIO_VOLATILITY = 60
+
+
+def _returns_by_date(entry):
+    """{date: simple return} for one ticker's parsed series.
+
+    Pairs with a missing or zero previous close are skipped rather than
+    contributing a zero return, for the same reason a missing indicator is None
+    and not 0: an absent measurement must not read as a measured flat day.
+    """
+    dates = (entry or {}).get("dates") or []
+    closes = (entry or {}).get("closes") or []
+    out = {}
+    for i in range(1, min(len(dates), len(closes))):
+        previous, current = closes[i - 1], closes[i]
+        if previous is None or current is None or previous == 0:
+            continue
+        out[dates[i]] = current / previous - 1.0
+    return out
+
+
+def portfolio_volatility_pct(weights, history):
+    """(annualised volatility %, basis) of the weighted portfolio.
+
+    Built from the portfolio's OWN daily return series over the sessions where
+    every constituent traded, then one standard deviation of that series. This
+    is exactly sqrt(w' COV w) without ever forming a covariance matrix, and the
+    difference is not cosmetic: the matrix form is n*n products summed in an
+    order both engines would have to agree on, while a single return series is
+    one sequential sum, which is the discipline the rest of this file already
+    follows.
+
+    It matters that this is the real thing rather than a weighted average of
+    the individual volatilities. Measured on 19 Nifty names, average pairwise
+    correlation was 0.24, the true portfolio volatility 12.3% and the
+    weighted-average approximation 22.8%. At a 12% target those imply 97.5% and
+    52.7% of capital invested -- so the approximation would have parked nearly
+    half the account permanently while looking conservative.
+
+    Returns (None, basis) when too few sessions are common to every holding.
+    Mirrors portfolioVolatilityPct() in screenerEngine.ts.
+    """
+    history = history or {}
+    tickers = sorted(weights)
+    if not tickers:
+        return None, "no holdings to measure"
+    per_ticker = {}
+    for ticker in tickers:
+        returns = _returns_by_date(history.get(ticker))
+        if not returns:
+            return None, "%s has no usable return series" % ticker
+        per_ticker[ticker] = returns
+    common = None
+    for ticker in tickers:
+        dates = set(per_ticker[ticker])
+        common = dates if common is None else (common & dates)
+    common = sorted(common or [])
+    if len(common) < SESSIONS_FOR_PORTFOLIO_VOLATILITY:
+        return None, ("only %d sessions common to all %d holdings, needs %d"
+                      % (len(common), len(tickers), SESSIONS_FOR_PORTFOLIO_VOLATILITY))
+    # Most recent year only. The price file starts at HISTORY_START (2015), so
+    # the untrimmed intersection runs to about 2890 sessions, and a volatility
+    # averaged over eleven years barely moves. That would quietly destroy the
+    # point of the target: deployment is supposed to fall when volatility rises,
+    # and an eleven-year mean cannot rise. It also mismatched every other
+    # measure here -- ATR(14) and volatility30D are short-window -- so the
+    # deployment fraction was being computed on a different timescale from the
+    # weights it scaled. The window length is Convention: no book in this repo
+    # fixes one, and 252 is chosen to match the annualisation everywhere else.
+    common = common[-SESSIONS_52_WEEK:]
+    series = []
+    for date in common:
+        total = 0.0
+        for ticker in tickers:
+            total += weights[ticker] * per_ticker[ticker][date]
+        series.append(total)
+    mean = _sequential_mean(series)
+    squares = 0.0
+    for value in series:
+        deviation = value - mean
+        squares += deviation * deviation
+    variance = squares / (len(series) - 1)
+    value = math.sqrt(variance) * math.sqrt(SESSIONS_52_WEEK) * 100.0
+    return value, "%d sessions common to %d holdings" % (len(common), len(tickers))
+
+
+def size_positions(items, technicals, history, app_config):
+    """Equal-risk position sizes for the companies actually being bought.
+
+    items is the ranked watchlist -- the names that would actually be purchased
+    -- because a weight means nothing except relative to the rest of the basket.
+    This runs after ranking and after the top_n cut, which is also why it can
+    never influence a score: it does not exist until the selection is final.
+
+    Four steps, in this order, because both engines must apply them identically:
+
+      1. Equal risk. Weight proportional to 1/volatility, normalised to sum to
+         one, exactly as TSaM Table 24.1 (p.1104) works it -- "% of smallest" is
+         min_vol/own_vol and "Scale" divides each by their total. ATR is the
+         measure when it is available (p.1103 prefers it when high, low and
+         close are present); annualised standard deviation is the book's own
+         fallback when only closes are.
+      2. Deployment. The volatility target scales the whole basket down until
+         the portfolio's own volatility meets it. Long-only and unleveraged, so
+         this can only ever reduce exposure and never raise it, which is also
+         Kaufman's advice at p.1092: use these methods only to reduce leverage.
+      3. Risk ceiling, TSaM p.1032 principle 1, applied per position.
+      4. Concentration caps, per p.1040.
+
+    Capped weight is NOT redistributed across the uncapped names; it stays in
+    cash. Redistribution needs iteration to converge, and an iteration count is
+    one more thing two engines would have to agree on exactly. One pass leaves
+    the arithmetic identical in both and errs toward less exposure, which is the
+    direction TSaM p.388 says to err in.
+
+    Returns a run-level summary and fills positionWeightPct, stopPrice,
+    stopDistancePct and sizingBasis on each item. Mirrors sizePositions() in
+    screenerEngine.ts.
+    """
+    technicals = technicals or {}
+    config = app_config or {}
+    target = float(config.get("target_volatility_pct", DEFAULT_TARGET_VOLATILITY_PCT))
+    max_position = float(config.get("max_position_weight_pct", DEFAULT_MAX_POSITION_WEIGHT_PCT))
+    max_sector = float(config.get("max_sector_weight_pct", DEFAULT_MAX_SECTOR_WEIGHT_PCT))
+
+    summary = {
+        "measure": None,
+        "targetVolatilityPct": target,
+        "portfolioVolatilityPct": None,
+        "deploymentPct": None,
+        "investedPct": None,
+        "basis": "",
+    }
+    for item in items:
+        item["positionWeightPct"] = None
+        item["stopPrice"] = None
+        item["stopDistancePct"] = None
+        item["sizingBasis"] = "not sized"
+    if not items:
+        summary["basis"] = "no companies to size"
+        return summary
+
+    def measure_for(ticker, key):
+        value = (technicals.get(ticker) or {}).get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return value if value > 0 else None
+
+    # The measure is chosen once for the whole run, never per name. atrPct is a
+    # daily range and volatility30D is annualised, so normalising a mixture of
+    # the two would produce weights that describe nothing.
+    measure_key = "atrPct"
+    usable = [i for i in items if measure_for(i["ticker"], measure_key) is not None]
+    if not usable:
+        measure_key = "volatility30D"
+        usable = [i for i in items if measure_for(i["ticker"], measure_key) is not None]
+    if not usable:
+        summary["basis"] = "no company has a usable volatility measure"
+        for item in items:
+            item["sizingBasis"] = "no volatility measure"
+        return summary
+    summary["measure"] = measure_key
+
+    # Step 1: Table 24.1, "% of smallest" then "Scale".
+    values = {i["ticker"]: measure_for(i["ticker"], measure_key) for i in usable}
+    smallest = min(values.values())
+    raw = {ticker: smallest / value for ticker, value in values.items()}
+    raw_total = 0.0
+    for ticker in sorted(raw):
+        raw_total += raw[ticker]
+    scale = {ticker: raw[ticker] / raw_total for ticker in raw}
+
+    # Step 2: deployment. Measured on the equal-risk weights, before any cap,
+    # because the caps describe concentration and this describes total exposure.
+    portfolio_vol, portfolio_basis = portfolio_volatility_pct(scale, history)
+    if portfolio_vol is None or portfolio_vol <= 0:
+        # No deployment fraction means no honest position size. Reporting the
+        # relative weights alone would read as "invest all of this", which is a
+        # claim about total exposure that nothing here has measured.
+        summary["basis"] = "no position sizes: %s" % portfolio_basis
+        for item in usable:
+            item["sizingBasis"] = "portfolio volatility unavailable (%s)" % portfolio_basis
+        return summary
+    deployment = min(1.0, target / portfolio_vol)
+    summary["portfolioVolatilityPct"] = round1(portfolio_vol)
+    summary["deploymentPct"] = round1(deployment * 100.0)
+    summary["basis"] = portfolio_basis
+
+    weights = {}
+    for item in usable:
+        ticker = item["ticker"]
+        weight = scale[ticker] * deployment * 100.0
+        # Step 3: risk ceiling. weight% of capital losing stop% is weight*stop/100
+        # of capital, so the cap binds at weight = 100 * MAX_RISK / stop.
+        atr_pct = measure_for(ticker, "atrPct")
+        if atr_pct is not None:
+            stop_pct = STOP_ATR_MULTIPLE * atr_pct
+            if stop_pct > 0:
+                weight = min(weight, MAX_RISK_PER_POSITION_PCT * 100.0 / stop_pct)
+        # Step 4a: per-position cap.
+        weights[ticker] = min(weight, max_position)
+
+    # Step 4b: per-group cap. Members are scaled proportionally so the ordering
+    # within a group is preserved; the shortfall stays in cash.
+    groups = {}
+    for item in usable:
+        group = item.get("sectorGroup")
+        if group:
+            groups.setdefault(group, []).append(item["ticker"])
+    for group in sorted(groups):
+        members = sorted(groups[group])
+        group_total = 0.0
+        for ticker in members:
+            group_total += weights[ticker]
+        if group_total > max_sector and group_total > 0:
+            factor = max_sector / group_total
+            for ticker in members:
+                weights[ticker] = weights[ticker] * factor
+
+    invested = 0.0
+    for item in usable:
+        ticker = item["ticker"]
+        item["positionWeightPct"] = round1(weights[ticker])
+        invested += weights[ticker]
+        atr_pct = measure_for(ticker, "atrPct")
+        price = item.get("currentPrice")
+        if atr_pct is None:
+            # p.1032 principle 2 wants an exit known in advance, and without a
+            # high and a low there is no ATR to place one against. Saying so is
+            # better than inventing a percentage stop the books do not support.
+            item["sizingBasis"] = "equal risk by annualised volatility; no ATR, so no stop"
+            continue
+        stop_pct = STOP_ATR_MULTIPLE * atr_pct
+        item["stopDistancePct"] = round1(stop_pct)
+        if isinstance(price, (int, float)) and not isinstance(price, bool) and price > 0:
+            item["stopPrice"] = round1(price * (1.0 - stop_pct / 100.0))
+        item["sizingBasis"] = "equal risk by ATR, stop %sx ATR" % js_number_to_string(
+            round1(STOP_ATR_MULTIPLE))
+    summary["investedPct"] = round1(invested)
+    return summary
+
+
 # Documented range of every numeric setting. Shared with CONFIG_LIMITS in
 # screenerEngine.ts -- the browser clamps its inputs to the same bounds -- and
 # asserted equal by the cross-engine parity suite.
@@ -981,6 +1301,12 @@ CONFIG_LIMITS = {
     "maxPbRatio": (0, 100),
     "minDividendYieldPct": (0, 30),
     "minimum_fundamental_coverage": (0, 100),
+    # Upper bounds are generous on purpose: 100 for either cap means "no cap",
+    # which is a coherent thing to ask for, and 50 for the target covers the 18%
+    # TSaM p.53 mentions some hedge funds run at with room to spare.
+    "target_volatility_pct": (1, 50),
+    "max_position_weight_pct": (1, 100),
+    "max_sector_weight_pct": (1, 100),
 }
 WHOLE_NUMBER_SETTINGS = ("top_n",)
 BOOLEAN_SETTINGS = ("enable_technical_confirmation", "requirePositiveOcf", "strict_screen")
@@ -1130,6 +1456,15 @@ def validate_config_document(document):
         errors.append("screening.minPeRatio (%s) must not be above screening.maxPeRatio (%s)"
                       % (js_number_to_string(screening["minPeRatio"]),
                          js_number_to_string(screening["maxPeRatio"])))
+    # A per-position cap above the per-group cap asks for something the sizing
+    # pass cannot honour: the group cap is applied after the position cap, so
+    # the larger number would silently never bind. Self-contradicting rather
+    # than merely unusual, so it is an error, exactly like the P/E pair above.
+    if app["max_position_weight_pct"] > app["max_sector_weight_pct"]:
+        errors.append("app.max_position_weight_pct (%s) must not be above "
+                      "app.max_sector_weight_pct (%s)"
+                      % (js_number_to_string(app["max_position_weight_pct"]),
+                         js_number_to_string(app["max_sector_weight_pct"])))
     return app, screening, errors
 
 
@@ -2951,6 +3286,15 @@ class ScreeningEngine:
             # default states that plainly rather than implying a comparison.
             "sectorRelativeStrength6M": None,
             "sectorRelativeStrengthBasis": "not compared",
+            # Also filled in by screen(), and for the same reason: a position
+            # weight is a share of a basket, so it cannot exist until the basket
+            # does. Only the companies actually being bought are sized, so a
+            # company below the cut-off keeps these defaults, and "not sized"
+            # says that rather than implying a weight of zero was calculated.
+            "positionWeightPct": None,
+            "stopPrice": None,
+            "stopDistancePct": None,
+            "sizingBasis": "not sized",
             "coverage": round1(coverage),
             "reasons": list(reasons),
             "warningFlags": list(warning_flags),
@@ -3073,10 +3417,19 @@ class ScreeningEngine:
         top_n = int(self.config.get("top_n") or 0)
         cutoff = top_n if top_n > 0 else len(passed)
 
+        # Position sizing is cross-sectional like the block above, but it runs
+        # later still, because a weight is a share of a basket and the basket is
+        # not decided until the cut-off is applied. Only the watchlist is sized:
+        # a company below the cut-off is not being bought, so it has no weight
+        # rather than a weight of zero. Nothing here can reach a score -- the
+        # scores were final before this line.
+        sizing = size_positions(passed[:cutoff], technicals, price_history, self.config)
+
         rejected = [e for e in evaluations if not e["passed"]]
         rejected.sort(key=lambda e: (-e["composite"], e["ticker"]))
 
         return {
+            "sizing": sizing,
             "evaluations": evaluations,
             "watchlist": passed[:cutoff],
             "passed_below_cutoff": passed[cutoff:],
@@ -3296,6 +3649,10 @@ WATCHLIST_CSV_COLUMNS = [
     # has no technical score at all: an empty cell says "not measured", a zero
     # would say "measured and found wanting".
     "Trend", "Momentum", "Volume", "RelStrength",
+    # Position sizing. Blank rather than zero when a company could not be sized,
+    # for the same reason the block columns are: an empty cell reads as "not
+    # measured", a zero reads as "measured and found to be nothing".
+    "WeightPct", "StopPrice", "StopDistancePct", "SizingBasis",
     "WarningFlags",
 ]
 REJECTED_CSV_COLUMNS = [
@@ -3346,6 +3703,10 @@ def watchlist_to_csv(rows):
             _block(item, "momentum"),
             _block(item, "volume"),
             _block(item, "relStrength"),
+            "" if item.get("positionWeightPct") is None else _num(item.get("positionWeightPct")),
+            "" if item.get("stopPrice") is None else _num(item.get("stopPrice")),
+            "" if item.get("stopDistancePct") is None else _num(item.get("stopDistancePct")),
+            escape_csv_cell(item.get("sizingBasis")),
             escape_csv_cell(", ".join(item.get("warningFlags") or [])),
         ])
     return buffer.getvalue()
@@ -3922,6 +4283,186 @@ class EngineTests(unittest.TestCase):
         peer, _ = relative_strength_yardstick(buckets, "Computers - Software")
         self.assertEqual(round1(50.0 - peer), 20.0)
         self.assertEqual(round1(10.0 - peer), -20.0)
+
+    # --- position sizing ---------------------------------------------------
+    def _sized_history(self, tickers, sessions=120, step=0.001):
+        """Synthetic history with enough common sessions to measure a portfolio.
+
+        portfolio_volatility_pct() refuses below SESSIONS_FOR_PORTFOLIO_VOLATILITY
+        and short-circuits before any weight is assigned, so a fixture with too
+        few sessions would make every assertion below vacuously pass on None.
+        """
+        dates = ["2025-%02d-%02d" % (1 + i // 28, 1 + i % 28) for i in range(sessions)]
+        history = {}
+        for index, ticker in enumerate(tickers):
+            closes, price = [], 100.0
+            for i in range(sessions):
+                price = price * (1.0 + (step if (i + index) % 2 == 0 else -step))
+                closes.append(price)
+            history[ticker] = {"dates": list(dates), "closes": closes,
+                               "volumes": [None] * sessions}
+        return history
+
+    def test_weights_reproduce_the_worked_table_in_the_book(self):
+        # TSaM Table 24.1 (p.1104) sizes BAC, MSFT and AAPL from annualised
+        # standard deviations of 59.12%, 23.78% and 27.90%. Its "% of smallest"
+        # row is 0.40/1.00/0.85 and its "Scale" row is 0.18/0.44/0.38.
+        #
+        # These expected numbers come from the printed table, not from this
+        # implementation, which is the point: if the arithmetic here is wrong
+        # the test fails instead of agreeing with the same mistake twice.
+        tickers = ["AAPL", "BAC", "MSFT"]
+        vols = {"BAC": 59.12, "MSFT": 23.78, "AAPL": 27.90}
+        technicals = {t: {"atrPct": None, "volatility30D": vols[t]} for t in tickers}
+        items = [{"ticker": t, "sector": "", "sectorGroup": None, "currentPrice": 100.0}
+                 for t in tickers]
+        # A target far above the portfolio's own volatility cannot bind, so the
+        # weights below are the book's Scale row undiluted by the deployment
+        # step, which Table 24.1 does not model.
+        summary = size_positions(items, technicals, self._sized_history(tickers),
+                                 {"target_volatility_pct": 50,
+                                  "max_position_weight_pct": 100,
+                                  "max_sector_weight_pct": 100})
+        self.assertEqual(summary["measure"], "volatility30D")
+        self.assertEqual(summary["deploymentPct"], 100.0)
+        by_ticker = {i["ticker"]: i["positionWeightPct"] for i in items}
+        # 17.8 and not 17.9: the table's printed 0.18 is itself rounded, from an
+        # exact 0.17841, so reading a third digit out of two printed ones would
+        # be inventing precision the book never carried. The unrounded values are
+        # 17.8408, 44.3545 and 37.8047.
+        self.assertEqual(by_ticker["BAC"], 17.8)
+        self.assertEqual(by_ticker["MSFT"], 44.4)
+        self.assertEqual(by_ticker["AAPL"], 37.8)
+        # And they still sum to the whole basket, which is what "normalised"
+        # has to mean once each part has been rounded independently.
+        self.assertEqual(round1(sum(by_ticker.values())), 100.0)
+
+    def test_atr_is_preferred_over_standard_deviation(self):
+        # p.1103: average true range is the better volatility measure when high,
+        # low and close are available; annualised standard deviation is the
+        # documented fallback when only closes are. The choice is made once for
+        # the whole run, never per company, because atrPct is a daily range and
+        # volatility30D is annualised -- normalising a mixture would produce
+        # weights describing nothing.
+        tickers = ["AAA", "BBB"]
+        history = self._sized_history(tickers)
+        both = {"AAA": {"atrPct": 2.0, "volatility30D": 40.0},
+                "BBB": {"atrPct": 1.0, "volatility30D": 10.0}}
+        items = [{"ticker": t, "sector": "", "sectorGroup": None, "currentPrice": 100.0}
+                 for t in tickers]
+        summary = size_positions(items, both, history, {"target_volatility_pct": 50,
+                                                        "max_position_weight_pct": 100,
+                                                        "max_sector_weight_pct": 100})
+        self.assertEqual(summary["measure"], "atrPct")
+        # 1/2 against 1/1 -> one third and two thirds, from ATR not from sigma.
+        self.assertEqual([i["positionWeightPct"] for i in items], [33.3, 66.7])
+
+        closes_only = {t: {"atrPct": None, "volatility30D": v}
+                       for t, v in (("AAA", 40.0), ("BBB", 10.0))}
+        items = [{"ticker": t, "sector": "", "sectorGroup": None, "currentPrice": 100.0}
+                 for t in tickers]
+        summary = size_positions(items, closes_only, history, {"target_volatility_pct": 50,
+                                                               "max_position_weight_pct": 100,
+                                                               "max_sector_weight_pct": 100})
+        self.assertEqual(summary["measure"], "volatility30D")
+        self.assertEqual([i["positionWeightPct"] for i in items], [20.0, 80.0])
+
+    def test_sector_cap_binds_and_the_shortfall_stays_in_cash(self):
+        # Four companies in one group, equal volatility, so equal risk wants 25%
+        # each and the group wants 100%. The cap must pull the group to 40% and
+        # leave the other 60% uninvested -- NOT redistribute it, which would
+        # need iteration for two engines to agree on.
+        tickers = ["AAA", "BBB", "CCC", "DDD"]
+        technicals = {t: {"atrPct": 2.0, "volatility30D": None} for t in tickers}
+        items = [{"ticker": t, "sector": "Computers - Software",
+                  "sectorGroup": "Information Technology", "currentPrice": 100.0}
+                 for t in tickers]
+        size_positions(items, technicals, self._sized_history(tickers),
+                       {"target_volatility_pct": 50, "max_position_weight_pct": 100,
+                        "max_sector_weight_pct": 40})
+        self.assertEqual([i["positionWeightPct"] for i in items], [10.0, 10.0, 10.0, 10.0])
+
+    def test_position_cap_binds_before_the_group_cap(self):
+        tickers = ["AAA", "BBB"]
+        technicals = {t: {"atrPct": 2.0, "volatility30D": None} for t in tickers}
+        items = [{"ticker": t, "sector": "", "sectorGroup": None, "currentPrice": 100.0}
+                 for t in tickers]
+        size_positions(items, technicals, self._sized_history(tickers),
+                       {"target_volatility_pct": 50, "max_position_weight_pct": 30,
+                        "max_sector_weight_pct": 100})
+        self.assertEqual([i["positionWeightPct"] for i in items], [30.0, 30.0])
+
+    def test_stop_is_a_multiple_of_atr_below_the_price(self):
+        # p.1032 principle 2 wants the exit known in advance. ATR placing the
+        # stop is sourced at p.852; the multiple itself is convention.
+        technicals = {"AAA": {"atrPct": 2.0, "volatility30D": None}}
+        items = [{"ticker": "AAA", "sector": "", "sectorGroup": None, "currentPrice": 500.0}]
+        size_positions(items, technicals, self._sized_history(["AAA"]),
+                       {"target_volatility_pct": 50, "max_position_weight_pct": 100,
+                        "max_sector_weight_pct": 100})
+        self.assertEqual(items[0]["stopDistancePct"], 4.0)
+        self.assertEqual(items[0]["stopPrice"], 480.0)
+        self.assertIn("ATR", items[0]["sizingBasis"])
+
+    def test_no_weight_at_all_when_the_portfolio_cannot_be_measured(self):
+        # Relative weights alone would read as "invest all of this", which is a
+        # claim about total exposure that nothing here has measured. None plus a
+        # stated reason is the honest answer, exactly as a missing indicator is
+        # None rather than zero.
+        tickers = ["AAA", "BBB"]
+        technicals = {t: {"atrPct": 2.0, "volatility30D": None} for t in tickers}
+        items = [{"ticker": t, "sector": "", "sectorGroup": None, "currentPrice": 100.0}
+                 for t in tickers]
+        summary = size_positions(items, technicals, self._sized_history(tickers, sessions=30),
+                                 {"target_volatility_pct": 12,
+                                  "max_position_weight_pct": 100,
+                                  "max_sector_weight_pct": 100})
+        self.assertIsNone(summary["deploymentPct"])
+        self.assertTrue(all(i["positionWeightPct"] is None for i in items))
+        self.assertIn("portfolio volatility unavailable", items[0]["sizingBasis"])
+
+    def test_unsizable_company_is_blank_rather_than_zero(self):
+        technicals = {"AAA": {"atrPct": None, "volatility30D": None}}
+        items = [{"ticker": "AAA", "sector": "", "sectorGroup": None, "currentPrice": 100.0}]
+        summary = size_positions(items, technicals, self._sized_history(["AAA"]),
+                                 {"target_volatility_pct": 12,
+                                  "max_position_weight_pct": 100,
+                                  "max_sector_weight_pct": 100})
+        self.assertIsNone(summary["measure"])
+        self.assertIsNone(items[0]["positionWeightPct"])
+        self.assertEqual(items[0]["sizingBasis"], "no volatility measure")
+
+    def test_portfolio_volatility_matches_a_direct_calculation(self):
+        # Two perfectly anti-correlated series: the weighted portfolio is flat,
+        # so its volatility is zero however volatile each leg is. A weighted
+        # average of the individual volatilities would report something large,
+        # which is precisely the approximation this function exists to avoid.
+        dates = ["2025-01-%02d" % (i + 1) for i in range(80)]
+        up, down, a, b = [], [], 100.0, 100.0
+        for i in range(80):
+            move = 0.02 if i % 2 == 0 else -0.02
+            a *= (1.0 + move)
+            b *= (1.0 - move)
+            up.append(a)
+            down.append(b)
+        history = {"AAA": {"dates": dates, "closes": up, "volumes": [None] * 80},
+                   "BBB": {"dates": dates, "closes": down, "volumes": [None] * 80}}
+        value, basis = portfolio_volatility_pct({"AAA": 0.5, "BBB": 0.5}, history)
+        self.assertLess(value, 1.0)
+        self.assertIn("79 sessions", basis)
+
+    def test_portfolio_volatility_uses_only_the_most_recent_year(self):
+        # The price file starts at HISTORY_START (2015), so the untrimmed
+        # intersection runs to roughly 2890 sessions and its standard deviation
+        # is an eleven-year average. Deployment is meant to FALL when volatility
+        # rises, and an eleven-year mean cannot rise; it would also be measuring
+        # the portfolio on a different timescale from the ATR(14) weights it
+        # scales. 300 sessions in, 252 measured.
+        tickers = ["AAA", "BBB"]
+        history = self._sized_history(tickers, sessions=300)
+        value, basis = portfolio_volatility_pct({"AAA": 0.5, "BBB": 0.5}, history)
+        self.assertIsNotNone(value)
+        self.assertEqual(basis, "252 sessions common to 2 holdings")
 
     # --- composite score ---------------------------------------------------
     def test_composite_combines_both_halves(self):
@@ -4728,6 +5269,25 @@ def run_pipeline(paths, app_config, screening_config, allow_network=False, stamp
              len(result["watchlist"]), len(below),
              result["duplicates_removed"], result["outside_universe"]))
 
+    # Say what the sizing pass decided. Without this the watchlist CSV shows
+    # weights that sum to less than 100 and nothing explains why, so a
+    # deliberate risk decision reads as an arithmetic bug.
+    sizing = result["sizing"]
+    if sizing["deploymentPct"] is None:
+        print("Position sizing: none (%s)." % sizing["basis"])
+    else:
+        print("Position sizing: equal risk by %s over %d holdings; portfolio "
+              "volatility %s%% against a %s%% target, so %s%% invested and %s%% cash."
+              % (sizing["measure"], len(result["watchlist"]),
+                 js_number_to_string(sizing["portfolioVolatilityPct"]),
+                 js_number_to_string(sizing["targetVolatilityPct"]),
+                 js_number_to_string(sizing["investedPct"]),
+                 js_number_to_string(round1(100.0 - (sizing["investedPct"] or 0.0)))))
+        print("  Cash is the volatility target doing its job: fewer or more "
+              "correlated holdings raise portfolio volatility, which lowers how "
+              "much is put to work. Stops are %sx ATR, set in advance."
+              % js_number_to_string(round1(STOP_ATR_MULTIPLE)))
+
     watchlist_path = paths["reports"] / ("watchlist_%s.csv" % stamp)
     watchlist_path.write_text(watchlist_to_csv(result["watchlist"]), encoding="utf-8")
     rejected_path = paths["reports"] / ("rejected_%s.csv" % stamp)
@@ -4788,6 +5348,11 @@ def run_pipeline(paths, app_config, screening_config, allow_network=False, stamp
         "outside_universe": result["outside_universe"],
         "first_run": previous is None,
         "ranking_changes": len(changes),
+        # The whole sizing summary, not just the weights in the CSV. Without it
+        # a run that invested 70% leaves no machine-readable record of why the
+        # other 30% was held back, and the deployment fraction is the number a
+        # later comparison between runs would actually want.
+        "sizing": sizing,
     }
     print("Wrote:")
     for label in ("watchlist_csv", "passed_below_top_n_csv", "rejected_csv",
