@@ -82,6 +82,12 @@ So:
   — see `--rsi-flip`, `--continuous`, `--neutral`, `--skip-month` for the pattern.
 - **Update `knowledge/rulebook.md` in the same commit as any rule change**, with
   its status: Sourced / Adapted / Convention / Contradicted.
+- **A scoring change trips `npm run check:docs`.** It hashes `engine.py`'s two
+  scoring functions and all 106 module constants. When it fails, re-read
+  `knowledge/holdout.md` and `knowledge/preregistration.md` — both make claims
+  about what has and has not changed — then re-record `SCORING_HASH` **in the
+  same commit**. Never re-record it separately; that is how the claim goes false
+  without anyone noticing.
 - **Stage explicit paths.** Never `git add -A`. Read `git diff --cached --stat`
   before every commit and abort on an unexpected file.
 - Presentation nits go to `knowledge/TODO.md` as a line, not into a commit.

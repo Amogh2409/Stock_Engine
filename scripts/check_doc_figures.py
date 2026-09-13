@@ -25,6 +25,8 @@ rather than a snapshot that rots.
 Usage:  .venv/bin/python scripts/check_doc_figures.py
 Exit 0 if the documents agree with the artefact, 1 otherwise.
 """
+import ast
+import hashlib
 import json
 import pathlib
 import re
@@ -34,6 +36,20 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 ARTEFACT = ROOT / "data-store/reports/backtest_preholdout/results.json"
 DOCS = ("knowledge/rulebook.md", "knowledge/project-guide.html",
         "knowledge/preregistration.md")
+
+# The two functions that decide what the engine SCORES. Their source is hashed so
+# that a scoring change cannot land without someone being told that
+# knowledge/holdout.md and knowledge/preregistration.md make claims about what
+# has and has not changed.
+#
+# This exists because a figure check could not catch it and did not. holdout.md
+# said the scoring rules were "byte-identical" for a day after
+# RELATIVE_STRENGTH_SKIP_SESSIONS changed them. Nothing failed, because the claim
+# was prose and every figure still matched its artefact.
+SCORING_SOURCE = "python/engine.py"
+SCORING_FUNCTIONS = ("compute_technical_indicators", "calculate_technical_score")
+# Re-record in the SAME commit that changes the scoring, never separately.
+SCORING_HASH = "8ed6a95febeac1326c2fb8b6b70d7eeb7bb9eef9f9191ced23e1dee083b0e98f"
 
 # A line carrying any of these is retracting a number on purpose, not asserting
 # it. Retired values are allowed there and nowhere else.
@@ -72,6 +88,51 @@ def key_figures(results):
         out["relStrength %sm p*" % horizon] = round(block["hac_p_bonferroni"], 3)
         out["relStrength %sm df" % horizon] = block["hac_df"]
     return out
+
+
+def scoring_digest():
+    """(sha256 of the scoring functions' source, names found).
+
+    Hashes the function SOURCE rather than a list of named constants, because the
+    awards are integer literals inside calculate_technical_score -- 12.0 for the
+    200-day test, the bare -15 for the 52-week proximity -- and a constants-only
+    hash would miss every one of them.
+    """
+    tree = ast.parse((ROOT / SCORING_SOURCE).read_text())
+    wanted = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in SCORING_FUNCTIONS:
+            wanted[node.name] = ast.unparse(node)
+    missing = [name for name in SCORING_FUNCTIONS if name not in wanted]
+    if missing:
+        # Renamed or removed is itself a scoring change, and must not hash to
+        # something stable by accident.
+        return "missing:" + ",".join(missing), missing
+
+    # EVERY module-level ALL_CAPS constant, not a hand-listed subset.
+    #
+    # The first version of this guard hashed only the two function bodies and was
+    # verified red by editing RSI_MOMENTUM_FLOOR -- which it did NOT catch,
+    # because the constant is defined at module level and the functions only
+    # reference the name. It was blind to RSI_MOMENTUM_FLOOR, MACD_FLAT_BAND,
+    # ADX_TRENDING, TECHNICAL_BLOCK_MAX and to the value of
+    # RELATIVE_STRENGTH_SKIP_SESSIONS, the very change that motivated it.
+    #
+    # Collected automatically rather than from a list, so a constant added later
+    # is covered without anyone remembering to add it. The cost is that a
+    # non-scoring constant also trips the guard; that is the conservative
+    # direction and far cheaper than the miss.
+    constants = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id.isupper():
+                constants[target.id] = ast.unparse(node.value)
+    blob = "\n".join(wanted[name] for name in SCORING_FUNCTIONS)
+    blob += "\n" + "\n".join("%s=%s" % (k, constants[k]) for k in sorted(constants))
+    return (hashlib.sha256(blob.encode("utf-8")).hexdigest(),
+            list(SCORING_FUNCTIONS) + ["%d module constants" % len(constants)])
 
 
 def main():
@@ -124,6 +185,20 @@ def main():
                 failures.append("%s:%d carries retired %s (%s; now %s)"
                                 % (name, number, value, was, now))
                 print("  STALE            %s:%d  %s -- %s" % (name, number, value, was))
+
+    print()
+    print("SCORING -- engine.py's scoring functions must match the recorded hash")
+    digest, seen = scoring_digest()
+    print("  hashed: %s" % ", ".join(seen))
+    if digest == SCORING_HASH:
+        print("  hash unchanged: %s" % digest[:16])
+    else:
+        print("  CHANGED: recorded %s, actual %s" % (SCORING_HASH[:16], digest[:16]))
+        failures.append(
+            "engine.py scoring changed (hash %s). knowledge/holdout.md and "
+            "knowledge/preregistration.md both make claims about what has and has "
+            "not changed -- re-read them, then re-record SCORING_HASH in THIS "
+            "commit." % digest[:16])
 
     print()
     if failures:
