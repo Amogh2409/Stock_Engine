@@ -630,11 +630,57 @@ constraints actually shaping the portfolio are the two Convention caps below.
 Anyone crediting p.1032 with protecting this portfolio is crediting the wrong
 rule.
 
-### Stop at 2 × ATR — **Convention**
+### Stop at 2 × ATR — **Adapted**, and the book's own multiples are not 2
 
-ATR as the basis for a stop is sourced: p.852 describes ATR as used to place
-stops, take profits, or set the current level of risk. **The multiple is not.**
-2.0 is inherited market practice, exactly like the 50/200 pair and ADX 25.
+Corrected after searching the whole library rather than its top-level listing.
+The first version of this entry called the multiple pure Convention and said
+"the multiple is not [sourced]". That was wrong.
+
+The **form** is well sourced, twice over. p.852 describes ATR as used to place
+stops, take profits, or set the current level of risk. p.1055 goes further and
+argues *against* the obvious alternative: after reporting that "some more
+experienced traders believe that you should never lose more than 3% of your
+total investment on a single trade", Kaufman answers that "stops are more
+sensible if they relate to the nature of the system, the timing of the trade,
+the market volatility, or a chart pattern." An ATR stop is exactly the
+volatility-related construction he prefers there. (That sentence is also the
+second percentage-of-capital figure in the book, which corrects a claim made
+further down this file.)
+
+The **multiple** is where we diverge, and the book is more specific than I gave
+it credit for. p.1055 lists five worthwhile stop constructions; the fifth is
+"adjust the stop by the volatility, such as **3 times the current 10-day
+average true range**". The trailing-stop discussion on p.1055–1056 cites ISAM's
+generic stop of **12 × average true range over the past 252 days**, and then
+states the design rule that matters most here: **the multiplier should vary
+based on the calculation period of the trend.**
+
+So the source offers 3 × ATR(10) and 12 × ATR(252), and a principle for
+choosing between them. We use **2 × ATR(14)**, which matches neither figure and
+follows neither the short nor the long pairing — our ATR period sits near the
+book's short example while our multiple sits below even that. Nothing here is
+fatal; it is Adapted rather than Convention, and the divergence is now named
+instead of hidden. Tying the multiple to the trend period, as p.1055 prescribes,
+is a concrete improvement available and is listed under Open items.
+
+### And the source doubts stops help us at all — **Contradicted**
+
+Recorded against a feature shipped the same day it was written, because that is
+exactly when it is tempting not to.
+
+p.1055–1056, on initial stops: "trend systems already cut losses quickly, and
+mean reversion systems need a high percentage of profitable trades, the result
+of holding trades that initially go the wrong way, **so it is not clear that any
+stop-loss would improve those profiles.** Under highly volatile situations, they
+may be a benefit, but that would need to be tested for specific strategies, and
+the frequency of occurrence would be small."
+
+Our engine is a trend-following screen. Kaufman's position is therefore that a
+stop-loss may add nothing to it, and that the question is empirical rather than
+settled. We publish a stop for every holding and have tested nothing about
+whether it helps. That does not make publishing it wrong — p.1032 principle 2
+still wants an exit known in advance — but it does mean the stop is an
+untested addition to a style the source says may not benefit from one.
 
 ### Position cap 10%, sector cap 25% — **Convention**
 
@@ -672,13 +718,26 @@ independent citations, more than almost any rule in this file.
 ### A rule that is in no book here — **Convention**, and it was nearly written in
 
 The first draft of this section defaulted to risking **1% of capital per
-position**. That number appears **nowhere in any of the seven books in
-`Books_TO_study/`**: a search of all of them, with the pattern verified against
-a known match first, returns zero hits for 1% or 2% risk-per-trade phrasing and
-exactly one hit for a percentage of capital — the 5% ceiling at p.1032. It is
-practitioner folklore, and it was about to be written in as a default with
-citation-shaped confidence. It is recorded here because catching it is worth
-more than the section it nearly entered.
+position**. That number appears **nowhere in the library**. `Books_TO_study/`
+holds **134 book files**, of which 126 yield machine-readable text; searching
+all of them, with the pattern validated against a line known to exist first,
+returns **zero** hits for 1% or 2% risk-per-trade phrasing. It is practitioner
+folklore, and it was about to be written in as a default with citation-shaped
+confidence.
+
+An earlier version of this entry said "nowhere in any of the seven books" and
+"exactly one hit for a percentage of capital — the 5% ceiling at p.1032". Both
+were wrong, and wrong in the same way: the seven files at the top level of
+`Books_TO_study/` are not the library, they are its first directory listing.
+The rest sit in a subdirectory nobody had opened. Searching all 134 finds a
+**second** percentage-of-capital statement, at p.1055 — see the stop entry
+above — so the "exactly one hit" claim was false even though the 1% conclusion
+it supported survives, and survives more strongly.
+
+That is the useful lesson and it is worth more than the sizing section. Every
+statement built on that first search was true of what was searched and wrong
+about the corpus, because the extent of the source was never itself checked.
+"Verified against the books" is only as good as the set of books you looked at.
 
 ---
 
@@ -686,6 +745,12 @@ more than the section it nearly entered.
 
 Ranked by value, cheapest first where value ties.
 
+0. **Tie the stop multiple to the trend period.** TSaM p.1055–1056 states that
+   the ATR multiplier should vary with the calculation period of the trend, and
+   offers 3 × ATR(10) and 12 × ATR(252) as the short and long ends of that idea.
+   We use a fixed 2 × ATR(14), which follows neither. Cheapest sourced
+   improvement now available, and unlike most entries here it replaces a number
+   we invented with a rule the book actually states.
 1. **Test the RSI sign.** Score `rsi14 < 50`, or drop the RSI points entirely,
    and re-run. One constant, harness already built, and it settles the single
    most consequential undocumented choice in the engine.
