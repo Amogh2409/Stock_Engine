@@ -1025,7 +1025,30 @@ def _ic_statistics(series, family_size, hac_lag=0):
 
     hac_se = _newey_west_se(series, hac_lag) if n > 1 else float("nan")
     hac_t = (mean_ic / hac_se) if hac_se == hac_se and hac_se > 0 else float("nan")
-    hac_p = two_sided_p(hac_t, n - 1)
+    # Degrees of freedom for a HAC t are NOT n-1. n-1 is the df of an i.i.d.
+    # mean; on overlapping windows consecutive observations share (h-1)/h of
+    # their span, so the independent information is about n/h. Referring a HAC t
+    # to df = n-1 over-rejects, and this file already argues the point against
+    # itself: two_sided_p's docstring defends Student's t over the normal
+    # because "at df=9 the critical t is 2.262 rather than 1.96 -- that
+    # difference decides significance", and the same file then handed the HAC
+    # statistic df=80 where the independent count is 12.
+    #
+    # n // h reproduces the non-overlapping series length EXACTLY at every
+    # horizon this study measures -- 84//3=28, 81//6=13, 75//12=6 -- so it is a
+    # count the run already computes rather than a new estimate to defend.
+    #
+    # This is a CONSERVATIVE PROXY, not the textbook fix. The rigorous treatment
+    # is fixed-b asymptotics (Kiefer & Vogelsang 2005), under which a HAC t has
+    # a nonstandard limiting distribution with fatter tails than Student's t at
+    # any df. The honest p therefore sits ABOVE the one computed here, and
+    # df = n_eff - 1 is still anti-conservative relative to the correct answer.
+    # It is adopted because it uses a number already in the study and so cannot
+    # be argued downward once a cell turns out to depend on it.
+    horizon = hac_lag + 1
+    effective_n = n if horizon <= 1 else max(2, n // horizon)
+    hac_df = max(1, effective_n - 1)
+    hac_p = two_sided_p(hac_t, hac_df)
     boot_se, boot_lo, boot_hi = _stationary_bootstrap_se(series, max(1, hac_lag + 1))
     boot_t = (mean_ic / boot_se) if boot_se == boot_se and boot_se > 0 else float("nan")
     # Computed here rather than by hand afterwards, so the significance of a
@@ -1054,8 +1077,13 @@ def _ic_statistics(series, family_size, hac_lag=0):
     # conclusive than it is -- the same error as the "powered null" overclaim
     # this very figure was added to prevent. A number that guards against an
     # overclaim is worth checking for the overclaim it guards against.
+    # The floor takes the same standard error AND the same degrees of freedom as
+    # the t-statistic it is read beside. Pairing a HAC standard error with an
+    # i.i.d. df would understate the critical value and so understate the floor,
+    # which is the same anti-conservative direction as the df defect above.
     inference_se = hac_se if hac_lag > 0 else (spread / math.sqrt(n) if n > 0 else float("nan"))
-    detectable = ((_t_critical(n - 1) + Z_FOR_80_PERCENT_POWER) * inference_se) \
+    inference_df = hac_df if hac_lag > 0 else max(1, n - 1)
+    detectable = ((_t_critical(inference_df) + Z_FOR_80_PERCENT_POWER) * inference_se) \
         if n > 1 and inference_se == inference_se and inference_se > 0 else float("nan")
     return {
         "mean_ic": mean_ic,
@@ -1070,6 +1098,11 @@ def _ic_statistics(series, family_size, hac_lag=0):
         "hac_lag": hac_lag,
         "hac_se": hac_se,
         "hac_t_stat": hac_t,
+        # Reported so a reader can see which df the p was referred to. It is the
+        # single figure most able to move a cell across a significance line, and
+        # it was wrong here for the life of the project.
+        "hac_effective_n": effective_n,
+        "hac_df": hac_df,
         "hac_p_value": hac_p,
         "hac_p_bonferroni": bonferroni(hac_p, family_size),
         "bootstrap_se": boot_se,
@@ -1864,6 +1897,38 @@ class BacktestTests(unittest.TestCase):
         ar_iid = ar_sd / math.sqrt(len(ar))
         self.assertGreater(_newey_west_se(ar, 11), ar_iid * 1.5)
 
+    def test_the_hac_t_is_referred_to_the_independent_count_not_to_n(self):
+        # n-1 is the df of an i.i.d. mean. On overlapping windows consecutive
+        # observations share (h-1)/h of their span, so the independent count is
+        # about n/h and referring the HAC t to n-1 over-rejects. It did: relative
+        # strength at 6 months read p 0.0030 at df 80, where the independent
+        # count is 13 and the p is 0.0099.
+        rng = random.Random(77)
+        series, prev = [], 0.0
+        for _ in range(84):
+            prev = 0.8 * prev + rng.gauss(0.0, 1.0)
+            series.append(prev + 0.35)
+        stats = _ic_statistics(series, family_size=1, hac_lag=5)
+        # n // h, which reproduces the non-overlapping series length the study
+        # already computes rather than introducing a second estimate.
+        self.assertEqual(stats["hac_effective_n"], 84 // 6)
+        self.assertEqual(stats["hac_df"], 84 // 6 - 1)
+        self.assertAlmostEqual(stats["hac_p_value"],
+                               two_sided_p(stats["hac_t_stat"], stats["hac_df"]),
+                               places=12)
+        # Guard: the two df must actually give different answers on this fixture,
+        # or every assertion above would hold for the defect too.
+        naive = two_sided_p(stats["hac_t_stat"], len(series) - 1)
+        self.assertGreater(stats["hac_p_value"], naive,
+                           "the correct df must not be more permissive")
+        self.assertGreater(stats["hac_p_value"] / naive, 1.2,
+                           "fixture does not separate the two df")
+        # At lag 0 there is no overlap to discount and the count is n itself, so
+        # every non-overlapping figure already published is unaffected.
+        flat = _ic_statistics(series, family_size=1, hac_lag=0)
+        self.assertEqual(flat["hac_effective_n"], len(series))
+        self.assertEqual(flat["hac_df"], len(series) - 1)
+
     def test_the_detection_floor_uses_the_same_standard_error_as_the_t(self):
         # A floor computed from an i.i.d. SE beside a t computed from a HAC one
         # is not a pair of numbers about the same test. On the real pre-holdout
@@ -1889,7 +1954,11 @@ class BacktestTests(unittest.TestCase):
         # would coincide and every assertion below would pass without
         # distinguishing the fix from the defect.
         self.assertGreater(overlapping["hac_se"], spread / math.sqrt(n))
-        hac_floor = (_t_critical(n - 1) + Z_FOR_80_PERCENT_POWER) * overlapping["hac_se"]
+        # The floor is referred to the HAC degrees of freedom, not n-1: at
+        # hac_lag=11 the independent count is n//12, not n.
+        self.assertEqual(overlapping["hac_effective_n"], n // 12)
+        hac_floor = ((_t_critical(overlapping["hac_df"]) + Z_FOR_80_PERCENT_POWER)
+                     * overlapping["hac_se"])
         self.assertAlmostEqual(overlapping["detectable_ic_80pct"], hac_floor, places=12)
         self.assertGreater(overlapping["detectable_ic_80pct"] - iid_floor, 1e-4)
 
