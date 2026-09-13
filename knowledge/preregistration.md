@@ -153,6 +153,51 @@ It does not make the test worthless — 56% is far better than the pre-holdout
 window's own power against a realistic effect — but it does mean a FAIL carries
 little information, while a PASS carries a lot.
 
+### The window is not a fixed asset — there are three options, not two
+
+The reserved window gains one period a month, so its power against this effect
+grows. Re-derived from the momentum block's own ic_sd at rung C (0.124474) and
+the observed |IC| (0.040666), using `_t_critical` and a normal approximation to
+the noncentral t:
+
+| n | when | floor at 80% power | t if the effect repeats | power | effect vs floor |
+| --- | --- | --- | --- | --- | --- |
+| 44 | now | 0.0536 | 2.167 | **56%** | below floor |
+| 56 | +1 year | 0.0473 | 2.445 | 67% | below floor |
+| 68 | +2 years | 0.0428 | 2.694 | 76% | below floor |
+| 76 | **+2.7 years** | 0.0405 | 2.848 | **80%** | **above floor** |
+| 80 | +3 years | 0.0394 | 2.922 | 82% | above floor |
+
+**This assumes ic_sd and the effect both stay where the spent window put them.**
+Both are estimates from the same 86 periods, and neither is guaranteed forward.
+
+So the options are:
+
+1. **Spend now.** A 56% test. A pass is informative; a fail is close to a coin
+   toss and the window is gone either way.
+2. **Do not spend at all**, if Tier 2's after-tax arithmetic shows that acting on
+   a confirmed reversal is unprofitable at 583–733% turnover. Then the test
+   answers a question whose answer cannot be used.
+3. **Wait.** Power reaches 80% at n = 76, about 2.7 years from now. `rulebook.md`
+   names exactly this as one of only two legitimate routes: "either a period held
+   back and never examined, or forward paper-trading from today"
+   (`rulebook.md:962`).
+
+**The counterargument to waiting is serious and is not resolved here.** Waiting
+assumes the effect is stationary, and the prior in §4 says the opposite.
+`rulebook.md:619-628` puts it plainly: the RSI sign flipping inside a single
+market means "its sign is **regime-dependent**, and a fixed +15 for RSI > 50
+encodes a constant where the source documents a variable… the risk is not merely
+that the rule is unproven; it is that the rule is **directionally wrong in some
+regimes**". Three years of waiting is three years of regime risk on a hypothesis
+whose defining property is that its sign is unstable — and a test run in 2029
+over 2023–2029 may be averaging regimes that disagree, which is the same defect
+that made the original US evidence unusable.
+
+Both sides are recorded and **neither is chosen here**. Tier 2 may make the
+choice moot, which is the cheapest way to resolve it: if the after-tax answer is
+no, options 1 and 3 both collapse into option 2.
+
 **The decision to spend the window is therefore deferred to Tier 2**, where the
 after-tax arithmetic at 600%+ turnover is computed. If acting on a confirmed
 1-month reversal would not be profitable after Indian STCG at the turnover it

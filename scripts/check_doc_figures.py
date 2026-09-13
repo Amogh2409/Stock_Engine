@@ -32,7 +32,8 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ARTEFACT = ROOT / "data-store/reports/backtest_preholdout/results.json"
-DOCS = ("knowledge/rulebook.md", "knowledge/project-guide.html")
+DOCS = ("knowledge/rulebook.md", "knowledge/project-guide.html",
+        "knowledge/preregistration.md")
 
 # A line carrying any of these is retracting a number on purpose, not asserting
 # it. Retired values are allowed there and nowhere else.
