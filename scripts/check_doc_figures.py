@@ -75,6 +75,12 @@ def key_figures(results):
 
 def main():
     if not ARTEFACT.exists():
+        # Returns 1, deliberately. Do NOT convert this to a skip to make a
+        # clean-room checkout pass: data-store/** is gitignored, so the artefact
+        # is legitimately absent there, and a skip would turn a loud failure into
+        # a silent pass -- which is the same defect as counting a missing figure
+        # without failing on it. This script belongs in the pre-commit list, not
+        # in run_checks.sh.
         print("no artefact at %s -- run the backtest first" % ARTEFACT)
         return 1
     results = json.loads(ARTEFACT.read_text())
@@ -93,6 +99,13 @@ def main():
             present = ("%.4f" % value) in combined or ("%.3f" % value) in combined
         if not present:
             missing += 1
+            # Appended to `failures`, not merely printed. An earlier revision
+            # counted these and printed them and never let them reach the exit
+            # code, so a figure that vanished from both documents printed
+            # MISSING and the script still exited 0 -- a green signal that looks
+            # the same when the thing is broken, inside the tool written to stop
+            # exactly that.
+            failures.append("%s (%s) appears in neither document" % (label, rendered))
             print("  MISSING  %-28s %s" % (label, rendered))
     print("  %d of %d key figures present" % (len(figures) - missing, len(figures)))
 

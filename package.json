@@ -13,6 +13,7 @@
     "start": "node dist-server/server.cjs",
     "build:python": "node scripts/build_python_source.mjs",
     "check:python": "node scripts/build_python_source.mjs --check",
+    "check:docs": "scripts/venv-python.sh scripts/check_doc_figures.py",
     "generate:notebook": "tsx generate_ipynb.ts",
     "verify": "bash run_checks.sh",
     "screen": "scripts/venv-python.sh python/engine.py",

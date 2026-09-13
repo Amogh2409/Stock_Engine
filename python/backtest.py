@@ -44,6 +44,7 @@ measured open-to-open on that same schedule. The self-test asserts it.
 """
 import argparse
 import bisect
+import csv
 import datetime
 import json
 import math
@@ -181,7 +182,41 @@ def month_end_sessions(calendar, respect_holdout=True):
     return kept
 
 
-def technicals_on(book, ticker, date, bench_by_date):
+def _apply_skip_month(tech, closes_raw, bench_raw):
+    """Rewrite relative strength to measure t-12..t-2 instead of t-12..t-1.
+
+    Short-horizon reversal contaminates the most recent month, which is why the
+    academic momentum construction (Jegadeesh-Titman) skips it. The engine
+    measures to t-1. This measures the skip-month form WITHOUT touching
+    engine.py, for the reason --rsi-flip does not touch it: changing the shipped
+    comparison to see whether it backtests better is adoption, not measurement.
+
+    The START stays anchored at t-h and only the END moves back one month, which
+    is the 12-2 construction. Shifting the whole window instead would give
+    t-13..t-1, which is a different quantity and not the one asked for.
+
+    The pairs are rebuilt exactly as compute_technical_indicators builds them,
+    through the engine's own helpers, so the window is the only difference.
+    """
+    closes = [E._finite_or_nan(v) for v in closes_raw]
+    n = len(closes)
+    valid = [i for i in range(n) if not math.isnan(closes[i])]
+    if not valid:
+        return
+    bench = E._align_to_end([E._finite_or_nan(v) for v in bench_raw], n, float("nan"))
+    pairs = [(closes[i], bench[i]) for i in valid if not math.isnan(bench[i])]
+    skip = E.SESSIONS_1_MONTH
+    if len(pairs) <= skip:
+        return
+    shortened = pairs[:-skip]
+    for key, sessions in (("relativeStrength3M", E.SESSIONS_3_MONTH),
+                          ("relativeStrength6M", E.SESSIONS_6_MONTH),
+                          ("relativeStrength12M", E.SESSIONS_12_MONTH)):
+        tech[key] = E._relative_strength(shortened, sessions - skip)
+    tech["available"]["relativeStrength6M"] = tech["relativeStrength6M"] is not None
+
+
+def technicals_on(book, ticker, date, bench_by_date, skip_month=False):
     """The engine's raw technical indicators for one ticker as at `date`, or None.
 
     Lifted out of score_on so a cross-sectional scorer can reach the underlying
@@ -198,25 +233,29 @@ def technicals_on(book, ticker, date, bench_by_date):
     series = book.history[ticker]
     upto = end + 1
     dates = series["dates"][:upto]
-    return E.compute_technical_indicators(
+    bench_raw = [bench_by_date.get(d) for d in dates]
+    tech = E.compute_technical_indicators(
         series["closes"][:upto],
-        [bench_by_date.get(d) for d in dates],
+        bench_raw,
         series["volumes"][:upto],
         source="backtest",
         dates=dates,
         highs=series["highs"][:upto],
         lows=series["lows"][:upto],
     )
+    if skip_month:
+        _apply_skip_month(tech, series["closes"][:upto], bench_raw)
+    return tech
 
 
-def score_on(book, ticker, date, bench_by_date, rsi_flip=False):
+def score_on(book, ticker, date, bench_by_date, rsi_flip=False, skip_month=False):
     """The engine's technical score for one ticker as at `date`, or None.
 
     Only sessions up to and including `date` are passed in, so the score cannot
     see the future. This calls the engine rather than reimplementing it: when
     the scoring changes, the backtest measures the new scoring.
     """
-    tech = technicals_on(book, ticker, date, bench_by_date)
+    tech = technicals_on(book, ticker, date, bench_by_date, skip_month=skip_month)
     if tech is None:
         # (None, None), not a bare None. Every other path here returns a
         # 2-tuple, and callers unpack it; this guard kept its old scalar shape
@@ -490,7 +529,153 @@ def continuous_scores(entries, block=None, points_blocks=None):
     return out
 
 
-def rank_on(book, date, bench_by_date, block=None, rsi_flip=False, continuous=False):
+# --- Sector and size neutralisation, a measurement variant -----------------
+# Both inputs are honest about what they are, and they are NOT the same kind of
+# thing:
+#
+# SECTOR is real, and stale. data/nifty100_source.csv is the NSE index file and
+# carries an Industry column for all 100 constituents. It is a snapshot as of
+# 2026-09-10, so applying it to 2015-2022 is look-ahead -- but of a categorically
+# milder kind than market cap. Today's market cap is a monotone function of the
+# cumulative return over the very window being predicted, so neutralising on it
+# would regress the signal against the answer. An industry label is not a
+# function of returns; its leak is confined to reclassification, and index
+# membership survivorship is already a standing limitation on every figure here
+# rather than a new one.
+#
+# SIZE IS A SUBSTITUTE AND IS NAMED AS ONE. There is no historical market cap in
+# this repository -- no shares outstanding, no free float, and the only
+# fundamentals file is an undated snapshot covering 11 of 101 tickers. What is
+# used instead is log trailing median daily turnover, which is fully
+# point-in-time and available for every name. It is a LIQUIDITY control that
+# correlates with size. It is not log market cap and is never reported as such.
+
+SECTOR_SOURCE = Path(__file__).resolve().parent.parent / "data" / "nifty100_source.csv"
+SECTOR_AS_OF = "2026-09-10"
+# Below this, a bucket is pooled into "Other". Demeaning a bucket of ONE does
+# not weaken that name's signal, it sets it to exactly zero -- which reads as
+# "average" and means "alone in its sector". Pooling is not a way of
+# neutralising those names properly; it is a way of keeping them in the ranking
+# while being honest that they cannot be neutralised.
+MIN_SECTOR_BUCKET = 3
+SESSIONS_FOR_TURNOVER = E.SESSIONS_52_WEEK
+
+
+def load_sector_map(path=SECTOR_SOURCE):
+    """{ticker: industry} from the NSE constituents file, or {} if absent."""
+    if not path.exists():
+        return {}
+    out = {}
+    with path.open(encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            symbol = (row.get("Symbol") or "").strip()
+            industry = (row.get("Industry") or "").strip()
+            if symbol and industry:
+                out[symbol] = industry
+    return out
+
+
+def trailing_log_turnover(book, ticker, date, sessions=SESSIONS_FOR_TURNOVER):
+    """log(median daily close*volume) over the trailing window, or None.
+
+    The median rather than the mean, because a single block trade moves a mean
+    by an order of magnitude and this is meant to describe the typical session.
+    Only sessions up to and including `date` are read, so it cannot see forward.
+    """
+    end = book.index_upto(ticker, date)
+    if end is None:
+        return None
+    series = book.history[ticker]
+    closes = series["closes"][:end + 1][-sessions:]
+    volumes = series["volumes"][:end + 1][-sessions:]
+    values = [c * v for c, v in zip(closes, volumes)
+              if c is not None and v is not None
+              and c == c and v == v and c > 0 and v > 0]
+    if len(values) < 2:
+        return None
+    values.sort()
+    middle = len(values) // 2
+    median = (values[middle] if len(values) % 2
+              else (values[middle - 1] + values[middle]) / 2.0)
+    return math.log(median) if median > 0 else None
+
+
+def sector_buckets(tickers, sectors, floor=MIN_SECTOR_BUCKET):
+    """{ticker: bucket}, pooling every industry below `floor` into "Other".
+
+    Applied to the names ELIGIBLE ON THIS DATE, not to the index as a whole: a
+    four-name industry can fall to two once the session minimum is applied, and
+    a floor enforced against the index would miss it.
+    """
+    counts = {}
+    for ticker in tickers:
+        counts[sectors.get(ticker, "Unclassified")] = \
+            counts.get(sectors.get(ticker, "Unclassified"), 0) + 1
+    return {ticker: (sectors.get(ticker, "Unclassified")
+                     if counts[sectors.get(ticker, "Unclassified")] >= floor else "Other")
+            for ticker in tickers}
+
+
+def neutralise(scores, buckets, sizes):
+    """Residualise scores on sector dummies and log size, jointly.
+
+    Done as demean-within-bucket, then a univariate regression of the demeaned
+    score on the demeaned size. By Frisch-Waugh that residual IS the joint OLS
+    residual against sector dummies plus size, so it needs no matrix inversion
+    and no second convention to keep in step.
+
+    A name whose size is unavailable keeps its sector-demeaned score: it is
+    excluded from the size regression rather than assigned a value.
+    """
+    tickers = sorted(scores)
+    if len(tickers) < 3:
+        return dict(scores)
+    grouped = {}
+    for ticker in tickers:
+        grouped.setdefault(buckets.get(ticker, "Other"), []).append(ticker)
+    # A bucket of ONE demeans to exactly zero, which reads as "average" and
+    # means "alone in its group" -- it does not weaken that name's signal, it
+    # deletes it and parks it mid-ranking. Pooling small industries into "Other"
+    # handles the common case, but "Other" itself can hold a single name when
+    # only one tiny industry is present on a date. Any bucket that cannot
+    # support a mean is demeaned against the WHOLE cross-section instead, which
+    # keeps the name on the same scale as everyone else and is honest that it
+    # was never neutralised.
+    global_mean = sum(scores[t] for t in tickers) / len(tickers)
+    global_sizes = [sizes[t] for t in tickers if sizes.get(t) is not None]
+    global_size_mean = (sum(global_sizes) / len(global_sizes)) if global_sizes else None
+    demeaned, demeaned_size = {}, {}
+    for members in grouped.values():
+        if len(members) < 2:
+            for ticker in members:
+                demeaned[ticker] = scores[ticker] - global_mean
+                demeaned_size[ticker] = (sizes[ticker] - global_size_mean
+                                         if global_size_mean is not None
+                                         and sizes.get(ticker) is not None else None)
+            continue
+        mean_score = sum(scores[t] for t in members) / len(members)
+        present = [t for t in members if sizes.get(t) is not None]
+        mean_size = (sum(sizes[t] for t in present) / len(present)) if present else None
+        for ticker in members:
+            demeaned[ticker] = scores[ticker] - mean_score
+            demeaned_size[ticker] = (sizes[ticker] - mean_size
+                                     if mean_size is not None and sizes.get(ticker) is not None
+                                     else None)
+    paired = [(demeaned_size[t], demeaned[t]) for t in tickers
+              if demeaned_size.get(t) is not None]
+    if len(paired) < 3:
+        return demeaned
+    sxx = sum(x * x for x, _y in paired)
+    if sxx <= 0:
+        return demeaned
+    beta = sum(x * y for x, y in paired) / sxx
+    return {t: (demeaned[t] - beta * demeaned_size[t]
+                if demeaned_size.get(t) is not None else demeaned[t])
+            for t in tickers}
+
+
+def rank_on(book, date, bench_by_date, block=None, rsi_flip=False, continuous=False,
+            neutral=False, skip_month=False, sectors=None):
     """[(ticker, score)] for every ticker scoreable as at `date`, best first.
 
     Ties break on ticker ascending, the same rule the screener ranks by, so the
@@ -514,7 +699,8 @@ def rank_on(book, date, bench_by_date, block=None, rsi_flip=False, continuous=Fa
         entries = []
         points_blocks = {}
         for ticker in book.tickers():
-            tech = technicals_on(book, ticker, date, bench_by_date)
+            tech = technicals_on(book, ticker, date, bench_by_date,
+                                 skip_month=skip_month)
             if tech is None:
                 continue
             # The gate is the engine's own refusal, not a reimplementation of
@@ -534,7 +720,8 @@ def rank_on(book, date, bench_by_date, block=None, rsi_flip=False, continuous=Fa
     else:
         scored = []
         for ticker in book.tickers():
-            score, blocks = score_on(book, ticker, date, bench_by_date, rsi_flip=rsi_flip)
+            score, blocks = score_on(book, ticker, date, bench_by_date,
+                                     rsi_flip=rsi_flip, skip_month=skip_month)
             if block is not None:
                 # A company with no block breakdown cannot be ranked on a block.
                 # Dropping it is right: substituting zero would rank "not
@@ -542,6 +729,22 @@ def rank_on(book, date, bench_by_date, block=None, rsi_flip=False, continuous=Fa
                 score = None if not blocks else blocks.get(block)
             if score is not None:
                 scored.append((ticker, score))
+    if neutral and scored:
+        # Neutralisation is applied to the score being ranked, AFTER the block
+        # matching, and the matching is deliberately NOT re-derived here. The
+        # matching is what makes rung B comparable to the points model; leaving
+        # it fixed is what makes rung C differ from rung B by neutralisation and
+        # nothing else. Re-deriving it would partly undo the dispersion change
+        # that neutralisation causes, which is the thing being measured.
+        # Ranking is invariant to positive rescaling, so no rescale is needed.
+        if sectors is None:
+            sectors = load_sector_map()
+        names = [ticker for ticker, _s in scored]
+        scored = list(neutralise(
+            dict(scored),
+            sector_buckets(names, sectors),
+            {ticker: trailing_log_turnover(book, ticker, date) for ticker in names},
+        ).items())
     scored.sort(key=lambda pair: (-pair[1], pair[0]))
     return scored
 
@@ -575,7 +778,8 @@ def hold_return(book, tickers, entry_date, exit_date):
 
 
 def run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per_side,
-                  rsi_flip=False, continuous=False):
+                  rsi_flip=False, continuous=False, neutral=False, skip_month=False,
+                  sectors=None):
     """Monthly top-N by technical score, equal weighted, costs charged on turnover.
 
     Returns a list of per-period records. The period return is measured from the
@@ -592,7 +796,8 @@ def run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per
         if entry_date is None or exit_date is None:
             break
         ranked = rank_on(book, signal_date, bench_by_date, rsi_flip=rsi_flip,
-                         continuous=continuous)
+                         continuous=continuous, neutral=neutral,
+                         skip_month=skip_month, sectors=sectors)
         selected = [ticker for ticker, _score in ranked[:top_n]]
         if not selected:
             continue
@@ -1218,7 +1423,8 @@ def _ic_statistics(series, family_size, hac_lag=0):
 
 
 def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORIZONS,
-                 block=None, family_size=None, rsi_flip=False, continuous=False):
+                 block=None, family_size=None, rsi_flip=False, continuous=False,
+                 neutral=False, skip_month=False, sectors=None):
     """Forward returns by score decile, plus the rank correlation each month.
 
     If the top decile does not beat the bottom, the score does not rank future
@@ -1256,7 +1462,8 @@ def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORI
         if entry_date is None:
             continue
         ranked = rank_on(book, signal_date, bench_by_date, block=block, rsi_flip=rsi_flip,
-                         continuous=continuous)
+                         continuous=continuous, neutral=neutral,
+                         skip_month=skip_month, sectors=sectors)
         if len(ranked) < 10:
             continue
         for horizon in horizons:
@@ -1554,15 +1761,24 @@ def format_report(results):
 # --- Orchestration ---------------------------------------------------------
 def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PER_SIDE,
              variants_tried=1, variants_note="", rsi_flip=False, respect_holdout=True,
-             continuous=False):
+             continuous=False, neutral=False, skip_month=False):
     book = PriceBook(history)
     calendar = market_calendar(history)
     rebalances = month_end_sessions(calendar, respect_holdout=respect_holdout)
     bench = history[E.BENCHMARK_SYMBOL]
     bench_by_date = dict(zip(bench["dates"], bench["closes"]))
 
+    # Read once per run, not once per rebalance: rank_on would otherwise reopen
+    # the constituents file 87 times.
+    sectors = load_sector_map() if neutral else None
+    if neutral and not sectors:
+        raise SystemExit(
+            "--neutral needs %s, which is missing. Neutralising on an empty sector "
+            "map would silently demean every name against one bucket, which is a "
+            "no-op wearing the name of a treatment." % SECTOR_SOURCE)
     periods = run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per_side,
-                            rsi_flip=rsi_flip, continuous=continuous)
+                            rsi_flip=rsi_flip, continuous=continuous, neutral=neutral,
+                            skip_month=skip_month, sectors=sectors)
     equal = run_equal_weight(book, calendar, rebalances)
     index = run_benchmark_index(book, calendar, rebalances)
     # The composite, then each block on its own. backtest.py's own LIMITATIONS
@@ -1577,11 +1793,13 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
     block_names = sorted(E.TECHNICAL_BLOCK_MAX)
     family = len(DECILE_HORIZONS) * (1 + len(block_names))
     deciles = decile_study(book, calendar, rebalances, bench_by_date, family_size=family,
-                           rsi_flip=rsi_flip, continuous=continuous)
+                           rsi_flip=rsi_flip, continuous=continuous, neutral=neutral,
+                           skip_month=skip_month, sectors=sectors)
     block_deciles = {
         name: decile_study(book, calendar, rebalances, bench_by_date,
                            block=name, family_size=family, rsi_flip=rsi_flip,
-                           continuous=continuous)
+                           continuous=continuous, neutral=neutral,
+                           skip_month=skip_month, sectors=sectors)
         for name in block_names
     }
 
@@ -1888,6 +2106,89 @@ class BacktestTests(unittest.TestCase):
             # Matching the spread must not flatten the ordering -- if it did, the
             # blocks would agree on spread and carry no information.
             self.assertGreater(len({round(v, 9) for v in got.values()}), 1)
+
+    def test_skip_month_measures_the_window_it_claims(self):
+        # t-12 to t-2, not t-13 to t-1. The START stays anchored and only the END
+        # moves back a month; shifting the whole window would be a different
+        # quantity. Checked against the value computed by hand from the series.
+        dates = self._business_days(400, start="2018-01-01")
+        prices = [100.0 + i * 0.3 + math.sin(i / 11.0) * 6.0 for i in range(len(dates))]
+        bench = [1000.0 + i * 0.2 for i in range(len(dates))]
+        history = {"AAA": self._series(dates, prices),
+                   E.BENCHMARK_SYMBOL: self._series(dates, bench)}
+        book = PriceBook(history)
+        bench_by_date = dict(zip(dates, bench))
+        date = dates[-1]
+
+        plain = technicals_on(book, "AAA", date, bench_by_date)
+        skipped = technicals_on(book, "AAA", date, bench_by_date, skip_month=True)
+        skip = E.SESSIONS_1_MONTH
+
+        for key, sessions in (("relativeStrength3M", E.SESSIONS_3_MONTH),
+                              ("relativeStrength6M", E.SESSIONS_6_MONTH),
+                              ("relativeStrength12M", E.SESSIONS_12_MONTH)):
+            # The window the engine uses: start at -sessions, end at -1.
+            start_price, start_bench = prices[-sessions], bench[-sessions]
+            expected_plain = ((prices[-1] - start_price) / start_price
+                              - (bench[-1] - start_bench) / start_bench) * 100.0
+            # The skip-month window: same start, end one month earlier.
+            expected_skip = ((prices[-1 - skip] - start_price) / start_price
+                             - (bench[-1 - skip] - start_bench) / start_bench) * 100.0
+            self.assertAlmostEqual(plain[key], expected_plain, places=9, msg=key)
+            self.assertAlmostEqual(skipped[key], expected_skip, places=9, msg=key)
+            # Guard: the two windows must actually differ on this fixture.
+            self.assertGreater(abs(expected_plain - expected_skip), 1e-6, key)
+        # Nothing outside relative strength may move.
+        for key in ("rsi14", "adx14", "macdHistogram", "volumeRatio20D", "sma200"):
+            self.assertEqual(plain[key], skipped[key], key)
+
+    def test_neutralising_removes_sector_and_size(self):
+        # Build a score that is ENTIRELY sector effect plus size effect, so a
+        # working neutralisation must return approximately zero for everyone.
+        sectors, scores, sizes = {}, {}, {}
+        for group, (name, offset) in enumerate((("Banks", 10.0), ("Tech", -4.0), ("Pharma", 2.0))):
+            for k in range(6):
+                ticker = "%s%d" % (name, k)
+                sectors[ticker] = name
+                sizes[ticker] = 12.0 + k * 0.5
+                scores[ticker] = offset + 3.0 * sizes[ticker]
+        buckets = sector_buckets(sorted(scores), sectors)
+        self.assertEqual(len(set(buckets.values())), 3)
+        out = neutralise(scores, buckets, sizes)
+        for ticker, value in out.items():
+            self.assertAlmostEqual(value, 0.0, places=9, msg=ticker)
+        # Guard: the raw scores were nowhere near zero, so the assertion above
+        # is not satisfied trivially.
+        self.assertGreater(max(abs(v) for v in scores.values()), 20.0)
+        # A signal orthogonal to both must SURVIVE, or neutralisation is just
+        # erasure. Add an alternating component that is uncorrelated with size
+        # within each sector.
+        with_signal = {t: scores[t] + (5.0 if int(t[-1]) % 2 else -5.0) for t in scores}
+        kept = neutralise(with_signal, buckets, sizes)
+        self.assertGreater(max(kept.values()) - min(kept.values()), 5.0)
+
+    def test_a_lone_name_is_not_demeaned_to_a_fake_average(self):
+        # Demeaning a bucket of one sets that name to exactly zero, which reads
+        # as "average" and means "alone in its group". Pooling small industries
+        # into Other handles the usual case, but Other itself can hold a single
+        # name. Such a name must be demeaned against the whole cross-section, so
+        # its standing is preserved rather than replaced by a fake zero.
+        sectors = {"A%d" % k: "Banks" for k in range(6)}
+        sectors["LONE"] = "Shipping"
+        scores = {t: 1.0 for t in sectors}
+        scores["LONE"] = 99.0          # clearly the best name present
+        sizes = {t: 10.0 for t in sectors}
+        buckets = sector_buckets(sorted(scores), sectors)
+        self.assertEqual(buckets["LONE"], "Other")
+        counts = {}
+        for bucket in buckets.values():
+            counts[bucket] = counts.get(bucket, 0) + 1
+        self.assertEqual(counts["Other"], 1, "fixture must produce a bucket of one")
+        out = neutralise(scores, buckets, sizes)
+        self.assertNotAlmostEqual(out["LONE"], 0.0, places=6,
+                                  msg="a lone name was demeaned to a fake average")
+        # And it must still rank first, because it still is first.
+        self.assertEqual(max(out, key=lambda t: out[t]), "LONE")
 
     def test_winsorised_z_is_standardised_and_clips_both_tails(self):
         # A z-score that is not actually standardised would silently reweight
@@ -2280,6 +2581,17 @@ def main(argv=None):
     parser.add_argument("--variants-tried", type=int, default=1,
                         help="how many parameter variants were run in total, reported verbatim")
     parser.add_argument("--variants-note", default="No parameter was fitted to the data.")
+    parser.add_argument("--neutral", action="store_true",
+                        help="residualise the score on sector dummies and log trailing "
+                             "median turnover before ranking. Sector comes from the NSE "
+                             "constituents file and is a snapshot as of %s, so it is "
+                             "stale; turnover is a point-in-time LIQUIDITY proxy that "
+                             "correlates with size and is not market cap." % SECTOR_AS_OF)
+    parser.add_argument("--skip-month", action="store_true",
+                        help="measure relative strength t-12 to t-2 instead of t-12 to "
+                             "t-1, skipping the most recent month because short-horizon "
+                             "reversal contaminates it. A measurement only: engine.py is "
+                             "untouched.")
     parser.add_argument("--continuous", action="store_true",
                         help="score the twelve technical features on their MAGNITUDES "
                              "(winsorised cross-sectional z-scores, combined with the "
@@ -2330,7 +2642,8 @@ def main(argv=None):
         print("*** final test described in knowledge/holdout.md, stop and record why. ***")
     results = backtest(history, args.top_n, args.cost_bps,
                        args.variants_tried, args.variants_note, rsi_flip=args.rsi_flip,
-                       respect_holdout=respect_holdout, continuous=args.continuous)
+                       respect_holdout=respect_holdout, continuous=args.continuous,
+                       neutral=args.neutral, skip_month=args.skip_month)
     report = format_report(results)
     print(report)
     if args.out_dir:

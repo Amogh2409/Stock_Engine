@@ -211,11 +211,19 @@ npm ci</code></pre>
   permanently.
 </div>
 
-<h3>The four checks before any commit</h3>
+<h3>The five checks before any commit</h3>
 <pre><code>npm run lint            # tsc --noEmit                → expect exit 0
 npm run check:python    # generated files in sync      → expect exit 0
+npm run check:docs      # figures match the artefact   → expect exit 0
 .venv/bin/python test_python.py          # 161 tests   → expect exit 0
 npx vitest run                           # 234 tests   → expect exit 0</code></pre>
+<p style="font-size:9.3pt;color:#475569">
+  <code>check:docs</code> is deliberately <em>not</em> in <code>npm run verify</code>.
+  <code>data-store/**</code> is gitignored, so a clean-room checkout has neither the price
+  file nor the measurement artefact, and the script correctly exits 1 when the artefact is
+  absent. Making it skip in that case would turn a loud failure into a silent pass — which is
+  the defect it was written to catch.
+</p>
 <p style="font-size:9.3pt;color:#475569">
   Read each exit code from the command that produced it. <code>cmd | tail</code> returns
   <em>tail's</em> exit code, not the command's — this has already caused one false "passed"
