@@ -64,6 +64,14 @@ DEFAULT_COST_BPS_PER_SIDE = 15.0
 # Everything from this date is reported separately and was not used to choose
 # any parameter. Nothing in this file is fitted, but the split is kept so the
 # claim stays checkable if that ever changes.
+# The in/out split predates the holdout and is now largely superseded by it.
+# With HOLDOUT_START at 2023-01-01 these two constants bracket a single calendar
+# year, so the out_of_sample block holds eleven rebalances and its CAGR is an
+# annualisation of one year's luck. The split is kept because it describes how
+# the engine was developed -- everything before 2022 was seen during design --
+# but the reserved window in knowledge/holdout.md is the one that now carries
+# the evidential weight. Reporting both without saying which is which is how a
+# one-year number gets quoted as an out-of-sample result.
 OUT_OF_SAMPLE_START = "2022-01-01"
 DECILE_HORIZONS = (1, 3, 6, 12)  # in rebalances, i.e. months
 MONTHS_PER_YEAR = 12
@@ -1074,9 +1082,29 @@ def format_report(results):
         block = results["performance"].get(label)
         if not block or not block.get("strategy"):
             continue
-        out.append("## %s" % {"full": "Whole period", "in_sample": "In sample (to 2021)",
-                              "out_of_sample": "Out of sample (2022 on)"}[label])
+        # Named from the data, not from a constant. The previous heading read
+        # "Out of sample (2022 on)" and was true until HOLDOUT_START landed
+        # between OUT_OF_SAMPLE_START and the end of the file, after which that
+        # block held a single calendar year and the heading promised years.
+        span = block.get("span")
+        title = {"full": "Whole period", "in_sample": "In sample",
+                 "out_of_sample": "Out of sample"}[label]
+        if span:
+            out.append("## %s: %s to %s (%d rebalances)" % (title, span[0], span[1], span[2]))
+        else:
+            out.append("## %s (no rebalances)" % title)
         out.append("")
+        if span and span[2] < MONTHS_PER_YEAR * 2:
+            # A block this short produces a CAGR by annualising a handful of
+            # months, which is arithmetic rather than evidence. Under the
+            # holdout, out_of_sample collapsed to eleven months and reported a
+            # 14.88 point advantage -- the most quotable figure in the report
+            # and among the least meaningful.
+            out.append("> **Too short to interpret: %d rebalances.** The CAGR below "
+                       "annualises under two years, and the gap against equal weight "
+                       "is dominated by which months happened to fall inside it. "
+                       "Quote the whole-period figures instead." % span[2])
+            out.append("")
         out.append("| | Top %d | Equal weight | %s |" % (config["top_n"], E.BENCHMARK_SYMBOL))
         out.append("|---|---|---|---|")
         rows = [("Months", "months", "%d"), ("Total return", "total_return", None),
@@ -1212,6 +1240,16 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
             "strategy": performance(chooser(periods)),
             "equal_weight": performance(chooser(equal)),
             "index": performance(chooser(index)),
+            # The span this block actually covers, so the report can name it
+            # rather than assert a hardcoded one. "Out of sample (2022 on)" was
+            # true when the file ended in 2026 and became false the moment the
+            # holdout cut landed, leaving a heading that promised years over a
+            # block containing one. A label derived from the data cannot go
+            # stale when a boundary moves.
+            "span": ((chooser(periods)[0]["signal_date"],
+                      chooser(periods)[-1]["signal_date"],
+                      len(chooser(periods)))
+                     if chooser(periods) else None),
             # The CAGR gap with an interval around it. Without one, a 0.75-point
             # difference over eleven years reads as a result rather than as the
             # coin-flip it probably is.
