@@ -109,7 +109,11 @@
   against real prices and <strong>there is no evidence it predicts returns.</strong> Rank
   correlation with next-month returns is <span class="mono">−0.0060</span> (t −0.29, n=86),
   and nothing at any horizon survives correction for the number of tests run. All four scoring
-  blocks are independently flat.
+  blocks are independently flat <strong>at one month</strong> — and that is a 1-month claim
+  which does not extend. At six months relative strength is the one cell in twenty that rises
+  above its own detection floor (IC <span class="mono">+0.0784</span>, HAC t +3.06, corrected
+  p <span class="mono">0.060</span>). It still does not clear correction, and it is recorded
+  rather than claimed; see <em>No block carries it</em> below for why.
   <br><br>
   <strong>Be precise about what that does and does not establish.</strong> The smallest effect
   this test could reliably detect is an IC of <span class="mono">0.059</span>, and a realistic
@@ -413,8 +417,41 @@ Price history CSV ─┘                                        │
   <tr><td>Relative strength (20 pts)</td><td class="num">+0.0218</td><td class="num">+1.08</td><td class="num">0.057</td></tr>
   <tr><td>Volume (10 pts)</td><td class="num">−0.0231</td><td class="num">−1.66</td><td class="num">0.040</td></tr>
 </table>
-<p><strong>Four flat blocks.</strong> Nothing is cancelling out, so no reweighting recovers an
-edge that is not there.</p>
+<p><strong>Four flat blocks at one month.</strong> Nothing is cancelling out at that horizon, so
+no reweighting of the 1-month signal recovers an edge that is not there. That conclusion belongs
+to the table above it and does not carry to longer horizons — an earlier version of this guide
+stated it without the qualifier, which generalised a 1-month result across all four.</p>
+
+<div class="info">
+  <strong>At six months, one cell in twenty clears its floor.</strong> Relative strength,
+  pre-holdout window, overlapping windows with Newey–West at lag 5:
+  IC <span class="mono">+0.0784</span> over n&nbsp;=&nbsp;81, against a detection floor of
+  <span class="mono">0.0725</span>. HAC t +3.06 (SE 0.0256), bootstrap t +3.46 with a 95%
+  interval of <span class="mono">+0.032 to +0.120</span> that excludes zero. Raw p
+  <span class="mono">0.0030</span>; corrected for the 20 tests in the family,
+  p <span class="mono">0.060</span>. It is the only cell in this project above its own floor.
+  <br><br>
+  <strong>Why it is more likely noise than signal.</strong> It does not clear correction. Under
+  the null, the chance that <em>some</em> cell out of twenty would look at least this strong is
+  about <span class="mono">5.9%</span> — which is roughly what happened. Its sibling horizons do
+  not clear their own floors: 1&nbsp;month +0.0218 against 0.0574, 3&nbsp;months +0.0486 against
+  0.0587, 12&nbsp;months +0.0672 against 0.0688. And it has not been tested on any data that was
+  not already used to find it.
+  <br><br>
+  <strong>The largest correction in the study lands on this cell.</strong> Its i.i.d. t at 6
+  months is +4.67 and Newey–West deflates it to +3.06 — a drop of 1.61, the biggest anywhere
+  here; the next largest is 1.08. What remains is what survived the steepest discount, not a
+  figure that never needed one.
+  <br><br>
+  <strong>These twenty tests are not twenty independent looks, and that cuts against this cell
+  rather than for it.</strong> The blocks share constituents and the horizons overlap. That does
+  make Bonferroni conservative as a divisor — but it also means this is not a lone survivor
+  among twenty: it is one face of a correlated cluster holding the same block at 3 months
+  (+2.34) and 12 months (+2.77). Its consistency across horizons is not four corroborating
+  results, it is closer to one result seen four times. No redivision admits this cell without
+  also readmitting the ones already dismissed, because the dependence that would shrink the
+  divisor is what makes these tests redundant rather than numerous.
+</div>
 
 <h3>Portfolio results</h3>
 <table>

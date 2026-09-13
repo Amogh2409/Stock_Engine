@@ -164,8 +164,7 @@ signature of a phase offset rather than a signal.
 A near-zero total is equally consistent with four dead blocks and with two that
 cancel. Ranking on each subtotal alone settles it. At 1 month — the cleanest
 horizon, though not a well-powered one — every block sits inside its own
-detection floor, and those floors are themselves at or above the range where a
-real effect would sit. Pre-holdout window, HAC:
+detection floor. Pre-holdout window, HAC:
 
 | Block (pre-holdout, 1 month) | IC | t | detectable at 80% |
 | --- | --- | --- | --- |
@@ -174,9 +173,86 @@ real effect would sit. Pre-holdout window, HAC:
 | Relative strength (20) | +0.0218 | +1.08 | 0.057 |
 | Volume (10) | −0.0231 | −1.66 | 0.040 |
 
-Four flat blocks. Nothing is being cancelled out, so no reweighting recovers an
-edge that is not there — which is what makes `technical_weight_pct = 40`
-unearned rather than merely unvalidated.
+**Correction, two claims.** This paragraph previously read "Four flat blocks",
+unqualified, and the sentence above the table claimed those floors "are
+themselves at or above the range where a real effect would sit". Both were
+stated more strongly than the data supports, in the direction that flatters the
+work — the same species as the "powered null" overclaim retracted above.
+
+*On the floors:* a plausible cross-sectional effect is 0.02–0.05. Two of these
+four floors sit above that range entirely (trend 0.062, relative strength
+0.057) and two sit **inside** it (momentum 0.047, volume 0.040). So for momentum
+and volume the test could have seen an effect at the top of the plausible range,
+though not a typical one. "At or above the range" was false for half the table.
+
+*On the blocks:* four flat blocks **at one month**. Nothing is being cancelled
+out at that horizon, so no reweighting of the 1-month signal recovers an edge
+that is not there — which is what makes `technical_weight_pct = 40` unearned
+rather than merely unvalidated. That is a 1-month conclusion and it does not
+extend, because at six months one cell does clear its floor.
+
+### The one cell above its own floor
+
+Relative strength at 6 months is the only cell in this project whose IC exceeds
+its own detection floor. It is recorded here because omitting it while
+publishing "four flat blocks" is how an affirmative negative becomes an
+overclaim. It is not a finding.
+
+| Relative strength | IC | n | HAC t | boot t | floor | p (Bonferroni/20) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 month — pre-holdout, overlapping | +0.0218 | 86 | +1.08 | +1.09 | 0.0574 | 1.000 |
+| 3 months — pre-holdout, overlapping | +0.0486 | 84 | +2.34 | +2.61 | 0.0587 | 0.430 |
+| **6 months — pre-holdout, overlapping** | **+0.0784** | 81 | **+3.06** | **+3.46** | 0.0725 | **0.060** |
+| 12 months — pre-holdout, overlapping | +0.0672 | 75 | +2.77 | +3.06 | 0.0688 | 0.143 |
+
+The 6-month bootstrap interval is +0.032 to +0.120 and excludes zero; HAC SE is
+0.0256 at lag 5; raw p is 0.0030.
+
+**Why this is more likely noise.** It does not clear correction. Under the null
+the chance that *some* cell out of twenty looks at least this strong is about
+**5.9%**, which is approximately what occurred. The sibling horizons do not
+clear their own floors, and 12 months misses by 0.0016 — close enough that the
+pattern is as consistent with a smooth noise surface as with a real effect
+concentrated at two quarters. Nothing here has been tested on data that was not
+already used to find it.
+
+**Status: Convention — recorded, not adopted.** No parameter changes in response
+to this cell, and it is not to be investigated further on pre-holdout data:
+looking harder at the window that produced it cannot distinguish the two
+explanations. The one clean test belongs to whichever variant survives Tier 1.
+
+**These twenty tests are not twenty independent looks, and that fact cuts both
+ways.** The blocks share constituents and the horizons overlap, so the tests are
+positively dependent. One consequence is that Bonferroni is conservative as a
+divisor, and a dependence-aware correction would land below 0.060. The other,
+and the one that matters here, is that relative strength at 6 months is not a
+lone survivor among twenty independent looks: it is one face of a correlated
+cluster that also holds the same block at 3 months (+2.34) and at 12 months
+(+2.77). Its sign consistency across all four horizons is therefore not four
+corroborating results — it is closer to one result seen four times.
+
+Both consequences follow from the same fact, and reporting only the divisor half
+is what turns a caveat into special pleading for the one cell that benefits. No
+principled redivision admits this cell without also admitting the ones already
+dismissed, because the dependence that would shrink the divisor is the same
+dependence that makes these tests redundant rather than numerous. The family
+size and the correction were fixed before this cell was singled out; changing
+either now is choosing the test after seeing the answer.
+
+**Two arguments against it that do not depend on the divisor at all.**
+
+- *It is the cell with the largest inflation in the run.* Its i.i.d. t at 6
+  months is +4.67 and HAC deflates it to +3.06 — a drop of 1.61, the largest
+  anywhere in the study; the next largest is 1.08. What remains is what survived
+  the biggest discount, not a figure that never needed one.
+- *It dilutes when the reserved years are added.* Pre-holdout +0.0784; over the
+  full 2015–2026 span, +0.0485. But this is **not** a relative-strength
+  signature: 12 of the 16 block-horizon cells are larger pre-holdout than on the
+  full span. The pre-holdout window is simply the friendlier half for this score
+  generally, which is what one expects if these estimates are period-specific
+  rather than persistent. (Full-span figures include reserved data and are cited
+  here as caution against over-reading, never as evidence. No parameter changes
+  in response to either number.)
 
 **Distrust the overlapping column specifically.** Sign flips fire on composite
 3m, momentum 3m, momentum 6m and volume 3m. Worse, the flag catches sign
