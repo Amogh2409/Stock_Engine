@@ -111,6 +111,8 @@ export interface ParityEvaluation {
   scoringModel: string;
   scoreLines: string[];
   sectorGroup: string | null;
+  sectorRelativeStrength6M: number | null;
+  sectorRelativeStrengthBasis: string;
   techScore: number | null;
   techBreakdown: string[];
   technicalBlocks: TechnicalBlocks | null;

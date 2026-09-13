@@ -434,6 +434,35 @@ export const WatchlistTable: React.FC<WatchlistTableProps> = ({
                     </div>
                   ))}
                 </div>
+                <div
+                  className="p-2 rounded bg-slate-50 border border-slate-100 flex justify-between items-center text-xs"
+                  data-testid="sector-relative-strength"
+                >
+                  <span
+                    className="text-slate-500"
+                    title="6-month relative strength minus the median of this company's sector peers. Beating a broad index says little when the whole sector is beating it. Diagnostic only: it earns no points."
+                  >
+                    vs sector peers:
+                  </span>
+                  <span
+                    className={`font-mono font-semibold ${
+                      activeStock.sectorRelativeStrength6M === null
+                        ? TONE_CLASS.na
+                        : activeStock.sectorRelativeStrength6M > 0
+                        ? TONE_CLASS.good
+                        : TONE_CLASS.bad
+                    }`}
+                  >
+                    {activeStock.sectorRelativeStrength6M === null
+                      ? '—'
+                      : `${activeStock.sectorRelativeStrength6M > 0 ? '+' : ''}${fmt1(
+                          activeStock.sectorRelativeStrength6M,
+                        )}%`}
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-400">
+                  Peer basis: {activeStock.sectorRelativeStrengthBasis}
+                </p>
                 <p className="text-[11px] text-slate-500 font-mono">
                   {t.history_rows} sessions · as of {t.as_of ?? 'unknown'} · {t.data_status}
                 </p>

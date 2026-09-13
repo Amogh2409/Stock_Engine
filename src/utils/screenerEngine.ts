@@ -28,10 +28,12 @@ import {
   DataInspectionReport,
   FilterOperator,
   RankingChange,
+  RelativeStrengthBucket,
   ScreenerRow,
   ScreeningConfig,
   SectorMedian,
   SectorMedians,
+  SectorRelativeStrength,
   StockEvaluation,
   TechnicalAvailability,
   TechnicalBlocks,
@@ -692,6 +694,100 @@ export function valuationYardstick(
     return [null, `no ${MEDIAN_LABELS[metric]} yardstick (the file has no positive ${MEDIAN_LABELS[metric]})`];
   }
   return [universeValue, `universe median ${fmt1(universeValue)} (group n=${groupCount})`];
+}
+
+// --- Sector-relative strength ----------------------------------------------
+// Relative strength against a broad index quietly rewards being in a hot
+// sector. A pharma company beating the Nifty while every pharma name beats it
+// has demonstrated nothing about itself, and the 20-point relative-strength
+// block cannot tell the two apart. Measuring the same return against its own
+// peers asks the sharper question, so it is reported beside the benchmark
+// figure rather than replacing it.
+//
+// It deliberately earns no points. That block already rests on convention
+// rather than on any source (see knowledge/rulebook.md), and the backtest found
+// the technical score does not rank forward returns, so adding a second
+// unsourced scoring rule would be moving in the wrong direction.
+
+/**
+ * Median 6-month relative strength per industry, per group, and overall.
+ *
+ * A company feeds a bucket only when its own 6M figure is available, so a
+ * recent listing never drags a peer median toward zero by being counted as if
+ * it had returned nothing. Counterpart of sector_relative_strength().
+ */
+export function sectorRelativeStrength(
+  stocks: readonly CleanedStock[],
+  technicals: Record<string, TechnicalIndicators> | null,
+): SectorRelativeStrength {
+  const industries = new Map<string, number[]>();
+  const groups = new Map<string, number[]>();
+  const universe: number[] = [];
+  const listFor = (store: Map<string, number[]>, key: string) => {
+    let entry = store.get(key);
+    if (!entry) {
+      entry = [];
+      store.set(key, entry);
+    }
+    return entry;
+  };
+
+  for (const stock of stocks) {
+    const tech = technicals ? ownEntry(technicals, stock.ticker || '') : undefined;
+    const value = tech ? tech.relativeStrength6M : null;
+    if (value === null || value === undefined) continue;
+    const industry = (stock.sector || '').trim();
+    const group = sectorGroup(industry);
+    universe.push(value);
+    if (industry) listFor(industries, industry).push(value);
+    if (group) listFor(groups, group).push(value);
+  }
+
+  const bucket = (values: number[]): RelativeStrengthBucket => ({
+    value: median(values),
+    count: values.length,
+  });
+  const asRecord = (store: Map<string, number[]>) => {
+    const out: Record<string, RelativeStrengthBucket> = {};
+    for (const [name, values] of store) out[name] = bucket(values);
+    return out;
+  };
+  return { byIndustry: asRecord(industries), byGroup: asRecord(groups), universe: bucket(universe) };
+}
+
+/**
+ * [median, basis text] for one company's peers: industry, else group, else
+ * universe. The same MIN_MEDIAN_SAMPLE rule as valuationYardstick(), and the
+ * same honesty about fallbacks: the basis always names the bucket actually
+ * used, so a universe median can never be read as a true sector comparison.
+ * Counterpart of relative_strength_yardstick().
+ */
+export function relativeStrengthYardstick(
+  buckets: SectorRelativeStrength,
+  sector: string | null | undefined,
+): [number | null, string] {
+  const industry = (sector || '').trim();
+  const group = sectorGroup(industry);
+  const industryBucket = ownEntry(buckets.byIndustry, industry);
+  const groupBucket = group === null ? undefined : ownEntry(buckets.byGroup, group);
+
+  const value = industryBucket ? industryBucket.value : null;
+  const count = industryBucket ? industryBucket.count : 0;
+  if (value !== null && count >= MIN_MEDIAN_SAMPLE) {
+    return [value, `${industry} peers (n=${count})`];
+  }
+
+  const groupValue = groupBucket ? groupBucket.value : null;
+  const groupCount = groupBucket ? groupBucket.count : 0;
+  if (groupValue !== null && groupCount >= MIN_MEDIAN_SAMPLE) {
+    return [groupValue, `${group} group (industry n=${count})`];
+  }
+
+  const universeValue = buckets.universe.value;
+  if (universeValue === null) {
+    return [null, 'no peer yardstick (no company in the file reports 6M relative strength)'];
+  }
+  return [universeValue, `whole universe (group n=${groupCount})`];
 }
 
 const FILTER_FIELD_SET = new Set<string>(ALLOWED_FILTER_FIELDS);
@@ -2558,6 +2654,11 @@ export function evaluateStock(
     compositeScore: combined.composite,
     compositeBasis: combined.basis,
     verdict,
+    // Filled in by the pipeline, the only place that sees every company at
+    // once. Scoring one stock cannot know its peers, so the default says so
+    // plainly rather than implying a comparison that never happened.
+    sectorRelativeStrength6M: null,
+    sectorRelativeStrengthBasis: 'not compared',
     coveragePct: round1(coverage),
     redFlags,
     notScored,
@@ -2795,16 +2896,37 @@ export function processScreenerPipeline(
   let universe = allowed.size > 0 ? unique.filter((s) => allowed.has(s.ticker.toUpperCase())) : unique;
   const outsideUniverseCount = unique.length - universe.length;
 
+  // Hoisted so the sector-relative pass below can take the same (stocks,
+  // technicals) pair the Python engine does. Attaching them to the stock is a
+  // convenience of this engine only, and letting the two drift apart in shape
+  // is exactly what the parity suite cannot catch: it compares outputs.
+  let technicals: Record<string, TechnicalIndicators> | null = null;
   if (priceHistory) {
-    const technicals = technicalsFromHistory(priceHistory, universe.map((s) => s.ticker));
-    universe = universe.map((s) => ({ ...s, technicals: technicals[s.ticker] }));
+    const loaded = technicalsFromHistory(priceHistory, universe.map((s) => s.ticker));
+    technicals = loaded;
+    universe = universe.map((s) => ({ ...s, technicals: loaded[s.ticker] }));
   }
 
   // One set of yardsticks for the whole run, computed from the companies
   // actually being screened, so valuation is judged against this file's sectors
   // rather than a hard-coded notion of "expensive".
   const medians = sectorMedians(universe);
-  const evaluations = universe.map((s) => evaluateStock(s, screeningConfig, appConfig, medians));
+  // Sector-relative strength is cross-sectional: no company can be placed
+  // against its peers until every peer has been measured. So it is attached
+  // after scoring, which is also the reason it can never influence a score --
+  // it does not exist until the scores are final.
+  const rsBuckets = sectorRelativeStrength(universe, technicals);
+  const evaluations = universe
+    .map((s) => evaluateStock(s, screeningConfig, appConfig, medians))
+    .map((ev) => {
+      const own = ev.stock.technicals?.relativeStrength6M ?? null;
+      const [peer, basis] = relativeStrengthYardstick(rsBuckets, ev.stock.sector);
+      if (own === null) {
+        return { ...ev, sectorRelativeStrengthBasis: '6M relative strength unavailable' };
+      }
+      if (peer === null) return { ...ev, sectorRelativeStrengthBasis: basis };
+      return { ...ev, sectorRelativeStrength6M: round1(own - peer), sectorRelativeStrengthBasis: basis };
+    });
 
   // Every passing stock is ranked, then the list is split at top_n: the ones
   // below the cut-off are reported separately rather than dropped.

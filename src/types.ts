@@ -161,6 +161,23 @@ export interface SectorMedians {
   universe: SectorMedian;
 }
 
+/** Median 6-month relative strength for one bucket, with its sample size. */
+export interface RelativeStrengthBucket {
+  value: number | null;
+  count: number;
+}
+
+/**
+ * Peer yardsticks for relative strength, bucketed exactly like SectorMedians:
+ * the fine Screener.in industry, the coarse sector group, and the whole
+ * universe. Only companies that actually have a 6-month figure feed a bucket.
+ */
+export interface SectorRelativeStrength {
+  byIndustry: Record<string, RelativeStrengthBucket>;
+  byGroup: Record<string, RelativeStrengthBucket>;
+  universe: RelativeStrengthBucket;
+}
+
 export interface ScreeningConfig {
   minMarketCapCr: number;
   minSalesGrowthPct: number;
@@ -259,6 +276,17 @@ export interface StockEvaluation {
   compositeBasis: string;
   /** Descriptive band over the composite. A label, not a prediction. */
   verdict: string;
+  /**
+   * 6-month relative strength minus the median of this company's sector peers.
+   * Null when the company has no 6M figure, or when no peer bucket qualified.
+   *
+   * Diagnostic only: it earns no points, and it is computed after scoring so
+   * that it cannot reach one. Beating a broad index says little when the whole
+   * sector is beating it; this says whether the company beat its own peers.
+   */
+  sectorRelativeStrength6M: number | null;
+  /** Which peer bucket the comparison used, or why there was none. */
+  sectorRelativeStrengthBasis: string;
   technicalScore: TechnicalScoreResult;
   categoryScores: CategoryScores;
   /** Factual rationale built from real factor contributions. Never empty. */

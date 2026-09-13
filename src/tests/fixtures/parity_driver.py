@@ -86,6 +86,11 @@ def run_screen(engine, pd, spec, expected_rows=None):
                 "scoringModel": item["scoringModel"],
                 "scoreLines": list(item["scoreLines"]),
                 "sectorGroup": item["sectorGroup"],
+                # Cross-sectional, so it is attached after scoring. Compared
+                # here because a peer median computed differently in the two
+                # engines would otherwise be invisible.
+                "sectorRelativeStrength6M": item["sectorRelativeStrength6M"],
+                "sectorRelativeStrengthBasis": item["sectorRelativeStrengthBasis"],
                 "techScore": item["techScore"],
                 "techBreakdown": list(item["techBreakdown"]),
                 # The four block subtotals, so the engines are compared on the

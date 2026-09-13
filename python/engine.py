@@ -882,6 +882,83 @@ def valuation_yardstick(medians, sector, metric):
     return universe_value, "universe median %s (group n=%d)" % (
         format(round1(universe_value), ".1f"), group_count)
 
+
+# --- Sector-relative strength ---------------------------------------------
+# Relative strength against a broad index quietly rewards being in a hot
+# sector. A pharma company beating the Nifty while every pharma name beats it
+# has demonstrated nothing about itself, and the 20-point relative-strength
+# block cannot tell the two apart. Measuring the same return against its own
+# peers asks the sharper question, so it is reported beside the benchmark
+# figure rather than replacing it.
+#
+# It deliberately earns no points. That block already rests on convention
+# rather than on any source (see knowledge/rulebook.md), and the backtest found
+# the technical score does not rank forward returns, so adding a second
+# unsourced scoring rule would be moving in the wrong direction. This is a
+# diagnostic, and it is computed after scoring so that it structurally cannot
+# reach a score: it does not exist until the scores are already final.
+
+
+def sector_relative_strength(stocks, technicals):
+    """Median 6-month relative strength per industry, per group, and overall.
+
+    technicals maps ticker -> indicator dict, as technicals_from_history()
+    returns it. A company feeds a bucket only when its own 6M figure is
+    available, so a recent listing never drags a peer median toward zero by
+    being counted as if it had returned nothing. Mirrors
+    sectorRelativeStrength() in screenerEngine.ts.
+    """
+    technicals = technicals or {}
+    industries, groups, universe = {}, {}, []
+    for stock in stocks:
+        tech = technicals.get(stock.get("ticker") or "")
+        value = tech.get("relativeStrength6M") if tech else None
+        if value is None:
+            continue
+        industry = js_trim(stock.get("sector") or "")
+        group = sector_group(industry)
+        universe.append(value)
+        if industry:
+            industries.setdefault(industry, []).append(value)
+        if group:
+            groups.setdefault(group, []).append(value)
+    bucket = lambda values: {"value": _median(values), "count": len(values)}  # noqa: E731
+    return {
+        "byIndustry": {name: bucket(v) for name, v in industries.items()},
+        "byGroup": {name: bucket(v) for name, v in groups.items()},
+        "universe": bucket(universe),
+    }
+
+
+def relative_strength_yardstick(buckets, sector):
+    """(median, basis text) for one company's peers: industry, group, universe.
+
+    The same MIN_MEDIAN_SAMPLE rule as valuation_yardstick(), and the same
+    honesty about fallbacks: the basis text always names the bucket actually
+    used, so a universe median can never be read as a true sector comparison.
+    Mirrors relativeStrengthYardstick() in screenerEngine.ts.
+    """
+    industry = js_trim(sector or "")
+    group = sector_group(industry)
+    industry_bucket = buckets["byIndustry"].get(industry) or {}
+    group_bucket = buckets["byGroup"].get(group) or {}
+
+    value = industry_bucket.get("value")
+    count = industry_bucket.get("count", 0)
+    if value is not None and count >= MIN_MEDIAN_SAMPLE:
+        return value, "%s peers (n=%d)" % (industry, count)
+
+    group_value = group_bucket.get("value")
+    group_count = group_bucket.get("count", 0)
+    if group_value is not None and group_count >= MIN_MEDIAN_SAMPLE:
+        return group_value, "%s group (industry n=%d)" % (group, count)
+
+    universe_value = buckets["universe"].get("value")
+    if universe_value is None:
+        return None, "no peer yardstick (no company in the file reports 6M relative strength)"
+    return universe_value, "whole universe (group n=%d)" % group_count
+
+
 # Documented range of every numeric setting. Shared with CONFIG_LIMITS in
 # screenerEngine.ts -- the browser clamps its inputs to the same bounds -- and
 # asserted equal by the cross-engine parity suite.
@@ -2869,6 +2946,11 @@ class ScreeningEngine:
             "composite": composite,
             "compositeBasis": composite_basis,
             "verdict": verdict,
+            # Filled in by screen(), which is the only place that can see every
+            # company at once. Scoring one stock cannot know its peers, so the
+            # default states that plainly rather than implying a comparison.
+            "sectorRelativeStrength6M": None,
+            "sectorRelativeStrengthBasis": "not compared",
             "coverage": round1(coverage),
             "reasons": list(reasons),
             "warningFlags": list(warning_flags),
@@ -2943,6 +3025,23 @@ class ScreeningEngine:
             self.evaluate(s, None if technicals is None else technicals[s["ticker"]], medians)
             for s in stocks
         ]
+
+        # Sector-relative strength is cross-sectional: no company can be placed
+        # against its peers until every peer has been measured. So it is
+        # attached here, after scoring, which is also the reason it can never
+        # influence a score -- it does not exist until the scores are final.
+        rs_buckets = sector_relative_strength(stocks, technicals)
+        for stock, item in zip(stocks, evaluations):
+            tech = None if technicals is None else technicals.get(stock["ticker"])
+            own = tech.get("relativeStrength6M") if tech else None
+            peer, basis = relative_strength_yardstick(rs_buckets, stock.get("sector"))
+            if own is None:
+                item["sectorRelativeStrengthBasis"] = "6M relative strength unavailable"
+            elif peer is None:
+                item["sectorRelativeStrengthBasis"] = basis
+            else:
+                item["sectorRelativeStrength6M"] = round1(own - peer)
+                item["sectorRelativeStrengthBasis"] = basis
 
         # Every passing stock is ranked, then the list is split at top_n: the
         # ones below the cut-off are reported separately rather than dropped.
@@ -3767,6 +3866,62 @@ class EngineTests(unittest.TestCase):
         self.assertAlmostEqual(_relative_strength(pairs, SESSIONS_12_MONTH), 100.0, places=8)
         self.assertIsNotNone(_relative_strength(pairs, SESSIONS_3_MONTH))
         self.assertIsNone(_relative_strength(pairs[:10], SESSIONS_3_MONTH))
+
+    # --- sector-relative strength ------------------------------------------
+    def _rs_stocks(self, values, sector="Computers - Software"):
+        """(stocks, technicals) where each value is one company's 6M figure.
+
+        A None value stands for a company the price file could not measure.
+        """
+        stocks, technicals = [], {}
+        for i, value in enumerate(values):
+            ticker = "T%d" % i
+            stocks.append({"ticker": ticker, "sector": sector})
+            technicals[ticker] = {"relativeStrength6M": value}
+        return stocks, technicals
+
+    def test_peer_median_ignores_companies_without_a_figure(self):
+        # The None must not be counted as a zero return: doing so would drag
+        # the peer median down and flatter every company measured against it.
+        stocks, technicals = self._rs_stocks([10.0, 20.0, 30.0, None, None])
+        buckets = sector_relative_strength(stocks, technicals)
+        self.assertEqual(buckets["byIndustry"]["Computers - Software"],
+                         {"value": 20.0, "count": 3})
+        self.assertEqual(buckets["universe"], {"value": 20.0, "count": 3})
+
+    def test_peer_bucket_below_the_sample_floor_falls_back(self):
+        # Four peers is under MIN_MEDIAN_SAMPLE, so the industry bucket must not
+        # be used even though it exists, and the basis has to say which bucket
+        # answered instead.
+        stocks, technicals = self._rs_stocks([10.0, 20.0, 30.0, 40.0])
+        buckets = sector_relative_strength(stocks, technicals)
+        self.assertEqual(buckets["byIndustry"]["Computers - Software"]["count"], 4)
+        value, basis = relative_strength_yardstick(buckets, "Computers - Software")
+        self.assertEqual(value, 25.0)
+        self.assertNotIn("peers", basis)
+
+        stocks, technicals = self._rs_stocks([10.0, 20.0, 30.0, 40.0, 50.0])
+        buckets = sector_relative_strength(stocks, technicals)
+        value, basis = relative_strength_yardstick(buckets, "Computers - Software")
+        self.assertEqual(value, 30.0)
+        self.assertEqual(basis, "Computers - Software peers (n=5)")
+
+    def test_no_peer_yardstick_when_nothing_reports_a_figure(self):
+        stocks, technicals = self._rs_stocks([None, None])
+        buckets = sector_relative_strength(stocks, technicals)
+        value, basis = relative_strength_yardstick(buckets, "Computers - Software")
+        self.assertIsNone(value)
+        self.assertIn("no peer yardstick", basis)
+
+    def test_sector_relative_strength_is_the_gap_to_the_peer_median(self):
+        # Five peers at 10..50 put the median at 30, so the company at 50 beat
+        # its own sector by 20 points even though it and every peer beat the
+        # benchmark. That gap is the whole reason this measure exists.
+        stocks, technicals = self._rs_stocks([10.0, 20.0, 30.0, 40.0, 50.0])
+        buckets = sector_relative_strength(stocks, technicals)
+        peer, _ = relative_strength_yardstick(buckets, "Computers - Software")
+        self.assertEqual(round1(50.0 - peer), 20.0)
+        self.assertEqual(round1(10.0 - peer), -20.0)
 
     # --- composite score ---------------------------------------------------
     def test_composite_combines_both_halves(self):

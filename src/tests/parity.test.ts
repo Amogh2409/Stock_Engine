@@ -387,6 +387,8 @@ function tsEvaluationFields(ev: StockEvaluation): Omit<ParityEvaluation, 'ticker
     scoringModel: ev.scoringModel,
     scoreLines: ev.scoreLines,
     sectorGroup: ev.sectorGroup,
+    sectorRelativeStrength6M: ev.sectorRelativeStrength6M,
+    sectorRelativeStrengthBasis: ev.sectorRelativeStrengthBasis,
     techScore: ev.technicalScore.score,
     techBreakdown: ev.technicalScore.breakdown,
     technicalBlocks: ev.technicalScore.blocks,

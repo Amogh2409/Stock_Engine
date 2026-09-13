@@ -40,8 +40,10 @@ import {
   generateWatchlistCsv,
   parseStrictDecimal,
   processScreenerPipeline,
+  relativeStrengthYardstick,
   round1,
   sectorMedians,
+  sectorRelativeStrength,
   sortByScoreThenTicker,
   validateCustomFilters,
 } from '../utils/screenerEngine';
@@ -374,6 +376,65 @@ describe('Screening and scoring', () => {
     );
     expect(cheap.categoryScores.valuation.score).toBe(15);
     expect(dear.categoryScores.valuation.score).toBe(0);
+  });
+
+  it('builds a peer median only from companies that have a 6M figure', () => {
+    // A missing figure must not be counted as a zero return: that would drag
+    // the peer median down and flatter every company measured against it.
+    const values: (number | null)[] = [10, 20, 30, null, null];
+    const stocks = values.map((v, i) => makeStock({
+      ticker: `T${i}`,
+      technicals: { ...emptyTechnicals(), relativeStrength6M: v },
+    }));
+    const technicals = Object.fromEntries(
+      stocks.map((s) => [s.ticker, s.technicals!]),
+    );
+    const buckets = sectorRelativeStrength(stocks, technicals);
+    expect(buckets.byIndustry['Computers - Software']).toEqual({ value: 20, count: 3 });
+    expect(buckets.universe).toEqual({ value: 20, count: 3 });
+  });
+
+  it('refuses a peer bucket below the sample floor and says which one answered', () => {
+    const bucketsFor = (values: number[]) => {
+      const stocks = values.map((v, i) => makeStock({
+        ticker: `T${i}`,
+        technicals: { ...emptyTechnicals(), relativeStrength6M: v },
+      }));
+      return sectorRelativeStrength(
+        stocks,
+        Object.fromEntries(stocks.map((s) => [s.ticker, s.technicals!])),
+      );
+    };
+    // Four peers is under MIN_MEDIAN_SAMPLE, so the industry bucket exists but
+    // must not be used, and the basis has to name what answered instead.
+    const four = bucketsFor([10, 20, 30, 40]);
+    expect(four.byIndustry['Computers - Software'].count).toBe(4);
+    const [shortValue, shortBasis] = relativeStrengthYardstick(four, 'Computers - Software');
+    expect(shortValue).toBe(25);
+    expect(shortBasis).not.toContain('peers');
+
+    const five = bucketsFor([10, 20, 30, 40, 50]);
+    const [value, basis] = relativeStrengthYardstick(five, 'Computers - Software');
+    expect(value).toBe(30);
+    expect(basis).toBe('Computers - Software peers (n=5)');
+    // The company at 50 beat its own sector by 20 even though it and every
+    // peer beat the benchmark. That gap is the whole reason this measure exists.
+    expect(round1(50 - value!)).toBe(20);
+    expect(round1(10 - value!)).toBe(-20);
+  });
+
+  it('reports no peer yardstick when nothing in the file has a 6M figure', () => {
+    const stocks = [0, 1].map((i) => makeStock({
+      ticker: `T${i}`,
+      technicals: { ...emptyTechnicals(), relativeStrength6M: null },
+    }));
+    const buckets = sectorRelativeStrength(
+      stocks,
+      Object.fromEntries(stocks.map((s) => [s.ticker, s.technicals!])),
+    );
+    const [value, basis] = relativeStrengthYardstick(buckets, 'Computers - Software');
+    expect(value).toBeNull();
+    expect(basis).toContain('no peer yardstick');
   });
 
   it('does not scale a sparse company upward', () => {
