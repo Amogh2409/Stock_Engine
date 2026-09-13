@@ -635,6 +635,38 @@ acting on the signal close. Our rule matches the book's finding for the noisier
 market type, and it is also the honest choice, since a close-price signal cannot
 be executed at that same close.
 
+**Benchmark alignment — FAILED silently until 2026-09-13.** A benchmark must
+cover exactly the months the strategy traded. Ours did not: the strategy cannot
+trade until enough companies clear
+`SESSIONS_FOR_TECHNICAL_SCORE`, while equal-weighting can trade from the first
+month in the file, so the performance table compared a strategy CAGR over 86
+months against an equal-weight CAGR over 95 — and over 130 against 139 on the
+full span. The index column had the same defect.
+
+**Status: Convention, and a correction rather than a sourced rule.** No book in
+this repository states it; it is arithmetic. A CAGR is a function of its
+period, so differencing two CAGRs computed over different periods measures the
+periods as much as the strategies.
+
+The cost was not small and it ran in the flattering direction. The old table
+implied a gap of **−0.75pp** on the full span. Over matched months the
+pre-holdout gap is **−3.89pp**, roughly five times wider. The strategy looked
+better than it was because its benchmark was credited with months the strategy
+could not trade.
+
+Two details worth keeping, because both are about how the defect survived:
+
+- **The disclosure was already present and did not work.** The table carried a
+  `Months` row reading `86 | 95 | 95` directly under a heading naming 86
+  rebalances. Two people extracted every other statistic from that table without
+  registering it. Adding a warning would have left the artefact contradicting
+  itself; aligning the data removed the contradiction. Prefer fixing the
+  artefact to fixing the reader.
+- **The check that now guards it** asserts both that the month counts are equal
+  across all three columns *and* that subtracting the table's CAGR row equals the
+  independently computed paired figure to twelve places. Before alignment those
+  two numbers disagreed five-fold, and the more prominent one was wrong.
+
 **Overlapping windows — passes in one tool and FAILS in the other.** The claim
 as originally written was true of `python/ab_compare.py`, which computes
 `ic_series(h, 1)` and `ic_series(h, h)` and reports the non-overlapping figure
