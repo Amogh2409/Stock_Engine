@@ -136,7 +136,7 @@ def month_end_sessions(calendar):
     return out
 
 
-def score_on(book, ticker, date, bench_by_date):
+def score_on(book, ticker, date, bench_by_date, rsi_flip=False):
     """The engine's technical score for one ticker as at `date`, or None.
 
     Only sessions up to and including `date` are passed in, so the score cannot
@@ -145,7 +145,13 @@ def score_on(book, ticker, date, bench_by_date):
     """
     end = book.index_upto(ticker, date)
     if end is None:
-        return None
+        # (None, None), not a bare None. Every other path here returns a
+        # 2-tuple, and callers unpack it; this guard kept its old scalar shape
+        # through the change and crashed the first real run on the first ticker
+        # that had not listed yet. No fixture caught it because every fixture
+        # gives every ticker every date -- a guard for absent data can only be
+        # exercised by absent data.
+        return None, None
     series = book.history[ticker]
     upto = end + 1
     dates = series["dates"][:upto]
@@ -158,26 +164,83 @@ def score_on(book, ticker, date, bench_by_date):
         highs=series["highs"][:upto],
         lows=series["lows"][:upto],
     )
-    # Element zero is the composite total, which is what this backtest measures.
-    # The function returns (score, breakdown, warnings, blocks); the per-block
-    # subtotals exist and are deliberately unused here, because the first
-    # question is whether the total ranks returns at all. Unpacked positionally
-    # rather than by arity so the backtest keeps running when the thing it
-    # measures gains a field -- one that crashes for that reason is one nobody
-    # reruns, and rerunning after every scoring change is the whole point.
+    # The function returns (score, breakdown, warnings, blocks). Element zero is
+    # the composite total; element three is the per-block subtotals. Both are
+    # returned now: the composite answers whether the total ranks returns, and
+    # the blocks answer which of them carries or drags, which the composite
+    # cannot. Unpacked positionally rather than by arity so the backtest keeps
+    # running when the thing it measures gains a field -- one that crashes for
+    # that reason is one nobody reruns, and rerunning after every scoring change
+    # is the whole point.
     result = E.calculate_technical_score(tech, True)
-    return result[0] if isinstance(result, tuple) else result
+    if not isinstance(result, tuple):
+        return result, None
+    blocks = result[3] if len(result) > 3 else None
+    if rsi_flip:
+        return _flip_rsi(result[0], blocks, tech)
+    return result[0], blocks
 
 
-def rank_on(book, date, bench_by_date):
+# The engine awards RSI_MOMENTUM_AWARD when rsi14 > RSI_MOMENTUM_FLOOR and
+# nothing otherwise (engine.py, the momentum block). Read off the code rather
+# than off the rulebook, because a measurement built on a number quoted in prose
+# is a measurement of the prose.
+RSI_MOMENTUM_AWARD = 15.0
+
+
+def _flip_rsi(total, blocks, tech):
+    """The score with the RSI comparison inverted: points for rsi14 BELOW 50.
+
+    Open item 1 in the rulebook. TSaM pp.389-390 reports that the RSI's sign
+    flipped around 1998 -- a trend indicator before, a mean-reverting one since
+    -- so scoring continuation encodes a constant where the source documents a
+    variable. This measures the other side of that choice.
+
+    Implemented here and NEVER by editing RSI_MOMENTUM_FLOOR, because changing
+    the shipped comparison to see whether it backtests better is adoption, not
+    measurement, and the engine must keep scoring what it actually ships.
+
+    The momentum block is recomputed and re-clamped rather than adjusted by
+    arithmetic on the total. MACD also awards 15 into a block capped at 30, so
+    a name holding both sits exactly at the cap; subtracting works by
+    coincidence there and would fail the moment either award or the cap moved.
+    rsi exactly at the floor scores zero on both sides, so the comparison stays
+    symmetric.
+    """
+    rsi = tech.get("rsi14")
+    if total is None or blocks is None or rsi is None:
+        return total, blocks
+    flipped = dict(blocks)
+    current = flipped.get("momentum")
+    if current is None:
+        return total, blocks
+    was = RSI_MOMENTUM_AWARD if rsi > E.RSI_MOMENTUM_FLOOR else 0.0
+    now = RSI_MOMENTUM_AWARD if rsi < E.RSI_MOMENTUM_FLOOR else 0.0
+    cap = E.TECHNICAL_BLOCK_MAX["momentum"]
+    flipped["momentum"] = E.round1(E.clamp(current - was + now, 0, cap))
+    return E.round1(total - current + flipped["momentum"]), flipped
+
+
+def rank_on(book, date, bench_by_date, block=None, rsi_flip=False):
     """[(ticker, score)] for every ticker scoreable as at `date`, best first.
 
     Ties break on ticker ascending, the same rule the screener ranks by, so the
     selection is deterministic rather than dependent on dictionary order.
+
+    block=None ranks on the composite technical total, which is what the
+    portfolio trades. Naming one of TECHNICAL_BLOCK_NAMES ranks on that
+    subtotal alone, which is how the blocks get measured separately: the
+    composite is a weighted sum, and a near-zero result for the sum is
+    consistent with one block carrying and another dragging by the same amount.
     """
     scored = []
     for ticker in book.tickers():
-        score = score_on(book, ticker, date, bench_by_date)
+        score, blocks = score_on(book, ticker, date, bench_by_date, rsi_flip=rsi_flip)
+        if block is not None:
+            # A company with no block breakdown cannot be ranked on a block.
+            # Dropping it is right: substituting zero would rank "not measured"
+            # below every measured company, which is a claim nobody made.
+            score = None if not blocks else blocks.get(block)
         if score is not None:
             scored.append((ticker, score))
     scored.sort(key=lambda pair: (-pair[1], pair[0]))
@@ -212,7 +275,8 @@ def hold_return(book, tickers, entry_date, exit_date):
     return sum(returns) / len(returns), fallbacks, dropped
 
 
-def run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per_side):
+def run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per_side,
+                  rsi_flip=False):
     """Monthly top-N by technical score, equal weighted, costs charged on turnover.
 
     Returns a list of per-period records. The period return is measured from the
@@ -228,7 +292,7 @@ def run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per
         exit_date = next_session(calendar, exit_signal)
         if entry_date is None or exit_date is None:
             break
-        ranked = rank_on(book, signal_date, bench_by_date)
+        ranked = rank_on(book, signal_date, bench_by_date, rsi_flip=rsi_flip)
         selected = [ticker for ticker, _score in ranked[:top_n]]
         if not selected:
             continue
@@ -468,19 +532,112 @@ def spearman(pairs):
     return cov / math.sqrt(var_x * var_y)
 
 
-def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORIZONS):
+# One-sided normal deviate for 80% power. Paired with a two-sided critical t
+# below, which is the usual convention for a detectable-effect calculation.
+Z_FOR_80_PERCENT_POWER = 0.8416
+
+
+def _t_critical(df, alpha=0.05):
+    """Two-sided critical t for `df`, found by bisection on two_sided_p.
+
+    No lookup table and no new dependency: two_sided_p is already in this file
+    and is already anchored to published values by
+    test_p_values_come_from_t_not_from_a_normal, so this inherits that check
+    rather than introducing a second source of truth for the same distribution.
+    """
+    if df < 1:
+        return float("nan")
+    low, high = 0.0, 1000.0
+    for _ in range(200):
+        mid = (low + high) / 2.0
+        if two_sided_p(mid, df) > alpha:
+            low = mid
+        else:
+            high = mid
+    return (low + high) / 2.0
+
+
+def _ic_statistics(series, family_size):
+    """Mean, t, n and adjusted p for one series of monthly rank correlations.
+
+    Pulled out of decile_study so the composite and every block compute their
+    significance by one code path. Two of them drifting apart would be the kind
+    of difference nobody notices until a number is quoted.
+    """
+    n = len(series)
+    mean_ic = sum(series) / n if n else float("nan")
+    if n > 1:
+        spread = math.sqrt(sum((v - mean_ic) ** 2 for v in series) / (n - 1))
+        t_stat = mean_ic / (spread / math.sqrt(n)) if spread > 0 else float("nan")
+    else:
+        spread = float("nan")
+        t_stat = float("nan")
+    # Computed here rather than by hand afterwards, so the significance of a
+    # result is reproducible from the repository by whoever reads it next.
+    p_value = two_sided_p(t_stat, n - 1)
+    # The smallest mean IC this many observations could distinguish from zero at
+    # 80% power. Reported beside every result because a null is only evidence of
+    # absence when the test could have seen a presence, and at 12 months there
+    # are about ten independent observations.
+    #
+    # The multiplier is t_critical(df) + z(0.80), NOT the flat 2.8 that holds
+    # only for large samples. At df=9 the critical t is 2.262 rather than 1.96,
+    # so 2.8 understates the detectable effect by about a tenth -- at precisely
+    # the horizon where a reader is likeliest to read no-power as no-effect,
+    # which is the misreading this figure exists to prevent.
+    detectable = ((_t_critical(n - 1) + Z_FOR_80_PERCENT_POWER) * spread / math.sqrt(n)) \
+        if n > 1 and spread == spread and spread > 0 else float("nan")
+    return {
+        "mean_ic": mean_ic,
+        "ic_periods": n,
+        "ic_sd": spread,
+        "ic_t_stat": t_stat,
+        "ic_p_value": p_value,
+        "ic_p_bonferroni": bonferroni(p_value, family_size),
+        "tests_in_family": family_size,
+        "detectable_ic_80pct": detectable,
+    }
+
+
+def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORIZONS,
+                 block=None, family_size=None, rsi_flip=False):
     """Forward returns by score decile, plus the rank correlation each month.
 
     If the top decile does not beat the bottom, the score does not rank future
     returns, and no amount of portfolio construction on top of it will help.
+
+    Two samplings are reported for every horizon, because they answer different
+    questions and only one of them is honest as a headline:
+
+      overlapping      every rebalance is a sample, so a 12-month horizon
+                       sampled monthly reuses eleven twelfths of each window.
+                       Observations are plentiful and NOT independent, so the
+                       t-statistic is inflated -- this was previously the only
+                       figure computed here, while the non-overlapping estimate
+                       lived solely in ab_compare.py.
+      non_overlapping  stride equals the horizon, so no two windows share a day.
+                       Far fewer observations, and the t-statistic means what it
+                       says. This is the headline.
+
+    A sign that flips between the two is a phase artefact, not an edge: the
+    non-overlapping series keeps one of `horizon` possible phase offsets and
+    discards the rest.
+
+    block=None measures the composite total. Naming a block measures that
+    subtotal alone. family_size is the number of t-statistics computed across
+    the whole run, which is what Bonferroni must divide by -- leaving it at the
+    horizon count while adding four blocks would understate the correction
+    precisely where the extra tests are being added.
     """
+    if family_size is None:
+        family_size = len(horizons)
     buckets = {h: {d: [] for d in range(10)} for h in horizons}
-    ics = {h: [] for h in horizons}
+    ics = {h: {"overlapping": [], "non_overlapping": []} for h in horizons}
     for index, signal_date in enumerate(rebalances):
         entry_date = next_session(calendar, signal_date)
         if entry_date is None:
             continue
-        ranked = rank_on(book, signal_date, bench_by_date)
+        ranked = rank_on(book, signal_date, bench_by_date, block=block, rsi_flip=rsi_flip)
         if len(ranked) < 10:
             continue
         for horizon in horizons:
@@ -504,8 +661,15 @@ def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORI
                 decile = min(9, rank_position * 10 // count)
                 buckets[horizon][decile].append(forward)
             ic = spearman([(score, forward) for _p, score, forward in observed])
-            if ic is not None:
-                ics[horizon].append(ic)
+            if ic is None:
+                # A block whose scores are all equal has no rank correlation at
+                # all. Volume takes only 0, 5 or 10, so whole months tie and
+                # drop out here -- which is why every block reports its own n
+                # rather than inheriting the composite's.
+                continue
+            ics[horizon]["overlapping"].append(ic)
+            if index % horizon == 0:
+                ics[horizon]["non_overlapping"].append(ic)
     summary = {}
     for horizon in horizons:
         deciles = {}
@@ -515,29 +679,67 @@ def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORI
                 "observations": len(values),
                 "mean_return": sum(values) / len(values) if values else float("nan"),
             }
-        series = ics[horizon]
-        mean_ic = sum(series) / len(series) if series else float("nan")
-        if len(series) > 1:
-            spread = math.sqrt(sum((v - mean_ic) ** 2 for v in series) / (len(series) - 1))
-            t_stat = mean_ic / (spread / math.sqrt(len(series))) if spread > 0 else float("nan")
-        else:
-            t_stat = float("nan")
-        # Computed here rather than by hand afterwards, so the significance of a
-        # result is reproducible from the repository by whoever reads it next.
-        p_value = two_sided_p(t_stat, len(series) - 1)
+        overlapping = _ic_statistics(ics[horizon]["overlapping"], family_size)
+        non_overlapping = _ic_statistics(ics[horizon]["non_overlapping"], family_size)
         summary[horizon] = {
             "deciles": deciles,
-            "mean_ic": mean_ic,
-            "ic_periods": len(series),
-            "ic_t_stat": t_stat,
-            "ic_p_value": p_value,
-            "ic_p_bonferroni": bonferroni(p_value, len(horizons)),
-            "tests_in_family": len(horizons),
+            "overlapping": overlapping,
+            "non_overlapping": non_overlapping,
+            # The headline is the non-overlapping estimate. These flattened keys
+            # keep the shape older readers expect, and they now carry the honest
+            # figure rather than the inflated one.
+            "mean_ic": non_overlapping["mean_ic"],
+            "ic_periods": non_overlapping["ic_periods"],
+            "ic_t_stat": non_overlapping["ic_t_stat"],
+            "ic_p_value": non_overlapping["ic_p_value"],
+            "ic_p_bonferroni": non_overlapping["ic_p_bonferroni"],
+            "tests_in_family": family_size,
+            "detectable_ic_80pct": non_overlapping["detectable_ic_80pct"],
+            "sign_flips": (overlapping["mean_ic"] == overlapping["mean_ic"]
+                           and non_overlapping["mean_ic"] == non_overlapping["mean_ic"]
+                           and (overlapping["mean_ic"] > 0) != (non_overlapping["mean_ic"] > 0)),
         }
     return summary
 
 
 # --- Reporting -------------------------------------------------------------
+def _ic_sentence(block):
+    """One line carrying the headline IC, its n, and what n could have detected.
+
+    The detectable figure is not decoration. Reporting a non-overlapping null
+    without it invites the mirror of the error this file just fixed: the
+    overlapping estimate inflates t, so quoting it overstates a finding, and the
+    non-overlapping estimate at 12 months rests on about ten observations, so
+    quoting THAT without its power understates one. A null is evidence of
+    absence only where the test could have seen a presence.
+    """
+    non = block["non_overlapping"]
+    over = block["overlapping"]
+    text = ("IC %+.4f, t %+.2f, n %d, p %.3f after Bonferroni over %d tests "
+            "(smallest IC this n could detect at 80%% power: %.3f; "
+            "overlapping estimate t %+.2f on n %d)"
+            % (non["mean_ic"], non["ic_t_stat"], non["ic_periods"],
+               non["ic_p_bonferroni"], non["tests_in_family"],
+               non["detectable_ic_80pct"], over["ic_t_stat"], over["ic_periods"]))
+    if block.get("sign_flips"):
+        text += " -- **sign flips between the two samplings, treat as a phase artefact**"
+    return text
+
+
+def _ic_lines(block):
+    """The block-level IC paragraph for the composite sections."""
+    return [
+        "Mean rank correlation, **non-overlapping** (the headline): %s" % _ic_sentence(block),
+        "",
+        "The overlapping estimate samples every rebalance, so at horizon h each window "
+        "reuses (h-1)/h of the one before it and the t-statistic is inflated. The "
+        "non-overlapping estimate keeps one of h phase offsets and discards the rest, "
+        "which costs observations. At 1 month the two coincide, because a 1-month "
+        "horizon sampled monthly cannot overlap -- which is why that row carries the "
+        "argument and the rest are consistency checks.",
+    ]
+
+
 LIMITATIONS = [
     "Survivorship bias: today's Nifty 100 applied to history. Companies that "
     "left the index are absent, and they are disproportionately the bad ones. "
@@ -635,12 +837,24 @@ def format_report(results):
         bottom = block["deciles"][9]["mean_return"]
         spread = top - bottom if top == top and bottom == bottom else float("nan")
         out.append("")
-        out.append("Top minus bottom: **%s**. Mean rank correlation %.4f over %d months "
-                   "(t %.2f, p %.4f; adjusted for the %d horizons tested, p %.3f)."
-                   % (pct(spread), block["mean_ic"], block["ic_periods"],
-                      block["ic_t_stat"], block["ic_p_value"],
-                      block["tests_in_family"], block["ic_p_bonferroni"]))
+        out.append("Top minus bottom: **%s**." % pct(spread))
         out.append("")
+        out.extend(_ic_lines(block))
+        out.append("")
+    if results.get("block_deciles"):
+        out.append("## Which block carries, and which drags")
+        out.append("")
+        out.append("The composite is a weighted sum of four blocks, so a near-zero total is "
+                   "equally consistent with four dead blocks and with two that cancel. Each "
+                   "block below is ranked on its own subtotal. Every t-statistic in this run, "
+                   "composite and blocks together, counts towards one Bonferroni family.")
+        out.append("")
+        for name in sorted(results["block_deciles"]):
+            out.append("### %s" % name)
+            out.append("")
+            for horizon, block in sorted(results["block_deciles"][name].items()):
+                out.append("- **%d-month**: %s" % (horizon, _ic_sentence(block)))
+            out.append("")
     out.append("## Execution quality")
     out.append("")
     quality = results["quality"]
@@ -657,17 +871,35 @@ def format_report(results):
 
 # --- Orchestration ---------------------------------------------------------
 def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PER_SIDE,
-             variants_tried=1, variants_note=""):
+             variants_tried=1, variants_note="", rsi_flip=False):
     book = PriceBook(history)
     calendar = market_calendar(history)
     rebalances = month_end_sessions(calendar)
     bench = history[E.BENCHMARK_SYMBOL]
     bench_by_date = dict(zip(bench["dates"], bench["closes"]))
 
-    periods = run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per_side)
+    periods = run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per_side,
+                            rsi_flip=rsi_flip)
     equal = run_equal_weight(book, calendar, rebalances)
     index = run_benchmark_index(book, calendar, rebalances)
-    deciles = decile_study(book, calendar, rebalances, bench_by_date)
+    # The composite, then each block on its own. backtest.py's own LIMITATIONS
+    # say the composite result "does not say which block carries or drags", and
+    # that is the question a near-zero total leaves open: a weighted sum of four
+    # things can be zero because all four are zero, or because two cancel.
+    #
+    # The Bonferroni family covers every t-statistic the run computes -- four
+    # horizons for the composite plus four for each of four blocks -- because
+    # adding sixteen tests while still dividing by four would understate the
+    # correction exactly where the new tests are being added.
+    block_names = sorted(E.TECHNICAL_BLOCK_MAX)
+    family = len(DECILE_HORIZONS) * (1 + len(block_names))
+    deciles = decile_study(book, calendar, rebalances, bench_by_date, family_size=family,
+                           rsi_flip=rsi_flip)
+    block_deciles = {
+        name: decile_study(book, calendar, rebalances, bench_by_date,
+                           block=name, family_size=family, rsi_flip=rsi_flip)
+        for name in block_names
+    }
 
     def split(records):
         inside = [r for r in records if r["signal_date"] < OUT_OF_SAMPLE_START]
@@ -699,6 +931,7 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
         },
         "performance": blocks,
         "deciles": deciles,
+        "block_deciles": block_deciles,
         "periods": periods,
         "yearly": {
             "strategy": yearly_returns(periods),
@@ -780,9 +1013,90 @@ class BacktestTests(unittest.TestCase):
         # Truncating the future away must not change the score for a past date.
         cut = 280
         truncated = {t: {k: v[:cut + 1] for k, v in s.items()} for t, s in history.items()}
-        later = score_on(book, "UP", "2024-04-01", bench)
-        earlier = score_on(PriceBook(truncated), "UP", "2024-04-01", bench)
+        # Session 252 of the fixture, not session 66. The date used to be
+        # 2024-04-01, which is 66 sessions in -- below the 200 the engine needs
+        # to score at all -- so BOTH sides were None and the assertion compared
+        # one absence to another. A broken slicing implementation would have
+        # passed it just as happily. 252 is chosen so the 52-week high is live,
+        # because that is the indicator most likely to leak the future if the
+        # slicing were wrong, and it sits below the cut at 280 so the truncated
+        # book still reaches it.
+        probe = dates[251]
+        later, later_blocks = score_on(book, "UP", probe, bench)
+        earlier, earlier_blocks = score_on(PriceBook(truncated), "UP", probe, bench)
+        # Unpacked rather than compared as tuples. score_on used to return a
+        # bare score and now returns (score, blocks); comparing the tuples would
+        # still pass while asserting less, and would pass identically if both
+        # sides were (None, None) -- which is the one outcome this test exists
+        # to rule out.
+        self.assertIsNotNone(later)
         self.assertEqual(later, earlier)
+        self.assertEqual(later_blocks, earlier_blocks)
+
+    def test_a_ticker_that_has_not_listed_yet_is_skipped_not_crashed(self):
+        # The real universe lists companies at different times, so at any early
+        # rebalance some tickers have no sessions at all. score_on guards that
+        # with an early return, and when its other paths became 2-tuples this
+        # one stayed a bare None -- which crashed rank_on's unpack on the first
+        # such ticker of a full run, after three minutes of compute.
+        #
+        # Every other fixture here gives every ticker every date, so none of
+        # them can reach this branch. That is the point of this one: a guard for
+        # missing data is only tested by missing data.
+        dates, history = self._history()
+        history = dict(history)
+        history["LATE"] = self._series(dates[-20:], [50.0 + i for i in range(20)])
+        book = PriceBook(history)
+        bench = dict(zip(dates, history[E.BENCHMARK_SYMBOL]["closes"]))
+        early = dates[100]
+        self.assertIsNone(book.index_upto("LATE", early))
+        score, blocks = score_on(book, "LATE", early, bench)  # must not raise
+        self.assertIsNone(score)
+        self.assertIsNone(blocks)
+        # And the ticker is absent from the ranking rather than ranked at zero,
+        # which would place "not listed" above every company that scored badly.
+        ranked = rank_on(book, early, bench)
+        self.assertNotIn("LATE", [ticker for ticker, _ in ranked])
+
+    def test_the_rsi_flip_reaches_the_ranking_and_changes_it(self):
+        # --rsi-flip must actually reach the ranking, not merely be accepted as
+        # a parameter. A function that takes a flag and never uses it passes
+        # every grep ever written, so this asserts on behaviour instead.
+        #
+        # Fourteen tickers, because decile_study skips any month where fewer
+        # than ten companies score. The first version of this check used six,
+        # produced zero observations, and compared two NaN means -- which are
+        # "different" since nan != nan, so it passed while proving nothing.
+        dates = self._business_days(420, start="2022-01-01")
+        history = {}
+        for k in range(14):
+            drift = 0.06 if k % 2 else -0.04
+            history["T%02d" % k] = self._series(
+                dates, [100.0 + math.sin(i / (6.0 + k)) * 9.0 + i * drift
+                        for i in range(len(dates))])
+        history[E.BENCHMARK_SYMBOL] = self._series(
+            dates, [1000.0 + i * 0.08 for i in range(len(dates))])
+        book = PriceBook(history)
+        calendar = market_calendar(history)
+        rebalances = month_end_sessions(calendar)
+        bench = dict(zip(dates, history[E.BENCHMARK_SYMBOL]["closes"]))
+
+        normal = decile_study(book, calendar, rebalances, bench,
+                              horizons=(1,), family_size=4)[1]["overlapping"]
+        flipped = decile_study(book, calendar, rebalances, bench, horizons=(1,),
+                               family_size=4, rsi_flip=True)[1]["overlapping"]
+        # Guard before asserting: with no observations both means are NaN and
+        # any inequality check below would pass vacuously.
+        self.assertGreater(normal["ic_periods"], 0)
+        self.assertEqual(normal["ic_periods"], flipped["ic_periods"])
+        self.assertFalse(math.isnan(normal["mean_ic"]))
+        self.assertFalse(math.isnan(flipped["mean_ic"]))
+        # A magnitude, not mere inequality: two floats differing in the last bit
+        # are "not equal" but would not show the flag had done anything. The
+        # observed gap on this fixture is about 3.4e-3, so 1e-3 separates a real
+        # effect from float noise while still failing loudly if the flag goes
+        # inert.
+        self.assertGreater(abs(normal["mean_ic"] - flipped["mean_ic"]), 1e-3)
 
     def test_costs_are_charged_on_turnover_only(self):
         dates, history = self._history()
@@ -841,6 +1155,12 @@ def main(argv=None):
     parser.add_argument("--variants-tried", type=int, default=1,
                         help="how many parameter variants were run in total, reported verbatim")
     parser.add_argument("--variants-note", default="No parameter was fitted to the data.")
+    parser.add_argument("--rsi-flip", action="store_true",
+                        help="score rsi14 BELOW the momentum floor instead of above it "
+                             "(rulebook open item 1). A measurement only: the shipped "
+                             "engine is untouched and RSI_MOMENTUM_FLOOR is not edited, "
+                             "because changing the live comparison to see whether it "
+                             "backtests better is adoption rather than measurement.")
     parser.add_argument("--self-test", action="store_true", help="run the offline checks and exit")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
@@ -852,8 +1172,12 @@ def main(argv=None):
         parser.error("--prices is required unless --self-test is given")
     history, skipped = E.parse_price_history_csv(Path(args.prices).read_text(encoding="utf-8"))
     print("Loaded %d tickers (%d rows skipped)." % (len(history), skipped))
+    if args.rsi_flip:
+        print("RSI SIGN FLIPPED: scoring rsi14 below %s instead of above it. "
+              "This measures the alternative; it does not change the engine."
+              % E.RSI_MOMENTUM_FLOOR)
     results = backtest(history, args.top_n, args.cost_bps,
-                       args.variants_tried, args.variants_note)
+                       args.variants_tried, args.variants_note, rsi_flip=args.rsi_flip)
     report = format_report(results)
     print(report)
     if args.out_dir:
