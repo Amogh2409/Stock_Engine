@@ -50,14 +50,31 @@ def load_engine(directory, name):
     return module
 
 
-def summarise(values):
+def summarise(values, backtest=None, hac_lag=0):
+    """(mean, iid t, n, HAC t) for a series of rank correlations.
+
+    The i.i.d. t is retained and is CORRECT for the non-overlapping series. It
+    is wrong for the overlapping one, where consecutive windows share h-1
+    periods and the independence it assumes does not hold -- the same defect
+    backtest.py carried until HAC was added there. Fixing one tool and leaving
+    the other is how this repository ended up with a claim that was true of
+    ab_compare.py and false of backtest.py; see the rulebook.
+
+    backtest is passed in rather than imported, because this module imports it
+    inside main() and a module-level reference here would not resolve.
+    """
     n = len(values)
     if n < 2:
-        return float("nan"), float("nan"), n
+        return float("nan"), float("nan"), n, float("nan")
     mean = sum(values) / n
     sd = math.sqrt(sum((v - mean) ** 2 for v in values) / (n - 1))
     t = mean / (sd / math.sqrt(n)) if sd > 0 else float("nan")
-    return mean, t, n
+    hac_t = float("nan")
+    if backtest is not None:
+        hac_se = backtest._newey_west_se(values, hac_lag)
+        if hac_se == hac_se and hac_se > 0:
+            hac_t = mean / hac_se
+    return mean, t, n, hac_t
 
 
 def analyse(engine, backtest, history):
@@ -94,8 +111,10 @@ def analyse(engine, backtest, history):
     return {
         "performance": results["performance"],
         "turnover": results["turnover"],
-        "ics": {h: {"overlapping": summarise(ic_series(h, 1)),
-                    "non_overlapping": summarise(ic_series(h, h))}
+        # Overlapping windows correlate out to lag h-1, which is the Newey-West
+        # bandwidth; the non-overlapping series shares no days, so lag 0 there.
+        "ics": {h: {"overlapping": summarise(ic_series(h, 1), backtest, h - 1),
+                    "non_overlapping": summarise(ic_series(h, h), backtest, 0)}
                 for h in (1, 3, 6, 12)},
     }
 
@@ -141,9 +160,13 @@ def main(argv=None):
         for label in labels:
             non = outcomes[label]["ics"][horizon]["non_overlapping"]
             over = outcomes[label]["ics"][horizon]["overlapping"]
-            mean, t_stat, n = non
+            mean, t_stat, n, _hac_t = non
             adjusted = backtest.bonferroni(backtest.two_sided_p(t_stat, n - 1), total_tests)
-            row += " | IC %+.4f t %+5.2f p* %.3f (t %+5.2f)" % (mean, t_stat, adjusted, over[1])
+            # over is (mean, iid t, n, HAC t). The HAC figure is the one to read
+            # for the overlapping series; the iid t beside it is shown only so
+            # the inflation is visible rather than asserted.
+            row += " | IC %+.4f t %+5.2f p* %.3f (ov HAC %+5.2f, iid %+5.2f)" % (
+                mean, t_stat, adjusted, over[3], over[1])
         print(row)
     print()
     print("PORTFOLIO, top 20 monthly, versus equal-weighting the same universe")

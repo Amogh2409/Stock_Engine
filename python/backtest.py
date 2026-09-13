@@ -47,6 +47,7 @@ import bisect
 import datetime
 import json
 import math
+import random
 import sys
 import unittest
 from pathlib import Path
@@ -557,12 +558,120 @@ def _t_critical(df, alpha=0.05):
     return (low + high) / 2.0
 
 
-def _ic_statistics(series, family_size):
-    """Mean, t, n and adjusted p for one series of monthly rank correlations.
+# Bootstrap draws and seed. Seeded deliberately: this repository's whole
+# discipline is that a number can be reproduced exactly by whoever reads it
+# next, and a confidence interval that moved every run would be the one figure
+# in the file nobody could check. Changing the seed changes the interval in the
+# third decimal, not the conclusion.
+BOOTSTRAP_DRAWS = 2000
+BOOTSTRAP_SEED = 20260913
+
+
+def _newey_west_se(series, lag):
+    """HAC standard error of the mean (Newey-West, Bartlett kernel).
+
+    Overlapping h-period windows are serially correlated BY CONSTRUCTION: two
+    windows one period apart share h-1 periods of data. The i.i.d. standard
+    error sd/sqrt(n) is therefore the wrong estimator for them, and wrong in the
+    direction that inflates t.
+
+    That is a defect in the standard error, NOT a reason to discard overlapping
+    observations. Discarding them is what the non-overlapping headline did, and
+    at 12 months it threw away 109 of 119 observations to buy an SE it could
+    trust -- leaving the horizon that actually survives Indian STCG with n = 10
+    and no power, while the horizon with power (1 month) is untradeable at 754%
+    turnover. Backwards.
+
+        S  = g0 + 2 * sum_{k=1..L} (1 - k/(L+1)) * gk
+        se = sqrt(S / n)
+
+    where gk is the lag-k autocovariance. The Bartlett weight (1 - k/(L+1))
+    guarantees a non-negative S, which Hansen-Hodrick's unweighted sum does not.
+    L = h-1 is the standard choice for h-period overlap.
+
+    lag = 0 reduces to the i.i.d. standard error up to the degrees-of-freedom
+    convention: autocovariances here are divided by n, as Newey-West specifies,
+    while the sample standard deviation beside it divides by n-1, so the two
+    differ by exactly sqrt(n/(n-1)) and converge as n grows. The estimator
+    follows the standard rather than being bent to make the two figures print
+    identically. Either way lag 0 is the correct choice for a genuinely
+    non-overlapping series, so both go through one code path.
+    """
+    n = len(series)
+    if n < 2:
+        return float("nan")
+    mean = sum(series) / n
+    deviations = [v - mean for v in series]
+    gamma0 = sum(d * d for d in deviations) / n
+    total = gamma0
+    for k in range(1, min(lag, n - 1) + 1):
+        gamma_k = sum(deviations[t] * deviations[t - k] for t in range(k, n)) / n
+        total += 2.0 * (1.0 - k / (lag + 1.0)) * gamma_k
+    if total <= 0:
+        # Bartlett weights make this rare rather than impossible at tiny n.
+        # Reporting NaN is honest; substituting the i.i.d. figure would silently
+        # hand back the number this function exists to replace.
+        return float("nan")
+    return math.sqrt(total / n)
+
+
+def _stationary_bootstrap_se(series, mean_block, draws=BOOTSTRAP_DRAWS, seed=BOOTSTRAP_SEED):
+    """(standard error, 2.5th pct, 97.5th pct) by the Politis-Romano bootstrap.
+
+    A third, independent estimate, and it is here because HAC is known to be
+    UNDERSIZED in small samples -- it under-states the variance and so
+    over-rejects, exactly where our n is smallest. Two estimators that disagree
+    are more informative than one that cannot be checked.
+
+    The stationary bootstrap resamples blocks whose lengths are geometric with
+    mean `mean_block`, wrapping circularly, which preserves serial dependence up
+    to roughly that length while keeping the resampled series stationary. Fixed
+    blocks would not be stationary; a plain i.i.d. bootstrap would destroy the
+    dependence this is trying to respect.
+    """
+    n = len(series)
+    if n < 3 or mean_block < 1:
+        return float("nan"), float("nan"), float("nan")
+    rng = random.Random(seed)
+    p = 1.0 / mean_block
+    means = []
+    for _ in range(draws):
+        total = 0.0
+        index = rng.randrange(n)
+        for _step in range(n):
+            total += series[index]
+            if rng.random() < p:
+                index = rng.randrange(n)
+            else:
+                index = (index + 1) % n
+        means.append(total / n)
+    means.sort()
+    centre = sum(means) / draws
+    variance = sum((m - centre) ** 2 for m in means) / (draws - 1)
+    lo = means[int(0.025 * draws)]
+    hi = means[min(draws - 1, int(0.975 * draws))]
+    return math.sqrt(variance), lo, hi
+
+
+def _ic_statistics(series, family_size, hac_lag=0):
+    """Mean, n and THREE standard errors for one series of monthly rank correlations.
 
     Pulled out of decile_study so the composite and every block compute their
     significance by one code path. Two of them drifting apart would be the kind
     of difference nobody notices until a number is quoted.
+
+    Three estimators are reported side by side and none replaces another:
+
+      iid        mean / (sd/sqrt(n)). Correct only if the observations are
+                 independent, which overlapping windows are not.
+      HAC        Newey-West at lag h-1. Valid under the serial correlation that
+                 overlapping windows create by construction. Known to be
+                 undersized in small samples, so it over-rejects where n is
+                 smallest -- which is why the third estimator exists.
+      bootstrap  Politis-Romano stationary bootstrap, mean block h. Makes no
+                 normality assumption and is the check on HAC.
+
+    Where the three disagree, the disagreement is the finding.
     """
     n = len(series)
     mean_ic = sum(series) / n if n else float("nan")
@@ -572,6 +681,12 @@ def _ic_statistics(series, family_size):
     else:
         spread = float("nan")
         t_stat = float("nan")
+
+    hac_se = _newey_west_se(series, hac_lag) if n > 1 else float("nan")
+    hac_t = (mean_ic / hac_se) if hac_se == hac_se and hac_se > 0 else float("nan")
+    hac_p = two_sided_p(hac_t, n - 1)
+    boot_se, boot_lo, boot_hi = _stationary_bootstrap_se(series, max(1, hac_lag + 1))
+    boot_t = (mean_ic / boot_se) if boot_se == boot_se and boot_se > 0 else float("nan")
     # Computed here rather than by hand afterwards, so the significance of a
     # result is reproducible from the repository by whoever reads it next.
     p_value = two_sided_p(t_stat, n - 1)
@@ -596,6 +711,22 @@ def _ic_statistics(series, family_size):
         "ic_p_bonferroni": bonferroni(p_value, family_size),
         "tests_in_family": family_size,
         "detectable_ic_80pct": detectable,
+        # --- the two estimators that do not assume independence ---
+        "hac_lag": hac_lag,
+        "hac_se": hac_se,
+        "hac_t_stat": hac_t,
+        "hac_p_value": hac_p,
+        "hac_p_bonferroni": bonferroni(hac_p, family_size),
+        "bootstrap_se": boot_se,
+        "bootstrap_t_stat": boot_t,
+        "bootstrap_ci_lo": boot_lo,
+        "bootstrap_ci_hi": boot_hi,
+        "bootstrap_draws": BOOTSTRAP_DRAWS,
+        # A bootstrap interval that straddles zero says the same thing as a
+        # failed t-test without assuming normality, so it is the figure to quote
+        # when HAC and iid disagree.
+        "bootstrap_excludes_zero": (boot_lo == boot_lo and boot_hi == boot_hi
+                                    and (boot_lo > 0) == (boot_hi > 0)),
     }
 
 
@@ -679,8 +810,16 @@ def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORI
                 "observations": len(values),
                 "mean_return": sum(values) / len(values) if values else float("nan"),
             }
-        overlapping = _ic_statistics(ics[horizon]["overlapping"], family_size)
-        non_overlapping = _ic_statistics(ics[horizon]["non_overlapping"], family_size)
+        # Overlapping windows at horizon h are correlated out to lag h-1, which
+        # is exactly the Newey-West bandwidth. The non-overlapping series shares
+        # no days between windows, so lag 0 is correct there and the HAC figure
+        # collapses onto the i.i.d. one -- which is itself a useful check: if
+        # those two ever diverge for the non-overlapping series, the estimator
+        # is wrong rather than the data.
+        overlapping = _ic_statistics(ics[horizon]["overlapping"], family_size,
+                                     hac_lag=horizon - 1)
+        non_overlapping = _ic_statistics(ics[horizon]["non_overlapping"], family_size,
+                                         hac_lag=0)
         summary[horizon] = {
             "deciles": deciles,
             "overlapping": overlapping,
@@ -715,28 +854,48 @@ def _ic_sentence(block):
     """
     non = block["non_overlapping"]
     over = block["overlapping"]
-    text = ("IC %+.4f, t %+.2f, n %d, p %.3f after Bonferroni over %d tests "
-            "(smallest IC this n could detect at 80%% power: %.3f; "
-            "overlapping estimate t %+.2f on n %d)"
-            % (non["mean_ic"], non["ic_t_stat"], non["ic_periods"],
-               non["ic_p_bonferroni"], non["tests_in_family"],
-               non["detectable_ic_80pct"], over["ic_t_stat"], over["ic_periods"]))
+    # At horizon 1 there is no overlap, so the i.i.d. SE is the correct estimator
+    # and HAC agrees with it to two decimals. Labelling it invalid there would
+    # tell the reader a sound number is unsound -- the mirror of the error this
+    # whole section fixes.
+    iid_note = " (**invalid at this overlap**)" if over.get("hac_lag") else " (valid: no overlap)"
+    text = ("IC %+.4f on n %d (all windows). t: iid %+.2f%s, "
+            "HAC %+.2f, bootstrap %+.2f. HAC p %.3f after Bonferroni "
+            "over %d tests; bootstrap 95%% CI [%+.4f, %+.4f]%s. "
+            "Discarding overlap instead: IC %+.4f, t %+.2f on n %d, "
+            "detectable at 80%% power %.3f."
+            % (over["mean_ic"], over["ic_periods"],
+               over["ic_t_stat"], iid_note, over["hac_t_stat"], over["bootstrap_t_stat"],
+               over["hac_p_bonferroni"], over["tests_in_family"],
+               over["bootstrap_ci_lo"], over["bootstrap_ci_hi"],
+               "" if not over.get("bootstrap_excludes_zero") else " **excludes zero**",
+               non["mean_ic"], non["ic_t_stat"], non["ic_periods"],
+               non["detectable_ic_80pct"]))
     if block.get("sign_flips"):
-        text += " -- **sign flips between the two samplings, treat as a phase artefact**"
+        text += (" -- sign flips between the two samplings; with a valid SE this is "
+                 "a sampling-phase difference rather than evidence either way")
     return text
 
 
 def _ic_lines(block):
     """The block-level IC paragraph for the composite sections."""
     return [
-        "Mean rank correlation, **non-overlapping** (the headline): %s" % _ic_sentence(block),
+        "Mean rank correlation: %s" % _ic_sentence(block),
         "",
-        "The overlapping estimate samples every rebalance, so at horizon h each window "
-        "reuses (h-1)/h of the one before it and the t-statistic is inflated. The "
-        "non-overlapping estimate keeps one of h phase offsets and discards the rest, "
-        "which costs observations. At 1 month the two coincide, because a 1-month "
-        "horizon sampled monthly cannot overlap -- which is why that row carries the "
-        "argument and the rest are consistency checks.",
+        "**Three standard errors, one point estimate.** Overlapping windows are "
+        "serially correlated by construction -- at horizon h, consecutive windows "
+        "share h-1 periods -- so the i.i.d. standard error sd/sqrt(n) is the wrong "
+        "estimator for them and inflates t. That is a defect in the SE, not a reason "
+        "to throw the observations away. Newey-West at lag h-1 keeps all n windows "
+        "with a valid SE; the Politis-Romano stationary bootstrap is an independent "
+        "check on it, because HAC is known to be undersized in small samples and so "
+        "over-rejects exactly where n is smallest. Where HAC and the bootstrap "
+        "disagree, trust neither without saying so.",
+        "",
+        "The discard-the-overlap figure is retained as a robustness check, not as the "
+        "headline it used to be. At 12 months it keeps 1 window in 12 and cannot "
+        "detect any plausible effect; reading its null as evidence of absence is the "
+        "mirror of reading the inflated i.i.d. t as evidence of presence.",
     ]
 
 
@@ -1135,6 +1294,53 @@ class BacktestTests(unittest.TestCase):
         # difference between "significant" and not.
         self.assertAlmostEqual(two_sided_p(2.05, 9), 0.0706, places=4)
         self.assertGreater(two_sided_p(2.05, 9), math.erfc(2.05 / math.sqrt(2.0)))
+
+    def test_hac_matches_iid_on_white_noise_and_exceeds_it_under_autocorrelation(self):
+        # The whole reason HAC exists here. On independent draws it should agree
+        # with the i.i.d. standard error; on a positively autocorrelated series
+        # -- which is what overlapping windows produce by construction -- it must
+        # be LARGER, because the i.i.d. figure understates the variance there and
+        # so inflates t. A HAC implementation that did not do this would leave
+        # the same wrong answer with more machinery in front of it.
+        rng = random.Random(11)
+        white = [rng.gauss(0.0, 1.0) for _ in range(400)]
+        n = len(white)
+        sd = math.sqrt(sum((v - sum(white) / n) ** 2 for v in white) / (n - 1))
+        iid_se = sd / math.sqrt(n)
+        self.assertAlmostEqual(_newey_west_se(white, 0), iid_se * math.sqrt((n - 1) / n), places=12)
+        # Lag 0 and the i.i.d. figure differ only by the n vs n-1 convention.
+        self.assertAlmostEqual(_newey_west_se(white, 0) / iid_se, math.sqrt((n - 1) / n), places=12)
+        # White noise: adding lags should not inflate it much.
+        self.assertLess(_newey_west_se(white, 11) / iid_se, 1.35)
+        # Strong positive autocorrelation: an AR(1) with phi=0.8.
+        ar, prev = [], 0.0
+        for _ in range(400):
+            prev = 0.8 * prev + rng.gauss(0.0, 1.0)
+            ar.append(prev)
+        m = sum(ar) / len(ar)
+        ar_sd = math.sqrt(sum((v - m) ** 2 for v in ar) / (len(ar) - 1))
+        ar_iid = ar_sd / math.sqrt(len(ar))
+        self.assertGreater(_newey_west_se(ar, 11), ar_iid * 1.5)
+
+    def test_the_stationary_bootstrap_is_reproducible_and_sane(self):
+        # Reproducibility is not decoration in this repository: a confidence
+        # interval that moved between runs would be the one number nobody could
+        # check against a previous report.
+        rng = random.Random(5)
+        series = [rng.gauss(0.02, 0.2) for _ in range(120)]
+        a = _stationary_bootstrap_se(series, 4)
+        b = _stationary_bootstrap_se(series, 4)
+        self.assertEqual(a, b)
+        se, lo, hi = a
+        self.assertTrue(se > 0 and lo < hi)
+        # The interval must bracket the sample mean it was drawn from.
+        mean = sum(series) / len(series)
+        self.assertLess(lo, mean)
+        self.assertGreater(hi, mean)
+        # A different seed gives a different interval but the same ballpark.
+        se2, _, _ = _stationary_bootstrap_se(series, 4, seed=BOOTSTRAP_SEED + 1)
+        self.assertNotEqual(se, se2)
+        self.assertLess(abs(se - se2) / se, 0.25)
 
     def test_bonferroni_scales_and_caps(self):
         self.assertAlmostEqual(bonferroni(0.0175, 8), 0.14, places=6)
