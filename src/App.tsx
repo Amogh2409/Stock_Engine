@@ -395,7 +395,7 @@ export default function App() {
                 downloadText(
                   generateHtmlReport(
                     watchlist, result.passedBelowCutOff, rejected, report, appConfig,
-                    result.fundamentalOnly,
+                    result.fundamentalOnly, result.sizing,
                   ),
                   `research_report_${todayStamp()}.html`,
                   'text/html',

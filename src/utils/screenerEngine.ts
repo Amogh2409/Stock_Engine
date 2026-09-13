@@ -3706,6 +3706,13 @@ export function generateHtmlReport(
    * positional arguments keep meaning what they meant.
    */
   fundamentalOnly: StockEvaluation[] = [],
+  /**
+   * What the sizing pass concluded. Appended with a default for the same reason
+   * fundamentalOnly was: existing callers pass five or six positional arguments
+   * and must keep meaning what they meant. Null renders the report exactly as
+   * before, which is honest -- nothing is claimed about exposure.
+   */
+  sizing: SizingSummary | null = null,
 ): string {
   const candidateRows = (items: StockEvaluation[]) =>
     items
@@ -3718,9 +3725,11 @@ export function generateHtmlReport(
       <td>${escapeHtml(item.stock.sector)}</td>
       <td class="score">${escapeHtml(fmt1(item.score))}</td>
       <td>${escapeHtml(item.technicalScore.score === null ? 'N/A' : fmt1(item.technicalScore.score))}</td>
+      <td>${item.positionWeightPct === null ? '&mdash;' : `${escapeHtml(fmt1(item.positionWeightPct))}%`}</td>
+      <td>${item.stopPrice === null ? '&mdash;' : escapeHtml(fmt1(item.stopPrice))}</td>
       <td class="warning">${escapeHtml(item.warningFlags.join(', '))}</td>
     </tr>
-    <tr class="rationale"><td colspan="7">${escapeHtml(item.explanation)}</td></tr>`,
+    <tr class="rationale"><td colspan="9">${escapeHtml(item.explanation)}</td></tr>`,
       )
       .join('');
   const rows = candidateRows(watchlist);
@@ -3762,20 +3771,34 @@ export function generateHtmlReport(
     <p><strong>Universe snapshot:</strong> cached, as of ${escapeHtml(NIFTY100_PROVENANCE.as_of_date)}</p>
     <p><strong>Rows scanned:</strong> ${report.totalRows}</p>
     <p><strong>Candidates passed:</strong> ${watchlist.length + belowCutOff.length}</p>
+    ${sizing === null ? '' : (sizing.deploymentPct === null || sizing.investedPct === null
+      ? `<p><strong>Position sizing:</strong> none &mdash; ${escapeHtml(sizing.basis)}.
+    Relative weights alone would read as &quot;invest all of this&quot;, a claim about total
+    exposure that nothing in this run measured, so no weight is shown.</p>`
+      : `<p><strong>Position sizing:</strong> ${escapeHtml(fmt1(sizing.investedPct))}% invested,
+    <strong>${escapeHtml(fmt1(round1(100 - sizing.investedPct)))}% held in cash</strong>.
+    Portfolio volatility ${escapeHtml(fmt1(sizing.portfolioVolatilityPct))}% against a
+    ${escapeHtml(fmt1(sizing.targetVolatilityPct))}% target, which permitted
+    ${escapeHtml(fmt1(sizing.deploymentPct))}% before the per-position and sector caps.</p>
+    <p>The cash is the volatility target doing its job, not a shortfall: fewer holdings, or
+    more correlated ones, raise portfolio volatility and lower how much is put to work.
+    Stops are ${escapeHtml(fmt1(round1(STOP_ATR_MULTIPLE)))}x ATR, set in advance; that
+    multiple is ours and matches no figure in the sources, so it is not a protection the
+    books endorse.</p>`)}
   </div>
   <h2>Top candidates (top ${appConfig.top_n})</h2>
   <table>
-    <tr><th>Rank</th><th>Ticker</th><th>Name</th><th>Sector</th><th>Score</th><th>Tech</th><th>Warnings</th></tr>${rows}
+    <tr><th>Rank</th><th>Ticker</th><th>Name</th><th>Sector</th><th>Score</th><th>Tech</th><th>Weight</th><th>Stop</th><th>Warnings</th></tr>${rows}
   </table>
   ${belowCutOff.length === 0 ? '' : `<h2>Passed, below the top ${appConfig.top_n}</h2>
   <table>
-    <tr><th>Rank</th><th>Ticker</th><th>Name</th><th>Sector</th><th>Score</th><th>Tech</th><th>Warnings</th></tr>${candidateRows(belowCutOff)}
+    <tr><th>Rank</th><th>Ticker</th><th>Name</th><th>Sector</th><th>Score</th><th>Tech</th><th>Weight</th><th>Stop</th><th>Warnings</th></tr>${candidateRows(belowCutOff)}
   </table>`}
   ${fundamentalOnly.length === 0 ? '' : `<h2>Passed, but this run could not price them</h2>
   <p>Ranked separately: with no technical half, their composite is not on the same
   scale as the list above, and mixing the two would reward absence from the price file.</p>
   <table>
-    <tr><th>Rank</th><th>Ticker</th><th>Name</th><th>Sector</th><th>Score</th><th>Tech</th><th>Warnings</th></tr>${candidateRows(fundamentalOnly)}
+    <tr><th>Rank</th><th>Ticker</th><th>Name</th><th>Sector</th><th>Score</th><th>Tech</th><th>Weight</th><th>Stop</th><th>Warnings</th></tr>${candidateRows(fundamentalOnly)}
   </table>`}
   <h2>Rejected sample (first 50)</h2>
   <table>

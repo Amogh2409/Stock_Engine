@@ -1175,6 +1175,82 @@ describe('Screening rules found by review', () => {
     expect(generateWatchlistCsv(result.passedBelowCutOff)).toContain('CCC');
     const html = generateHtmlReport(result.watchlist, result.passedBelowCutOff, result.rejected, result.inspectionReport, APP);
     expect(html).toContain('<strong>Candidates passed:</strong> 3');
+    // Every candidate table must have as many headers as its rows have cells.
+    // tsc cannot see this, and a toContain assertion would not either: a table
+    // one column short still renders, just misaligned from the second row on.
+    // Guarded before the loops, because a loop over zero matches passes every
+    // assertion inside it while proving nothing -- which is the failure this
+    // whole check exists to catch, one level up.
+    const headerRows = html.match(/<tr><th>Rank[\s\S]*?<\/tr>/g) ?? [];
+    const dataRows = html.match(/<tr>\s*<td>\d+<\/td>[\s\S]*?<\/tr>/g) ?? [];
+    expect(headerRows.length).toBeGreaterThan(0);
+    expect(dataRows.length).toBeGreaterThan(0);
+    for (const row of dataRows) expect((row.match(/<td/g) ?? []).length).toBe(9);
+    for (const header of headerRows) expect((header.match(/<th>/g) ?? []).length).toBe(9);
+    expect(html).toContain('colspan="9"');
+  });
+
+  it('reports the cash position in the header box, where a forwarded report is read', () => {
+    const rows = [
+      'AAA,Alpha Ltd,IT,100,10000,20,20,25,25,0,10,100,60,0,15,2,1',
+    ];
+    const header = 'NSE code,Name,Industry,Current Price,Market Capitalization,Sales growth,Profit growth,ROCE,ROE,Debt to equity,Interest Coverage Ratio,Operating cash flow,Promoter holding,Pledged percentage,Price to Earning,Price to book value,Dividend yield';
+    const result = processScreenerPipeline(
+      parseCsv([header, ...rows].join('\n')),
+      { ...APP, universe_mode: 'custom' as const },
+      DEFAULT_SCREENING_CONFIG,
+    );
+    const sized = generateHtmlReport(
+      result.watchlist, result.passedBelowCutOff, result.rejected,
+      result.inspectionReport, APP, result.fundamentalOnly,
+      {
+        measure: 'atrPct' as const,
+        targetVolatilityPct: 12,
+        portfolioVolatilityPct: 14.9,
+        deploymentPct: 80.6,
+        investedPct: 75.2,
+        basis: '252 sessions common to 9 holdings',
+      },
+    );
+    expect(sized).toContain('75.2% invested');
+    // 100 - 75.2, the figure that explains why the weights stop short.
+    expect(sized).toContain('24.8% held in cash');
+    expect(sized).toContain('80.6%');
+    expect(sized).toMatch(/volatility target doing its job/);
+    // The stop multiple is ours and matches no source; the report must say so
+    // rather than let a stop price imply a protection the books endorse.
+    expect(sized).toMatch(/matches no figure in the sources/);
+
+    // Omitted sizing must render exactly as before, claiming nothing.
+    const plain = generateHtmlReport(
+      result.watchlist, result.passedBelowCutOff, result.rejected,
+      result.inspectionReport, APP,
+    );
+    expect(plain).not.toMatch(/held in cash/);
+    expect(plain).not.toMatch(/Position sizing/);
+  });
+
+  it('says sizing produced nothing rather than showing a confident zero', () => {
+    const header = 'NSE code,Name,Industry,Current Price,Market Capitalization,Sales growth,Profit growth,ROCE,ROE,Debt to equity,Interest Coverage Ratio,Operating cash flow,Promoter holding,Pledged percentage,Price to Earning,Price to book value,Dividend yield';
+    const result = processScreenerPipeline(
+      parseCsv([header, 'AAA,Alpha Ltd,IT,100,10000,20,20,25,25,0,10,100,60,0,15,2,1'].join('\n')),
+      { ...APP, universe_mode: 'custom' as const },
+      DEFAULT_SCREENING_CONFIG,
+    );
+    const html = generateHtmlReport(
+      result.watchlist, result.passedBelowCutOff, result.rejected,
+      result.inspectionReport, APP, result.fundamentalOnly,
+      {
+        measure: null,
+        targetVolatilityPct: 12,
+        portfolioVolatilityPct: null,
+        deploymentPct: null,
+        investedPct: null,
+        basis: 'no company has a usable volatility measure',
+      },
+    );
+    expect(html).toContain('no company has a usable volatility measure');
+    expect(html).not.toMatch(/held in cash/);
   });
 
   it('parses rupee-prefixed prices, as clean_numeric documents', () => {
