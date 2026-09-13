@@ -458,6 +458,26 @@ def performance(periods, key="net_return"):
     }
 
 
+def align_to(records, reference):
+    """Keep only the periods the reference series also traded.
+
+    The strategy cannot trade until enough companies clear the minimum-session
+    rule; equal-weighting can trade from the first month in the file. So the two
+    series are not the same length -- 86 months against 95 on the pre-holdout
+    span -- and a table printing one beside the other is not a comparison, it is
+    two measurements of different windows sharing a header.
+
+    That is not hypothetical. The whole-period table showed 19.41% against
+    20.17%, inviting the subtraction -0.77pp, while the paired figure underneath
+    it read -3.89pp: two answers to one question, five-fold apart, with the wrong
+    one in the larger type. Cutting the benchmarks to the strategy's months makes
+    the table's own subtraction equal the paired figure instead of contradicting
+    it.
+    """
+    dates = {r["signal_date"] for r in reference}
+    return [r for r in records if r["signal_date"] in dates]
+
+
 def yearly_returns(periods, key="net_return"):
     by_year = {}
     for period in periods:
@@ -1236,24 +1256,27 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
     for label, chooser in (("full", lambda rs: rs),
                            ("in_sample", lambda rs: split(rs)[0]),
                            ("out_of_sample", lambda rs: split(rs)[1])):
+        chosen = chooser(periods)
         blocks[label] = {
-            "strategy": performance(chooser(periods)),
-            "equal_weight": performance(chooser(equal)),
-            "index": performance(chooser(index)),
+            "strategy": performance(chosen),
+            # Both benchmarks are cut to the months the strategy actually traded,
+            # so every column in the table covers the span its heading names and
+            # subtracting two of them answers the question it appears to answer.
+            # See align_to().
+            "equal_weight": performance(align_to(chooser(equal), chosen)),
+            "index": performance(align_to(chooser(index), chosen)),
             # The span this block actually covers, so the report can name it
             # rather than assert a hardcoded one. "Out of sample (2022 on)" was
             # true when the file ended in 2026 and became false the moment the
             # holdout cut landed, leaving a heading that promised years over a
             # block containing one. A label derived from the data cannot go
             # stale when a boundary moves.
-            "span": ((chooser(periods)[0]["signal_date"],
-                      chooser(periods)[-1]["signal_date"],
-                      len(chooser(periods)))
-                     if chooser(periods) else None),
+            "span": ((chosen[0]["signal_date"], chosen[-1]["signal_date"], len(chosen))
+                     if chosen else None),
             # The CAGR gap with an interval around it. Without one, a 0.75-point
             # difference over eleven years reads as a result rather than as the
             # coin-flip it probably is.
-            "cagr_vs_equal_weight": cagr_difference_ci(chooser(periods), chooser(equal)),
+            "cagr_vs_equal_weight": cagr_difference_ci(chosen, chooser(equal)),
         }
 
     total_fills = sum(len(p["holdings"]) * 2 for p in periods)
@@ -1275,8 +1298,11 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
         "periods": periods,
         "yearly": {
             "strategy": yearly_returns(periods),
-            "equal_weight": yearly_returns(equal),
-            "index": yearly_returns(index),
+            # Aligned for the same reason as the performance table: an unaligned
+            # first year gives the benchmarks months the strategy never had, and
+            # the yearly rows are read as a win/loss tally.
+            "equal_weight": yearly_returns(align_to(equal, periods)),
+            "index": yearly_returns(align_to(index, periods)),
         },
         "turnover": (sum(turnovers) / len(turnovers) * MONTHS_PER_YEAR) if turnovers else 0.0,
         "quality": {
@@ -1564,6 +1590,48 @@ class BacktestTests(unittest.TestCase):
         # shorter than the equal-weight one in every real run.
         offset = cagr_difference_ci(periods(base[:60]), periods(base, start=30))
         self.assertEqual(offset["months"], 30)
+
+    def test_every_column_of_the_performance_table_covers_the_same_months(self):
+        # The strategy cannot trade until enough companies clear the minimum
+        # session rule; equal-weighting trades from the first month in the file.
+        # On the real pre-holdout span that is 86 months against 95, printed as
+        # adjacent columns under a heading naming 86. Subtracting the CAGR row
+        # gave -0.77pp; the paired figure below the same table gave -3.89pp.
+        dates = self._business_days(700, start="2018-01-02")
+        history = {}
+        for k in range(6):
+            drift = 0.05 if k % 2 else -0.03
+            history["T%d" % k] = self._series(
+                dates, [100.0 + math.sin(i / (7.0 + k)) * 8.0 + i * drift
+                        for i in range(len(dates))])
+        history[E.BENCHMARK_SYMBOL] = self._series(
+            dates, [1000.0 + i * 0.05 for i in range(len(dates))])
+
+        # Establish that the fixture reproduces the ragged start before asserting
+        # anything about the cure. Without this the assertions below would also
+        # pass on a fixture where aligning is a no-op, and would then be
+        # measuring nothing.
+        book = PriceBook(history)
+        calendar = market_calendar(history)
+        rebalances = month_end_sessions(calendar)
+        bench = dict(zip(dates, history[E.BENCHMARK_SYMBOL]["closes"]))
+        raw_strategy = run_portfolio(book, calendar, rebalances, bench, 3,
+                                     DEFAULT_COST_BPS_PER_SIDE)
+        raw_equal = run_equal_weight(book, calendar, rebalances)
+        self.assertGreater(len(raw_equal), len(raw_strategy),
+                           "fixture does not produce a ragged start, so it cannot "
+                           "detect whether the columns are aligned")
+
+        block = backtest(history, top_n=3)["performance"]["full"]
+        self.assertEqual(block["equal_weight"]["months"], block["strategy"]["months"])
+        self.assertEqual(block["index"]["months"], block["strategy"]["months"])
+        # The reason alignment is worth doing: the subtraction a reader performs
+        # on the table now equals the paired figure printed underneath it,
+        # instead of contradicting it.
+        gap = block["cagr_vs_equal_weight"]
+        self.assertTrue(gap["draws"], "no paired figure to agree with")
+        self.assertAlmostEqual(block["strategy"]["cagr"] - block["equal_weight"]["cagr"],
+                               gap["difference"], places=12)
 
     def test_the_holdout_cut_removes_reserved_months_and_can_be_lifted(self):
         # A flag that is wired but does nothing passes every grep and every
