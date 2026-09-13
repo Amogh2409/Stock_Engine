@@ -112,8 +112,9 @@
   blocks are independently flat <strong>at one month</strong> — and that is a 1-month claim
   which does not extend. At six months relative strength is the one cell in twenty that rises
   above its own detection floor (IC <span class="mono">+0.0784</span>, HAC t +3.06, corrected
-  p <span class="mono">0.060</span>). It still does not clear correction, and it is recorded
-  rather than claimed; see <em>No block carries it</em> below for why.
+  p <span class="mono">0.198</span>). It clears that floor by 1.3%, does not clear correction,
+  and comes from a window searched about 80 different ways. It is recorded rather than
+  claimed; see <em>No block carries it</em> below for why.
   <br><br>
   <strong>Be precise about what that does and does not establish.</strong> The smallest effect
   this test could reliably detect is an IC of <span class="mono">0.059</span>, and a realistic
@@ -377,11 +378,11 @@ Price history CSV ─┘                                        │
   <tr><td><strong>1 month</strong></td><td class="num">−0.0060</td><td class="num">−0.29</td>
       <td class="num">86</td><td class="num">1.000</td><td class="num">0.059</td></tr>
   <tr><td>3 months</td><td class="num">+0.0157</td><td class="num">+0.85</td><td class="num">84</td>
-      <td class="num">1.000</td><td class="num">0.052</td></tr>
+      <td class="num">1.000</td><td class="num">0.053</td></tr>
   <tr><td>6 months</td><td class="num">+0.0459</td><td class="num">+2.14</td><td class="num">81</td>
-      <td class="num">0.706</td><td class="num">0.061</td></tr>
+      <td class="num">1.000</td><td class="num">0.065</td></tr>
   <tr><td>12 months</td><td class="num">+0.0443</td><td class="num">+1.91</td><td class="num">75</td>
-      <td class="num">1.000</td><td class="num">0.066</td></tr>
+      <td class="num">1.000</td><td class="num">0.079</td></tr>
 </table>
 <p style="font-size:9.3pt;color:#475569">
   Every window is kept and the standard error corrected for their dependence (Newey–West at
@@ -392,7 +393,7 @@ Price history CSV ─┘                                        │
 <div class="info">
   <strong>None of these horizons can see a realistic effect.</strong> A plausible
   cross-sectional IC is roughly <strong>0.02–0.05</strong>, and the detection floors above run
-  <strong>0.052 to 0.066</strong> — strictly above the top of that range at every horizon. So
+  <strong>0.053 to 0.079</strong> — strictly above the top of that range at every horizon. So
   every row here is an absence of evidence rather than evidence of absence, and that is true of
   the 1-month row too, which is the best-powered of them.
   <br><br>
@@ -426,17 +427,28 @@ stated it without the qualifier, which generalised a 1-month result across all f
   <strong>At six months, one cell in twenty clears its floor.</strong> Relative strength,
   pre-holdout window, overlapping windows with Newey–West at lag 5:
   IC <span class="mono">+0.0784</span> over n&nbsp;=&nbsp;81, against a detection floor of
-  <span class="mono">0.0725</span>. HAC t +3.06 (SE 0.0256), bootstrap t +3.46 with a 95%
-  interval of <span class="mono">+0.032 to +0.120</span> that excludes zero. Raw p
-  <span class="mono">0.0030</span>; corrected for the 20 tests in the family,
-  p <span class="mono">0.060</span>. It is the only cell in this project above its own floor.
+  <span class="mono">0.0774</span> — it clears by 1.3%. HAC t +3.06 (SE 0.0256), bootstrap
+  t +3.46. Raw p <span class="mono">0.0099</span>; corrected for the 20 tests in one run,
+  p <span class="mono">0.198</span>. It is the only cell in this project above its own floor.
+  <br><br>
+  The t is referred to <strong>12 degrees of freedom, not 80</strong>. On overlapping windows
+  consecutive observations share five sixths of their span, so the independent count is 81/6,
+  not 81. Referring it to n−1 gave p 0.0030 and a corrected 0.060, and that was wrong.
   <br><br>
   <strong>Why it is more likely noise than signal.</strong> It does not clear correction. Under
-  the null, the chance that <em>some</em> cell out of twenty would look at least this strong is
-  about <span class="mono">5.9%</span> — which is roughly what happened. Its sibling horizons do
-  not clear their own floors: 1&nbsp;month +0.0218 against 0.0574, 3&nbsp;months +0.0486 against
-  0.0587, 12&nbsp;months +0.0672 against 0.0688. And it has not been tested on any data that was
-  not already used to find it.
+  the null, the chance that <em>some</em> cell out of twenty looks at least this strong is
+  about <span class="mono">18%</span>. But twenty understates the search: this same window has
+  been measured with the shipped score, with the RSI sign flipped, and with two further
+  variants — roughly <strong>80 cells against one dataset</strong>, at which the figure is
+  <span class="mono">55%</span>. Its sibling horizons do not clear their own floors:
+  1&nbsp;month +0.0218 against 0.0574, 3&nbsp;months +0.0486 against 0.0601, 12&nbsp;months
+  +0.0672 against 0.0828. And it has not been tested on any data that was not already used to
+  find it.
+  <br><br>
+  <strong>The standard error itself understates.</strong> Scored against a series whose true
+  standard error is known, every estimator here is biased low — at six months, i.i.d. by 61%,
+  HAC by 22%, the bootstrap by 25%. So this t is inflated, not deflated. Taking the measured
+  bias at face value would put the corrected p near <span class="mono">0.53</span>.
   <br><br>
   <strong>The largest correction in the study lands on this cell.</strong> Its i.i.d. t at 6
   months is +4.67 and Newey–West deflates it to +3.06 — a drop of 1.61, the biggest anywhere

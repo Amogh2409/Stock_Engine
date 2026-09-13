@@ -114,9 +114,26 @@ i.i.d. standard error to overlapping windows is. Newey-West at lag h−1 does
 this, and at 12 months it restores the sample from n = 6 to n = 75.
 
 The estimator was validated before it touched real data — checked against
-series with *known* overlap structure, confirmed to equal the i.i.d. figure at
-h = 1 to four decimals as it must, and cross-checked by an independent
-Politis–Romano bootstrap agreeing to within 2% at every horizon.
+series with *known* overlap structure and confirmed to equal the i.i.d. figure
+at h = 1 to four decimals, as it must.
+
+**The bootstrap was NOT the independent conservative check this section once
+claimed, and that claim is withdrawn.** Across the 15 overlapping cells the
+bootstrap SE is *smaller* than the HAC SE in 10, including every
+high-dependence cell. Scored against a series whose true standard error is
+known — a moving average of h shocks, which is exactly the structure an
+overlapping h-window IC series has — **every estimator here understates it**:
+at h=6 the i.i.d. SE by 61%, HAC by 22%, the bootstrap by 25%; at h=12 by 74%,
+29% and 38%. No block length fixes the bootstrap (longer blocks make it worse)
+and no Bartlett bandwidth fixes HAC (best attainable −17.5% at h=6).
+
+**So every t in this study reads inflated, by roughly a quarter to a third at
+the longer horizons.** That direction is unhelpful for any positive finding and
+harmless for a null, which is the whole of what this study reports. **Status:
+Convention** — the bandwidth stays at h−1 because a few points off a
+twenty-point bias is not worth re-opening every figure, and the honest
+statement is not that the right bandwidth was found but that these standard
+errors understate.
 
 **It corrects in both directions, and the null survives it.** HAC deflates the
 cells that overlap had inflated (relative strength at 6 months falls from
@@ -127,13 +144,65 @@ destroyed it. On the pre-holdout window the composite reads:
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 month | −0.0060 | 86 | −0.29 | −0.29 | −0.30 | 1.000 |
 | 3 months | +0.0157 | 84 | +0.89 | +0.85 | +0.94 | 1.000 |
-| 6 months | +0.0459 | 81 | +2.72 | +2.14 | +2.26 | 0.706 |
+| 6 months | +0.0459 | 81 | +2.72 | +2.14 | +2.26 | 1.000 |
 | 12 months | +0.0443 | 75 | +2.22 | +1.91 | +2.00 | 1.000 |
 
 More observations with a correct standard error bought *less* significance, not
 more, because the all-windows point estimate is the smaller one. Nothing clears
 correction. The conclusion did not move; the best estimate did, and it moved
 against us.
+
+### Everything measured on the pre-holdout window is exploratory
+
+**Status: Convention, and a policy rather than a rule about the engine.**
+
+The Bonferroni divisor in `backtest.py` is 20, which is correct for one
+invocation. But this same window has now been measured with the shipped score,
+with `--rsi-flip`, and with the Tier 1 variants — roughly **80 cells against one
+dataset**, and the divisor knows about 20 of them.
+
+A divisor that grows with an open-ended search is unwinnable, because the
+denominator is unknowable in advance and because it makes the divisor itself
+negotiable — which is exactly the move refused above for relative strength at 6
+months. So the correction is not chased. Instead:
+
+1. **Every pre-holdout figure is exploratory and labelled as such.** No
+   exploratory cell is called significant, whatever its p. Multiplicity
+   correction applies only within the single pre-registered final test.
+2. **The search count is stated wherever an exploratory cell appears.** ~80
+   cells, and that is a **lower bound**: design choices are degrees of freedom
+   too — the sector-bucket floor of 3, the neutralisation scheme, the turnover
+   window, the 200-session gate, the winsorisation tail. The garden of forking
+   paths is wider than the cell count.
+
+**The gap this policy does NOT close, stated plainly because it is the one that
+matters.** Labelling the exploration stops us calling it significant. It does
+not stop the exploration from choosing *what gets tested on the holdout*. If
+four variants are measured and the best goes forward, the final test is not a
+clean test of a hypothesis — it is a test of the winner of an 80-cell search.
+The selection effect survives the relabelling, because it operates through
+which variant reaches the holdout rather than through what is said about the
+p-values.
+
+That does not make the holdout worthless. It narrows what it answers:
+
+- **Not:** is there a real effect here. The holdout cannot answer that; the
+  subject was chosen because it looked good.
+- **But:** the variant we selected — does it hold up on data nobody has seen?
+
+The second is decision-relevant and the holdout answers it cleanly. It must be
+*stated* as the second, because "our pre-registered test came back positive"
+will be read as the first.
+
+Three things must therefore be written down **before the holdout is touched**:
+
+- **The form of the test, not just the variant.** One variant, one horizon, one
+  statistic means the divisor is 1. A variant across four horizons and five
+  blocks puts it back at 20 and resets this whole argument. Name the exact cell.
+- **The selection rule, in advance.** "The variant with the highest paired IC
+  difference at 1 month" is a rule. "The one that looked best" is not, and only
+  the first lets a reader judge what the holdout result means.
+- **The cumulative count, including variants run and not reported.**
 
 Below is the earlier **full-span** measurement, kept because it is the
 better-powered version and dropping it would mean hiding the stronger
@@ -173,6 +242,19 @@ detection floor. Pre-holdout window, HAC:
 | Relative strength (20) | +0.0218 | +1.08 | 0.057 |
 | Volume (10) | −0.0231 | −1.66 | 0.040 |
 
+**The stated block weights have never been the realised ones.** `TECHNICAL_BLOCK_MAX`
+reads 40 / 30 / 20 / 10, but what a block contributes to a *ranking* is the
+cross-sectional spread of its subtotal, not its cap. Measured over 87 pre-holdout
+dates and 7,621 ticker-observations, the shipped points model realises
+**36.1 / 32.0 / 22.7 / 9.2**. Trend is the block that loses most, because its five
+features are near-collinear and a weighted sum of correlated features spreads less
+than its cap implies; volume's two are not, so it holds closer to its share.
+
+**Status: Convention, and a fact about the shipped score rather than about any
+variant.** Nothing is changed in response. It is recorded because "the trend block
+carries 40% of the technical score" is the natural reading of the constant and it
+is not what the constant does.
+
 **Correction, two claims.** This paragraph previously read "Four flat blocks",
 unqualified, and the sentence above the table claimed those floors "are
 themselves at or above the range where a real effect would sit". Both were
@@ -198,23 +280,42 @@ its own detection floor. It is recorded here because omitting it while
 publishing "four flat blocks" is how an affirmative negative becomes an
 overclaim. It is not a finding.
 
-| Relative strength | IC | n | HAC t | boot t | floor | p (Bonferroni/20) |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 month — pre-holdout, overlapping | +0.0218 | 86 | +1.08 | +1.09 | 0.0574 | 1.000 |
-| 3 months — pre-holdout, overlapping | +0.0486 | 84 | +2.34 | +2.61 | 0.0587 | 0.430 |
-| **6 months — pre-holdout, overlapping** | **+0.0784** | 81 | **+3.06** | **+3.46** | 0.0725 | **0.060** |
-| 12 months — pre-holdout, overlapping | +0.0672 | 75 | +2.77 | +3.06 | 0.0688 | 0.143 |
+| Relative strength | IC | n | df | HAC t | boot t | floor | p (Bonferroni/20) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 month — pre-holdout, overlapping | +0.0218 | 86 | 85 | +1.08 | +1.09 | 0.0574 | 1.000 |
+| 3 months — pre-holdout, overlapping | +0.0486 | 84 | 27 | +2.34 | +2.61 | 0.0601 | 0.535 |
+| **6 months — pre-holdout, overlapping** | **+0.0784** | 81 | 12 | **+3.06** | **+3.46** | 0.0774 | **0.198** |
+| 12 months — pre-holdout, overlapping | +0.0672 | 75 | 5 | +2.77 | +3.06 | 0.0828 | 0.790 |
+
+**The df column is the correction that moved these numbers.** Until 2026-09-14
+the HAC t was referred to df = n−1, which is the df of an i.i.d. mean. On
+overlapping windows consecutive observations share (h−1)/h of their span, so
+the independent count is n/h — and n//h reproduces the non-overlapping series
+length exactly at every horizon here (84//3=28, 81//6=13, 75//12=6). At 6
+months that took the raw p from 0.0030 to 0.0099 and the corrected p from
+0.060 to 0.198. **Status: Adapted.** It is a conservative proxy, not the
+textbook fix: fixed-b asymptotics (Kiefer & Vogelsang 2005) give a nonstandard
+limiting distribution with fatter tails than Student's t at any df, so the
+honest p sits above even this one.
 
 The 6-month bootstrap interval is +0.032 to +0.120 and excludes zero; HAC SE is
-0.0256 at lag 5; raw p is 0.0030.
+0.0256 at lag 5; raw p is 0.0099. It clears its floor by 1.3%, not the 8% that
+the wrong df implied.
 
 **Why this is more likely noise.** It does not clear correction. Under the null
 the chance that *some* cell out of twenty looks at least this strong is about
-**5.9%**, which is approximately what occurred. The sibling horizons do not
-clear their own floors, and 12 months misses by 0.0016 — close enough that the
-pattern is as consistent with a smooth noise surface as with a real effect
-concentrated at two quarters. Nothing here has been tested on data that was not
-already used to find it.
+**18%**. Twenty understates the search: this same window has been measured with
+the shipped score, with the RSI sign flipped, and with two further variants —
+roughly **80 cells against one dataset**, at which the figure is **55%**. The
+sibling horizons do not clear their own floors, and 12 months misses by 0.0156.
+Nothing here has been tested on data that was not already used to find it.
+
+**And the standard error itself understates.** Every estimator in this study is
+biased low, scored against a series whose true standard error is known: at six
+months the i.i.d. SE by 61%, HAC by 22%, the bootstrap by 25%. No block length
+fixes the bootstrap and no Bartlett bandwidth fixes HAC. So this t is inflated
+rather than deflated, and taking the measured bias at face value would put the
+corrected p near **0.53**. See `_stationary_bootstrap_se`.
 
 **Status: Convention — recorded, not adopted.** No parameter changes in response
 to this cell, and it is not to be investigated further on pre-holdout data:

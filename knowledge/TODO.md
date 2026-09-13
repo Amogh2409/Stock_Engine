@@ -10,6 +10,16 @@ or labelling nit waits here until something substantive touches the same file.
 
 ## Open
 
+- **The non-overlapping IC series keeps only phase 0 of h.** `backtest.py`'s
+  decile study appends to `non_overlapping` when `index % horizon == 0`, which
+  retains one of the h valid non-overlapping series and discards the other h−1.
+  Averaging all h phases is the efficient estimator and throws nothing away. Less
+  urgent now that HAC carries the headline, but it is free information currently
+  unused. (Audit finding 6.)
+- **The bootstrap percentile index is off by one rank.** `means[int(0.025 * draws)]`
+  is index 50 of 2000; the 2.5th percentile by nearest-rank is index 49.
+  Sub-percentile effect on the reported interval. (Audit finding 7.)
+
 - **`PROJECT_GUIDE.pdf` is stale** relative to `knowledge/project-guide.html`
   as of 2026-09-14. The HTML carries the horizon-qualified block claims and the
   relative-strength 6-month cell; the PDF predates them. Regenerate next time
