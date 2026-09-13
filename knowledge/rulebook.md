@@ -1,6 +1,14 @@
 # Rulebook
 
-Every scoring rule in the engine, with its source.
+Every **technical** scoring rule in the engine, with its source — and the
+position sizing built on top of it.
+
+Scope, stated because the earlier wording ("every scoring rule in the engine")
+claimed more than this file delivers. The **fundamental** half has no entry
+here at all: ROCE, growth, governance, promoter holding, pledge, valuation and
+the P/E and NPA rules each appear zero times below. That half carries 60% of the
+composite and is what actually gates selection, so the uncovered fraction is the
+larger one.
 
 This file exists because the decisions behind the technical score lived only in
 code comments and in one conversation. A threshold with no stated provenance
@@ -54,12 +62,26 @@ arbitrage regardless of company news, which makes single-stock price patterns
 erratic. His prescription is longer calculation periods, lower-frequency data,
 and markets tied closely to their fundamentals.
 
-This is consistent with what the backtest measured: **the technical score does
-not rank forward returns** (non-overlapping rank IC −0.001 / +0.026 / +0.004 /
-+0.069 at 1/3/6/12 months, nothing surviving multiple-testing correction). The
-book predicted the difficulty; the backtest confirmed it. Keep that in view
-when reading the per-rule detail — sourcing a rule says the indicator is real,
-not that our use of it earns anything.
+This is consistent with what the backtest measured: rank IC −0.001 / +0.026 /
++0.004 / +0.069 at 1/3/6/12 months, nothing surviving multiple-testing
+correction.
+
+**But be precise about which score those numbers describe, because it is not
+the one shipping today.** Commit `40f20e2` states it plainly: "What it found,
+against the five-check score this replaced (commit f62a110)". The ordering
+settles it — `f62a110` at 04:08, then `9939ba7` "Score the chart indicators
+instead of only computing them" at 04:39, then the backtest at 04:43, with 251
+insertions to `engine.py` between the first and the last. The scoring was
+replaced four minutes before the null result was committed.
+
+So the honest status of the current technical score is **unmeasured**, not
+measured-and-found-absent. Those are different claims and the weaker one is
+ours. The null result remains the best evidence available and it is evidence
+against the *approach*; it is not a measurement of the rules described below.
+Anyone citing −0.001/+0.069 as this engine's IC is citing a predecessor's.
+
+Keep that in view when reading the per-rule detail — sourcing a rule says the
+indicator is real, not that our use of it earns anything.
 
 ---
 
@@ -111,14 +133,29 @@ about the same over time and differ mainly in risk profile, and p. 317 supports
 longer periods being more robust. But if anyone asks why 200 and not 150, the
 honest answer today is "because everyone uses 200."
 
-### ADX(14) > 25 — **Convention**, and probably the wrong *shape* of rule
+### ADX(14) > 25 — **Sourced** (threshold), and probably the wrong *shape* of rule
 
 The threshold is unsourced. TSaM p. 387 says the ADX is a by-product of
 Directional Movement and defers it to Chapter 23; the opening pages of that
 chapter (pp. 1027–1034) cover risk aversion, the efficient frontier, common-sense
 risk management and liquidity, with no Directional Movement section. It sits
-somewhere later in that chapter, unread. **25 therefore has no citation in this
-repo.** Wilder's own convention, like 50/200, is inherited.
+somewhere later in that chapter, unread.
+
+**Correction: 25 does have a citation, and it is exactly 25.** TSaM p.1066, in
+the Directional Movement section that the paragraph above assumed was unread,
+gives Ruggiero's rules for using the ADX as a trending indicator, beginning:
+"1. If ADX crosses above 25, the market is trending." The same list adds that
+below 20 the market is consolidating — so the 20/25 pair is a documented band,
+not a single line, and our rule implements only its upper half.
+
+This promotes the threshold from Convention to **Sourced**, and it was found by
+one grep against text already sitting extracted on disk. Worth recording how
+long it stood as "unsourced": the claim survived because nobody searched past
+the pages they had already opened, which is the same failure this file records
+twice more below.
+
+Wilder's own convention, like 50/200, remains inherited for the *period* (14);
+only the threshold is now sourced.
 
 The deeper issue is not the number but the role. TSaM p. 310 is blunt: trend
 trading works when the market is trending and does not work when it isn't, and
@@ -459,10 +496,27 @@ acting on the signal close. Our rule matches the book's finding for the noisier
 market type, and it is also the honest choice, since a close-price signal cannot
 be executed at that same close.
 
-**Overlapping windows — passes.** We report non-overlapping rank ICs as the
-headline and show overlapping figures only to expose their inflation. This was
-learned the hard way: a 6-month forward return sampled monthly reuses five
-sixths of its window and turned a true t of 0.12 into 2.14.
+**Overlapping windows — passes in one tool and FAILS in the other.** The claim
+as originally written was true of `python/ab_compare.py`, which computes
+`ic_series(h, 1)` and `ic_series(h, h)` and reports the non-overlapping figure
+as the headline. It is **not** true of `python/backtest.py`, the harness a
+reader is far more likely to run: `decile_study` iterates
+`for index, signal_date in enumerate(rebalances)` and takes `future = index +
+horizon` — stride 1, overlapping, for every horizon — and the string
+`ic_series` does not appear in that file at all. Its Bonferroni correction then
+divides by the four horizons only, not by the far larger effective count that
+overlapping sampling implies.
+
+So the discipline is real, and it lives in the tool that did not produce the
+headline. The underlying lesson stands and was learned the hard way: a 6-month
+forward return sampled monthly reuses five sixths of its window and turned a
+true t of 0.12 into 2.14.
+
+**Neither tool runs in CI.** `run_checks.sh` contains zero references to
+`backtest` or `ab_compare`, against a control of three for `test_python`. The
+only measurement of whether this engine predicts anything sits outside the gate
+that everything else must pass, so it could silently break and nothing would
+notice.
 
 **Multiple testing — passes.** Bonferroni correction across every horizon
 tested, with p-values from Student's t rather than a normal approximation.
@@ -777,8 +831,12 @@ Ranked by value, cheapest first where value ties.
 5. **Replace ATR% > 5 with relative volatility**, ATR(14)/ATR(140), per TSaM
    p. 854. Swaps an invented constant for a sourced one.
 6. **Reconsider ADX as a gate** on the trend block rather than 4 points beside
-   it, per TSaM p. 310 — and find the Directional Movement section in Chapter 23
-   to source the threshold.
+   it, per TSaM p. 310. The second half of this item — find the Directional
+   Movement section and source the threshold — is **done**: p.1066 gives
+   Ruggiero's "ADX crosses above 25, the market is trending", so only the
+   gate-versus-points question remains open. Worth noting it took one grep
+   against text already extracted on disk, which is the cheapest any item here
+   has ever closed.
 7. **Decide what the relative-strength points are for.** The block now has one
    citation (TSaM pp. 851–852) and it argues against the two-point form the
    engine uses, so the 20 points still rest on convention alone. The peer-
