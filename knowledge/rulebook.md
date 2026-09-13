@@ -286,6 +286,14 @@ computed after scoring, so it structurally cannot reach a score. And nothing
 validates it: the A/B cannot test it, for the feedback reason under **Testing
 methodology** below. It is a better question asked, not a measured improvement.
 
+It also **inherits** the flaw above rather than repairing it. Both sides of the
+subtraction are two-point figures, and a median of two-point figures is still a
+two-point statistic, so the peer comparison is exactly as path-blind as the
+index comparison. It changes what the two endpoints are measured *against*; it
+restores nothing about how the company got there. The company that round-tripped
+a crash still scores identically to the one that ground steadily ahead,
+whichever yardstick it is held to.
+
 ## Volume — 10 points
 
 | Rule | Points | Constant |
@@ -531,4 +539,8 @@ Ranked by value, cheapest first where value ties.
    engine uses, so the 20 points still rest on convention alone. The peer-
    relative diagnostic added in 736899c asks the better question without scoring
    it; whether it should replace the index comparison rather than sit beside it
-   is the part still open.
+   is the part still open. It does **not** fix the path-blindness: both sides of
+   that subtraction are two-point figures, so it changes what the endpoints are
+   measured against and nothing else. Repairing that needs a different statistic
+   altogether — one that reads the series *between* the endpoints, as every
+   measure at TSaM pp. 851–852 after the first one does.
