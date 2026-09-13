@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeBot — Project Guide</title>
+<style>
+  @page { size: A4; margin: 16mm 14mm 18mm 14mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 10.2pt; line-height: 1.5; color: #1a1a1a; margin: 0;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  h1 { font-size: 23pt; margin: 0 0 4px; letter-spacing: -0.6px; color: #0f172a; }
+  h2 {
+    font-size: 14pt; margin: 26px 0 10px; padding: 7px 11px; color: #fff;
+    background: #0f172a; border-radius: 4px; letter-spacing: -0.2px;
+    page-break-after: avoid;
+  }
+  h3 {
+    font-size: 11.4pt; margin: 18px 0 7px; color: #0f172a;
+    border-bottom: 2px solid #cbd5e1; padding-bottom: 3px; page-break-after: avoid;
+  }
+  h4 { font-size: 10.3pt; margin: 13px 0 5px; color: #334155; page-break-after: avoid; }
+  p { margin: 0 0 8px; }
+  ul, ol { margin: 0 0 9px; padding-left: 19px; }
+  li { margin-bottom: 3.5px; }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 8.8pt;
+    background: #f1f5f9; padding: 1px 4px; border-radius: 3px; color: #0f172a;
+  }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 10px 12px; border-radius: 5px;
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 8.4pt;
+    line-height: 1.45; overflow-x: auto; margin: 0 0 10px; page-break-inside: avoid;
+  }
+  pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
+  table {
+    width: 100%; border-collapse: collapse; margin: 0 0 12px; font-size: 9.1pt;
+    page-break-inside: avoid;
+  }
+  th {
+    background: #e2e8f0; text-align: left; padding: 6px 8px; font-weight: 600;
+    border-bottom: 2px solid #94a3b8; color: #0f172a;
+  }
+  td { padding: 5px 8px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+  tr:nth-child(even) td { background: #f8fafc; }
+  .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 8.6pt; }
+  .num { text-align: right; font-family: "SF Mono", Menlo, Consolas, monospace; }
+
+  .cover { text-align: left; padding: 18px 0 22px; border-bottom: 4px solid #0f172a; margin-bottom: 22px; }
+  .sub { font-size: 12.5pt; color: #475569; margin: 6px 0 14px; font-weight: 400; }
+  .meta { font-size: 8.8pt; color: #64748b; font-family: "SF Mono", Menlo, monospace; }
+
+  .alert {
+    border-left: 5px solid #b91c1c; background: #fef2f2; padding: 11px 13px;
+    margin: 0 0 13px; border-radius: 0 4px 4px 0; page-break-inside: avoid;
+  }
+  .alert strong { color: #991b1b; }
+  .warn {
+    border-left: 5px solid #d97706; background: #fffbeb; padding: 11px 13px;
+    margin: 0 0 13px; border-radius: 0 4px 4px 0; page-break-inside: avoid;
+  }
+  .warn strong { color: #92400e; }
+  .ok {
+    border-left: 5px solid #059669; background: #ecfdf5; padding: 11px 13px;
+    margin: 0 0 13px; border-radius: 0 4px 4px 0; page-break-inside: avoid;
+  }
+  .ok strong { color: #065f46; }
+  .info {
+    border-left: 5px solid #2563eb; background: #eff6ff; padding: 11px 13px;
+    margin: 0 0 13px; border-radius: 0 4px 4px 0; page-break-inside: avoid;
+  }
+  .info strong { color: #1d4ed8; }
+
+  .pill {
+    display: inline-block; padding: 1.5px 7px; border-radius: 9px; font-size: 7.8pt;
+    font-weight: 700; letter-spacing: 0.3px; text-transform: uppercase;
+  }
+  .p-done { background: #d1fae5; color: #065f46; }
+  .p-block { background: #fee2e2; color: #991b1b; }
+  .p-wait { background: #fef3c7; color: #92400e; }
+  .p-none { background: #e2e8f0; color: #475569; }
+
+  .break { page-break-before: always; }
+  .nobreak { page-break-inside: avoid; }
+  .tight li { margin-bottom: 2px; }
+  .lead { font-size: 10.8pt; color: #334155; }
+  .foot { margin-top: 26px; padding-top: 10px; border-top: 2px solid #cbd5e1;
+          font-size: 8.5pt; color: #64748b; }
+  .two { display: flex; gap: 14px; }
+  .two > div { flex: 1; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>TradeBot — Indian Equity Screening Engine</h1>
+  <div class="sub">Project guide: how it works, what is done, what is left</div>
+  <div class="meta">
+    Repository: github.com/Amogh2409/Stock_Engine &nbsp;·&nbsp; Branch main @ 163ae40 &nbsp;·&nbsp; 28 commits<br>
+    Generated 13 September 2026 &nbsp;·&nbsp; All figures verified against the repository and its measurement artefacts
+  </div>
+</div>
+
+<div class="alert">
+  <strong>Read this before anything else.</strong> The technical scoring model has now been
+  measured against eleven years of real prices, and <strong>it does not predict returns.</strong>
+  Rank correlation with next-month returns is <span class="mono">−0.0015</span> (t −0.09, n=130)
+  where the smallest detectable effect is <span class="mono">0.046</span> — a properly powered
+  null, not a shortage of data. All four scoring blocks are independently flat. Ranking by this
+  score returned 20.40% a year against 21.15% for simply equal-weighting the same 100 stocks.
+  <br><br>
+  The engine is well-built, well-tested and honestly documented. What it is <em>not</em>, on
+  current evidence, is a stock picker. Everything in this guide should be read with that in view.
+</div>
+
+<h2>1. What this project is</h2>
+
+<p class="lead">
+  A deterministic screening engine for Indian equities. It reads a Screener.in CSV export of
+  company fundamentals, optionally reads a price-history CSV, scores every company out of 100,
+  ranks them, and produces a watchlist with position sizes and stop levels — in the browser,
+  in Python, and in a Colab notebook, all producing identical numbers.
+</p>
+
+<h3>The stated goal versus where it actually is</h3>
+
+<table>
+  <tr><th style="width:30%">The goal</th><th>Current reality</th></tr>
+  <tr>
+    <td>Continuous Nifty 100 analysis</td>
+    <td>Runs on demand from a manual CSV upload. No automatic daily run, because there is no
+        free fundamentals feed.</td>
+  </tr>
+  <tr>
+    <td>Buy / sell guidance</td>
+    <td>Produces <strong>entries only</strong>. Position sizing and stops now exist; there is
+        still no sell rule or exit discipline beyond the next month's re-rank.</td>
+  </tr>
+  <tr>
+    <td>Percentage allocations</td>
+    <td><strong>Done.</strong> Equal-risk sizing by volatility, with an explicit cash position.</td>
+  </tr>
+  <tr>
+    <td>Learn from the trading books</td>
+    <td><strong>Done as documentation, not as automation.</strong> Every scoring rule is traced
+        to a source or explicitly marked unsourced in <code>knowledge/rulebook.md</code>.</td>
+  </tr>
+</table>
+
+<div class="warn">
+  <strong>Research only.</strong> The engine never places an order, never connects to a broker,
+  and has no live trading path. Everything it produces is a research signal for a human to act on
+  or ignore.
+</div>
+
+<h2>2. Quick start</h2>
+
+<h3>First-time setup</h3>
+<pre><code>cd ~/PersonalResearch/TradeBot
+
+# Python environment (needed by the engine and all Python tests)
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-test.txt      # offline runs + tests
+.venv/bin/pip install -r requirements-network.txt   # adds live price download
+
+# Node dependencies
+npm ci</code></pre>
+
+<h3>The five commands that matter</h3>
+<table>
+  <tr><th style="width:34%">Command</th><th>What it does</th></tr>
+  <tr><td class="mono">npm run dev</td><td>Starts the browser app on localhost. Upload a CSV, see the watchlist.</td></tr>
+  <tr><td class="mono">npm run screen:offline</td><td>Runs the Python engine with no network, using files in <code>data-store/</code>.</td></tr>
+  <tr><td class="mono">npm run verify</td><td>The full release gate — 24 steps, clean-room build, ~20 min. Run before pushing.</td></tr>
+  <tr><td class="mono">npm test</td><td>Frontend and cross-engine parity suite (234 tests).</td></tr>
+  <tr><td class="mono">.venv/bin/python python/backtest.py --prices &lt;csv&gt; --out-dir &lt;dir&gt;</td>
+      <td>Re-runs the measurement. ~90 seconds against the cached price file.</td></tr>
+</table>
+
+<h3>The four checks before any commit</h3>
+<pre><code>npm run lint            # tsc --noEmit                → expect exit 0
+npm run check:python    # generated files in sync      → expect exit 0
+.venv/bin/python test_python.py          # 161 tests   → expect exit 0
+npx vitest run                           # 234 tests   → expect exit 0</code></pre>
+<p style="font-size:9.3pt;color:#475569">
+  Read each exit code from the command that produced it. <code>cmd | tail</code> returns
+  <em>tail's</em> exit code, not the command's — this has already caused one false "passed"
+  report in this project.
+</p>
+
+<h2 class="break">3. How it works</h2>
+
+<h3>The pipeline, end to end</h3>
+<pre><code>Screener.in CSV  ──┐
+                   ├─→  parse & clean  →  dedupe  →  filter to universe
+Price history CSV ─┘                                        │
+                                                            ▼
+                                              hard red flags?  ──yes──→  REJECTED
+                                                            │no
+                                                            ▼
+                                         fundamental score (0-100, 5 categories)
+                                         technical score   (0-100, 4 blocks)
+                                                            │
+                                                            ▼
+                                    composite = F×(1−W) + T×W      [W = 40%]
+                                                            │
+                                                            ▼
+                                     rank → top N → equal-risk position sizing
+                                                            │
+                                                            ▼
+                                   watchlist + weights + stops + cash position</code></pre>
+
+<h3>Two engines, one answer</h3>
+<p>
+  The same logic exists twice — <code>python/engine.py</code> (5,500 lines) and
+  <code>src/utils/screenerEngine.ts</code> (3,809 lines). They are not approximately equal;
+  they are asserted <strong>bit-identical</strong> by 39 parity tests that run both engines on
+  the same data and compare every score, every text string and every CSV byte.
+</p>
+<p>
+  This is why rounding is <code>round1()</code> everywhere (half-up, one decimal) and why sorting
+  uses code-point order rather than locale order. A rounding difference is a ranking difference.
+</p>
+
+<div class="info">
+  <strong>Generated files — do not edit by hand.</strong>
+  <code>src/utils/pythonEngineSource.ts</code> and the Colab notebook are both built from
+  <code>python/engine.py</code> by <code>npm run build:python</code> and
+  <code>npm run generate:notebook</code>. Editing the engine without regenerating them makes
+  <code>check:python</code> fail, which is exactly what it is for.
+</div>
+
+<h3>Where data lives</h3>
+<table>
+  <tr><th style="width:32%">Path</th><th>Contents</th></tr>
+  <tr><td class="mono">data-store/fundamentals/</td><td>Screener.in exports. <strong>Currently only the invented sample.</strong></td></tr>
+  <tr><td class="mono">data-store/fundamentals/archive/</td><td>Dated, hashed copies of every export ever used — the point-in-time history.</td></tr>
+  <tr><td class="mono">data-store/market_data/</td><td>Downloaded price history (26 MB, 266,432 rows, 2015–2026).</td></tr>
+  <tr><td class="mono">data-store/reports/</td><td>Watchlist CSVs, rejection audits, backtest artefacts.</td></tr>
+  <tr><td class="mono">knowledge/rulebook.md</td><td>961 lines. Every scoring rule with its source, or an admission that it has none.</td></tr>
+</table>
+<p style="font-size:9.3pt;color:#475569">
+  <code>data-store/**</code> is gitignored apart from the directory skeleton, so measurement
+  artefacts do not travel with the repository. Anything that must survive belongs in the rulebook.
+</p>
+
+<h2>4. The scoring model</h2>
+
+<h3>Step 1 — hard red flags (rejection, not a low score)</h3>
+<p>
+  These mean "this row cannot be trusted as evidence", not "this company is unattractive".
+  An expensive stock still gets scored; a company with nine of these does not.
+</p>
+<ul class="tight">
+  <li><strong>Negative net worth</strong> — negative P/B or D/E is insolvency, not a bargain</li>
+  <li><strong>High promoter pledge</strong> — above the configured limit</li>
+  <li><strong>Negative or missing operating cash flow</strong> — non-financial companies only; a growing loan book legitimately consumes cash</li>
+  <li><strong>Insufficient data</strong> — too little of the row present to score honestly</li>
+  <li><strong>Non-positive sales, market cap, or impossible shareholding percentages</strong> — the row is corrupt</li>
+  <li><strong>Pledge without promoter holding</strong> — internally contradictory</li>
+  <li><strong>Conflicting duplicate rows</strong> — two rows disagree, so neither can be believed</li>
+</ul>
+
+<h3>Step 2 — fundamental score, 100 points</h3>
+<table>
+  <tr><th>Category</th><th class="num">Points</th><th>Measures</th></tr>
+  <tr><td>Financial quality</td><td class="num">30</td><td>ROCE, ROE, margins</td></tr>
+  <tr><td>Growth</td><td class="num">25</td><td>Sales and profit growth</td></tr>
+  <tr><td>Balance-sheet safety</td><td class="num">20</td><td>Debt/equity, interest cover, cash flow</td></tr>
+  <tr><td>Valuation</td><td class="num">15</td><td>P/E and P/B <em>against the sector median</em>, not absolute</td></tr>
+  <tr><td>Governance</td><td class="num">10</td><td>Promoter holding and pledge</td></tr>
+</table>
+<p>
+  Banks and NBFCs are scored by a separate model using return on assets, NPAs, capital adequacy
+  and CASA — because leverage and interest cover do not describe a lender. A financial company
+  whose export lacks those columns is reported as <em>"not scored: missing bank metrics"</em>
+  rather than being scored wrongly on ratios that do not apply.
+</p>
+
+<h3>Step 3 — technical score, 100 points in four blocks</h3>
+<table>
+  <tr><th>Block</th><th class="num">Max</th><th>Rules</th></tr>
+  <tr><td>Trend</td><td class="num">40</td><td>Price &gt; 200 SMA (12), &gt; 50 SMA (8), 50&gt;200 cross (8), ADX&gt;25 (4), within 15% of 52-week high (8)</td></tr>
+  <tr><td>Momentum</td><td class="num">30</td><td>MACD histogram rising (15), RSI &gt; 50 (15)</td></tr>
+  <tr><td>Relative strength</td><td class="num">20</td><td>Beat the benchmark over 3m (5), 6m (10), 12m (5)</td></tr>
+  <tr><td>Volume</td><td class="num">10</td><td>Above 20-day average (5), positive OBV pressure (5)</td></tr>
+</table>
+<p>
+  Volatility, overbought RSI and deep drawdowns are <strong>flags, never points</strong>.
+  Paying for low volatility tilts toward sleepy stocks and paying for high volatility toward
+  lottery tickets; neither is defensible, and the source treats volatility as a risk measure
+  rather than a directional edge.
+</p>
+<p>
+  A company needs <strong>200 sessions</strong> of price history to be scored at all. Below that
+  the score is <em>null</em>, not a low number — a short listing is not a weak company.
+</p>
+
+<h3>Step 4 — the composite, and what it gates</h3>
+<pre><code>composite = fundamental × (1 − W/100)  +  technical × (W/100)      W = 40</code></pre>
+<p>
+  The pass mark (<code>minimum_total_score = 50</code>) gates the <strong>fundamental</strong>
+  total. The composite decides <em>ordering</em>, not admission. Companies that pass but cannot be
+  priced are ranked in a separate list, because a composite without a technical half is not on the
+  same scale — mixing them would reward being absent from the price file.
+</p>
+
+<h3>Step 5 — position sizing</h3>
+<p>
+  Equal risk by volatility (weight proportional to 1/volatility, normalised), scaled to a 12%
+  portfolio volatility target, then capped per position and per sector. Stops at 2× ATR.
+  The shortfall stays in cash and the app says why.
+</p>
+<div class="ok">
+  <strong>This is the best-sourced part of the system</strong> — real page citations, a worked
+  table from the source, and an explicit decision rule. Note the direction of that argument:
+  equal risk is what the book prescribes <em>precisely because</em> the selection underneath it
+  is unproven. The sizing citations lend the scoring layer nothing.
+</div>
+
+<h2 class="break">5. What has been measured</h2>
+
+<p class="lead">
+  Backtest: 266,432 price rows, 101 tickers, 2015-01-01 to 2026-09-11, monthly rebalance,
+  next-day-open execution, 15 bps per side. No look-ahead by construction.
+</p>
+
+<h3>The headline null</h3>
+<table>
+  <tr><th>Horizon</th><th class="num">Rank IC</th><th class="num">t</th><th class="num">n</th>
+      <th class="num">p (corrected)</th><th class="num">Detectable</th></tr>
+  <tr><td><strong>1 month</strong></td><td class="num">−0.0015</td><td class="num">−0.09</td>
+      <td class="num">130</td><td class="num">1.000</td><td class="num">0.046</td></tr>
+  <tr><td>3 months</td><td class="num">+0.0481</td><td class="num">+2.46</td><td class="num">43</td>
+      <td class="num">0.358</td><td class="num">0.056</td></tr>
+  <tr><td>6 months</td><td class="num">+0.0278</td><td class="num">+0.82</td><td class="num">21</td>
+      <td class="num">1.000</td><td class="num">0.100</td></tr>
+  <tr><td>12 months</td><td class="num">+0.0843</td><td class="num">+2.05</td><td class="num">10</td>
+      <td class="num">1.000</td><td class="num">0.128</td></tr>
+</table>
+
+<div class="info">
+  <strong>Why the 1-month row carries the whole argument.</strong> A 1-month forward return
+  sampled monthly <em>cannot overlap</em>, so the two possible estimates coincide exactly.
+  Every longer horizon must either reuse (h−1)/h of each window — inflating the t-statistic — or
+  keep one phase offset in h and collapse the sample. At 12 months the independent sample is
+  <strong>n = 10</strong> and cannot detect an IC below 0.128, against a realistic effect of
+  0.02–0.05. A null there means the test could not see, not that nothing is there.
+</div>
+
+<h3>No block carries it</h3>
+<p>
+  A near-zero total is equally consistent with four dead blocks and two that cancel out.
+  Ranking on each subtotal alone settles it. At 1 month — the only horizon with real power —
+  every block sits inside its own detection floor:
+</p>
+<table>
+  <tr><th>Block</th><th class="num">IC</th><th class="num">t</th><th class="num">Detectable at 80% power</th></tr>
+  <tr><td>Trend (40 pts)</td><td class="num">+0.0035</td><td class="num">+0.21</td><td class="num">0.048</td></tr>
+  <tr><td>Momentum (30 pts)</td><td class="num">−0.0126</td><td class="num">−0.96</td><td class="num">0.037</td></tr>
+  <tr><td>Relative strength (20 pts)</td><td class="num">+0.0140</td><td class="num">+0.88</td><td class="num">0.045</td></tr>
+  <tr><td>Volume (10 pts)</td><td class="num">−0.0126</td><td class="num">−1.07</td><td class="num">0.033</td></tr>
+</table>
+<p><strong>Four flat blocks.</strong> Nothing is cancelling out, so no reweighting recovers an
+edge that is not there.</p>
+
+<h3>Portfolio results</h3>
+<table>
+  <tr><th>Window</th><th class="num">Top 20 by score</th><th class="num">Equal-weight all 100</th><th class="num">Nifty index</th></tr>
+  <tr><td>Full period</td><td class="num">20.40%</td><td class="num">21.15%</td><td class="num">9.07%</td></tr>
+  <tr><td>In sample (to 2021)</td><td class="num">17.28%</td><td class="num">20.18%</td><td class="num">10.39%</td></tr>
+  <tr><td>Out of sample (2022+)</td><td class="num">24.78%</td><td class="num">22.63%</td><td class="num">7.09%</td></tr>
+</table>
+<p>
+  Beat equal-weighting in <strong>4 of 12</strong> calendar years, and <strong>1 of 7</strong>
+  in-sample — losing 2021 by 19.5 points and 2017 by 14.6. Annual turnover <strong>754%</strong>.
+</p>
+
+<h3>Three numbers that look like findings and are not</h3>
+<div class="warn">
+  <strong>1. The out-of-sample 24.78% vs 22.63%.</strong> That window was already used to revise
+  the engine. Once out-of-sample data has been used to fix something, what comes back is
+  overfitting — it is an in-sample number wearing an out-of-sample label. At 754% turnover it is
+  negative after Indian short-term capital gains tax in any case.
+</div>
+<div class="warn">
+  <strong>2. The 3-month t = +2.46.</strong> Its sign <em>reverses</em> against the overlapping
+  estimate (−0.11). A sign that flips with the sampling phase is an artefact, not a signal.
+</div>
+<div class="warn">
+  <strong>3. The RSI flip beating equal-weight in all three windows</strong> (22.88 / 20.46 /
+  26.26). Tested both directions; the rank IC underneath is <span class="mono">+0.0059</span>.
+  With essentially zero IC the top-20 composition is noise, so what changed is <em>which twenty
+  names the noise picked</em> — a story about twenty draws, not about a rule. Neither sign is
+  adopted.
+</div>
+
+<h2 class="break">6. Status — what is done</h2>
+
+<p class="lead">28 commits, all independently verified in a clean room by a second session before pushing.</p>
+
+<h3><span class="pill p-done">Done</span> Core engine and parity</h3>
+<ul class="tight">
+  <li>Two-engine architecture with 39 byte-identical parity tests</li>
+  <li>Financial-company model (banks/NBFCs scored on their own metrics, or honestly not scored)</li>
+  <li>Sector-relative valuation with a minimum sample size and a stated fallback chain</li>
+  <li>Hard red flags separated from low scores</li>
+  <li>Unpriced companies ranked separately rather than silently dropped</li>
+</ul>
+
+<h3><span class="pill p-done">Done</span> Technical analysis</h3>
+<ul class="tight">
+  <li>18 chart indicators: RSI, MACD, ADX/DI, ATR, Bollinger %B, OBV, ROC, drawdown, relative strength</li>
+  <li>Wilder smoothing, EMA seeding, population sigma — matching the textbook formulas exactly</li>
+  <li>Four-block scoring with per-block subtotals exposed</li>
+  <li>Sector-relative strength as a diagnostic (earns no points, computed after scoring so it structurally cannot reach one)</li>
+  <li>Price charts in the detail panel, drawn against the levels the score actually used</li>
+</ul>
+
+<h3><span class="pill p-done">Done</span> Position sizing and risk</h3>
+<ul class="tight">
+  <li>Equal-risk sizing by volatility, scaled to a 12% portfolio target</li>
+  <li>Per-position and per-sector caps; 5% per-trade risk ceiling</li>
+  <li>Stops at 2× ATR, set in advance</li>
+  <li>Cash position shown and explained in the app, the CSV and the HTML report</li>
+</ul>
+
+<h3><span class="pill p-done">Done</span> Measurement and honesty infrastructure</h3>
+<ul class="tight">
+  <li>Backtest with no look-ahead, next-day-open fills, modelled costs</li>
+  <li>Both overlapping and non-overlapping sampling reported side by side, with sign-flip flagging</li>
+  <li>Every IC printed with its sample size <em>and</em> its minimum detectable effect</li>
+  <li>Bonferroni correction across the whole family of 20 tests</li>
+  <li>Student's t rather than a normal approximation (at df=9 the difference decides significance)</li>
+  <li>The backtest's own mechanics are now inside the release gate, and proven to fail when broken</li>
+  <li><code>knowledge/rulebook.md</code> — 961 lines tracing every rule to a source or marking it unsourced</li>
+  <li>Dated, hashed archive of every fundamentals export used</li>
+</ul>
+
+<h2>7. Status — what is left</h2>
+
+<h3><span class="pill p-block">Blocked on you</span> A real Screener.in export</h3>
+<div class="alert">
+  <strong>This is the single largest blocker in the project.</strong>
+  <code>data-store/fundamentals/</code> contains only <code>sample_screener_export.csv</code>,
+  whose figures are <strong>invented</strong>. The archive has run exactly once — on that sample
+  (verified: identical SHA-256, and none of the four bank columns present).
+</div>
+<p><strong>What to do:</strong> in Screener.in, add these four columns to the screen
+<em>before</em> exporting, then drop the CSV into <code>data-store/fundamentals/</code>:</p>
+<ul class="tight">
+  <li>Return on assets</li>
+  <li>Gross NPA %</li>
+  <li>Net NPA %</li>
+  <li>Capital adequacy ratio</li>
+</ul>
+<p><strong>What it unblocks:</strong></p>
+<ul class="tight">
+  <li>~23 financial companies get scored for the first time instead of "missing bank metrics"</li>
+  <li>The provisional pass mark of 50 gets real data to calibrate against</li>
+  <li>Point-in-time history starts accumulating — the <em>only</em> route by which the fundamental half ever becomes testable</li>
+</ul>
+<div class="warn">
+  <strong>When it arrives, split it before looking at it.</strong> Calibrate on part, and stamp
+  the rest unexamined. Tuning the pass mark against a snapshot you have already studied spends
+  the only clean data available and leaves the threshold exactly as unfounded as it is today,
+  with better-looking provenance.
+</div>
+
+<h3><span class="pill p-wait">Your decision</span> The technical weight</h3>
+<p>
+  <code>technical_weight_pct = 40</code> is now <strong>unearned</strong>, not merely unvalidated.
+  Measured at six real rebalance dates, the technical score spans the full 0–100 range every
+  month (mean span 99.3). So at W=40 the technical half can swing a composite by
+  <strong>39.7 points</strong> — enough to move a company across all three verdict bands
+  (Strong ≥70, Good ≥60, Average ≥45) on its own. It is frequently the deciding term, and it is
+  deciding on a measured null.
+</p>
+<table>
+  <tr><th style="width:14%">Option</th><th>Meaning</th><th>The honest cost</th></tr>
+  <tr><td><strong>40</strong><br><span style="font-size:8pt;color:#64748b">current</span></td>
+      <td>Status quo</td><td>~40 points of ordering driven by a measured null</td></tr>
+  <tr><td><strong>10–20</strong></td><td>Reduce the null's influence</td>
+      <td>No evidence picks any value over another — arbitrary, but smaller</td></tr>
+  <tr><td><strong>0</strong></td><td>Rank on fundamentals alone</td>
+      <td><strong>Not the safe option.</strong> Concentrates 100% of ordering on the half that is
+          <em>untested</em> — trades a known null for an unknown</td></tr>
+  <tr><td><strong>0 + display</strong></td><td>Technicals shown, never ranked</td>
+      <td>Keeps charts and flags as information without letting them order anything</td></tr>
+</table>
+<p style="font-size:9.3pt;color:#475569">
+  Not computable today: how the actual watchlist <em>composition</em> shifts as W varies needs
+  both halves, and the fundamentals half would be invented numbers. That calculation waits on the
+  real export.
+</p>
+
+<h3><span class="pill p-none">Not started</span> Exits and sell discipline</h3>
+<p>
+  The engine produces <strong>entries only</strong>. There is no exit rule, no trailing stop
+  logic, and no sell signal beyond next month's re-rank. Against the stated goal of buy/sell
+  guidance, this gap is structurally larger than the pass mark or any remaining scoring work.
+  Knowing your exit in advance is basic risk management in the source material.
+</p>
+<p style="font-size:9.3pt;color:#475569">
+  Deliberately unclaimed: adding exits turns a screener into a trading system, which is a product
+  decision rather than an engineering one.
+</p>
+
+<h3><span class="pill p-none">Open</span> Rulebook items, ranked</h3>
+<table>
+  <tr><th style="width:6%">#</th><th style="width:34%">Item</th><th>Why it matters</th></tr>
+  <tr><td>1</td><td>Hold data back, permanently</td>
+      <td>Fix a window now, never look at it. Until then no out-of-sample claim survives.
+          Blocked on the export.</td></tr>
+  <tr><td>2</td><td>Map robustness, not points</td>
+      <td>Sweep thresholds looking for a plateau rather than a spike. An erratic surface also
+          catches harness bugs.</td></tr>
+  <tr><td>3</td><td>Add price spread</td>
+      <td>The missing input behind both the buying-climax conflict and the incomplete OBV
+          implementation.</td></tr>
+  <tr><td>4</td><td>Replace ATR% &gt; 5 with relative volatility</td>
+      <td>Swaps an invented constant for a sourced construction, ATR(14)/ATR(140).</td></tr>
+  <tr><td>5</td><td>Reconsider ADX as a gate</td>
+      <td>Trend rules measure nothing in a sideways market; 4 points beside them is the wrong
+          shape of rule.</td></tr>
+  <tr><td>6</td><td>Decide what the relative-strength points are for</td>
+      <td>20 points on convention alone; its one citation argues <em>against</em> the two-point
+          form used.</td></tr>
+</table>
+
+<h2 class="break">8. Known weaknesses — read before trusting any number</h2>
+
+<h3>Structural limits of the measurement</h3>
+<ul class="tight">
+  <li><strong>Survivorship bias.</strong> Today's Nifty 100 applied to history. Companies that
+      fell out of the index are absent and are disproportionately the bad ones. Every figure,
+      including the benchmarks, is flattered.</li>
+  <li><strong>The fundamental half has never been tested.</strong> Not "tested and found weak" —
+      never measured at all. Today's export describes today, so applying it to 2016 would be
+      look-ahead of the worst kind.</li>
+  <li><strong>No dividends, no taxes.</strong> Costs are modelled; Indian STCG is not, and at a
+      monthly rebalance it is the larger drag.</li>
+  <li><strong>The books teach single-instrument timing, not cross-sectional ranking.</strong>
+      An indicator can time one stock well and carry no information about which of a hundred
+      will outperform the other ninety-nine.</li>
+</ul>
+
+<h3>Rules that are convention, not evidence</h3>
+<p>
+  Roughly half the live technical thresholds are inherited market convention with no source in
+  any book in the repository: the 50/200 SMA pair, RSI 50, ATR 5%, the 2× ATR stop multiple, the
+  15% 52-week-high proximity, and the 5/10/5 relative-strength split. They are not wrong — they
+  are <em>unjustified</em>, and the rulebook labels each so nobody later assumes a number was
+  measured when it was inherited.
+</p>
+
+<h3>Three places the books actively disagree with the engine</h3>
+<ul class="tight">
+  <li><strong>RSI direction.</strong> Scoring RSI &gt; 50 treats it as continuation. The source's
+      own evidence shows the sign <em>flipped</em> around 1998 — a trend indicator before, mean-
+      reverting since. The risk is not that the rule is unproven; it is that it may be
+      directionally wrong in some regimes.</li>
+  <li><strong>High volume near the highs.</strong> The engine pays 13 points for a configuration
+      one source calls a <em>buying climax</em> and reads as bearish. The distinguishing feature
+      is price spread, which the engine does not compute.</li>
+  <li><strong>Stops may not help at all.</strong> The source is sceptical that stop-losses improve
+      trend or mean-reversion profiles, and gives multiples of 3× and 12× ATR — neither of which
+      is the 2× used here. The UI says so rather than letting a stop price imply a protection the
+      books endorse.</li>
+</ul>
+
+<h2>9. Working rules — learned the hard way</h2>
+
+<p class="lead">
+  Every rule below came from an actual failure in this project. They are worth following because
+  each one has already cost time.
+</p>
+
+<div class="nobreak">
+<h3>Before trusting a green signal, ask what it would look like if the thing were broken</h3>
+<p>If the answer is "the same", the signal carries no information. Four real instances in one day:</p>
+<ul class="tight">
+  <li>A look-ahead test compared a score to itself at fixture session 66 when scoring needs 200 —
+      both sides were null, so <code>assertEqual(None, None)</code> passed for as long as the test
+      existed, while the docstring claimed the test asserted no-look-ahead.</li>
+  <li>A guard returning bare <code>None</code> crashed on the first real run, because every test
+      fixture gave every ticker every date. <strong>A guard for absent data is only exercised by
+      absent data.</strong></li>
+  <li>A flag was "proved" to work by printing <code>DIFFERENT: True</code> from
+      <code>nan != nan</code>, which is true for any two NaNs.</li>
+  <li>A failing Python run reported exit 0, because the code came from <code>tail</code> at the
+      end of a pipe rather than from Python.</li>
+</ul>
+</div>
+
+<div class="nobreak">
+<h3>A grep count is not evidence until you have read the lines</h3>
+<p>
+  Both halves bite. A zero count means nothing unless the pattern is shown to match text known to
+  exist — four false zeroes here came from shell glob mangling. And a non-zero count says nothing
+  about <em>what</em> matched: four occurrences of <code>__dirname</code> were assumed to be four
+  comments; three were, and the fourth was live code that shipped under a commit message claiming
+  it was gone.
+</p>
+</div>
+
+<div class="nobreak">
+<h3>Verify against the whole of a thing, not its first screen</h3>
+<p>
+  Three rulebook claims were built on the seven files at the top level of the books folder while
+  128 more sat in a subdirectory — which made two of them false. Separately, "~71 entries" was
+  reported from a directory <em>link count</em> rather than a file count. Neither was an invented
+  number: each was an accurate figure attached to a claim it did not support.
+</p>
+</div>
+
+<div class="nobreak">
+<h3>A test can only exercise the range its fixture spans</h3>
+<p>
+  Portfolio volatility was measured over the whole price file — an eleven-year mean — which left
+  the crisis brake inert, because an eleven-year average cannot rise. Every unit test passed, both
+  engines agreed to the last bit, and every fixture was shorter than the window that was wrong.
+  It was caught by reading a real run's output and noticing a number that was impossible.
+</p>
+</div>
+
+<div class="nobreak">
+<h3>Once out-of-sample data has been used to fix something, it is spent</h3>
+<p>
+  This is the rule the project has broken once and documented rather than hidden. The sequence was:
+  measure, find a null, revise the engine in response, re-measure <em>on the same window</em>.
+  The resulting +2.15% cannot be cited. Only data nobody has examined settles whether a change
+  helped.
+</p>
+</div>
+
+<div class="nobreak">
+<h3>Repository hygiene</h3>
+<ul class="tight">
+  <li>Stage explicit paths. Never <code>git add -A</code> — it once swept 77 lines of someone
+      else's half-written work into an unrelated commit, cleanly and with exit code 0.</li>
+  <li>Never run the generators (<code>build:python</code>, <code>generate:notebook</code>) while
+      someone else owns <code>engine.py</code>. They read like checks and write like builds.</li>
+  <li>Read <code>git diff --cached --stat</code> before every commit and abort on an unexpected file.</li>
+</ul>
+</div>
+
+<h2 class="break">10. File map</h2>
+
+<table>
+  <tr><th style="width:36%">Path</th><th class="num" style="width:10%">Lines</th><th>Role</th></tr>
+  <tr><td class="mono">python/engine.py</td><td class="num">5,500</td>
+      <td>The engine. Source of truth; the notebook and the TS mirror are generated from it.</td></tr>
+  <tr><td class="mono">src/utils/screenerEngine.ts</td><td class="num">3,809</td>
+      <td>Browser engine. Bit-identical to the Python by contract.</td></tr>
+  <tr><td class="mono">python/backtest.py</td><td class="num">1,198</td>
+      <td>The measurement. No look-ahead, next-day-open fills, both samplings.</td></tr>
+  <tr><td class="mono">knowledge/rulebook.md</td><td class="num">961</td>
+      <td><strong>Read this first.</strong> Every rule, its source, and what it does not rest on.</td></tr>
+  <tr><td class="mono">README.md</td><td class="num">553</td><td>Operational detail and data contracts.</td></tr>
+  <tr><td class="mono">src/types.ts</td><td class="num">397</td><td>Shared types, mirroring the Python dicts field for field.</td></tr>
+  <tr><td class="mono">python/ab_compare.py</td><td class="num">166</td>
+      <td>A/B harness for comparing two engine revisions on identical data.</td></tr>
+  <tr><td class="mono">run_checks.sh</td><td class="num">461</td>
+      <td>The 24-step release gate: clean-room build, all suites, notebook byte-comparison.</td></tr>
+  <tr><td class="mono">src/components/</td><td class="num">11 files</td>
+      <td>UI. <code>WatchlistTable</code>, <code>PositionSizingSummary</code>,
+          <code>PriceChart</code>, config, audit views.</td></tr>
+  <tr><td class="mono">src/tests/</td><td class="num">8 files</td>
+      <td>234 frontend/parity tests; <code>test_python.py</code> adds 161.</td></tr>
+</table>
+
+<h3>Test inventory</h3>
+<table>
+  <tr><th>Suite</th><th class="num">Count</th><th>Covers</th></tr>
+  <tr><td>vitest (frontend + parity)</td><td class="num">234</td><td>Engine logic, UI rendering, cross-engine agreement</td></tr>
+  <tr><td>test_python.py</td><td class="num">161</td><td>Python engine contracts, notebook cells</td></tr>
+  <tr><td>backtest --self-test</td><td class="num">10</td><td>No look-ahead, execution timing, costs, p-values, Bonferroni</td></tr>
+  <tr><td>run_checks.sh</td><td class="num">24 steps</td><td>All of the above in a clean room, twice, plus archive re-verification</td></tr>
+</table>
+
+<h2>11. If you are picking this up cold</h2>
+
+<ol>
+  <li><strong>Read <code>knowledge/rulebook.md</code>.</strong> It is the honest account of what
+      every number rests on. Its "Open items" section is the real backlog.</li>
+  <li><strong>Run <code>npm run dev</code></strong> and upload the bundled sample to see the
+      output shape. Remember the sample's figures are invented.</li>
+  <li><strong>Run the backtest</strong> against the cached price file (~90 s) to reproduce the
+      null yourself rather than trusting this document.</li>
+  <li><strong>Do not tune thresholds to improve the IC.</strong> That is the trap this repository
+      has already documented against itself. Measuring is fine; adopting on data already used is
+      fitting.</li>
+  <li><strong>Get the real Screener export in.</strong> Almost everything else is downstream of it.</li>
+</ol>
+
+<div class="ok">
+  <strong>The honest summary.</strong> This is a carefully built, thoroughly tested, unusually
+  well-documented engine that has been measured and found not to predict returns. That is a real
+  and useful result: most such projects never find out. The infrastructure to test the
+  <em>fundamental</em> half — which is 60% of the composite and has never been measured — is
+  built and waiting on one CSV file.
+</div>
+
+<div class="foot">
+  Generated 13 September 2026 from the repository at commit 163ae40. Every statistic here was
+  read from <code>data-store/reports/backtest_blocks/results.json</code> and
+  <code>backtest_rsiflip/results.json</code> programmatically rather than transcribed by eye.
+  Research and paper-trading only — the engine places no orders.
+</div>
+
+</body>
+</html>
