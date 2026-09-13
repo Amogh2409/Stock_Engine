@@ -181,26 +181,24 @@ def month_end_sessions(calendar, respect_holdout=True):
     return kept
 
 
-def score_on(book, ticker, date, bench_by_date, rsi_flip=False):
-    """The engine's technical score for one ticker as at `date`, or None.
+def technicals_on(book, ticker, date, bench_by_date):
+    """The engine's raw technical indicators for one ticker as at `date`, or None.
 
-    Only sessions up to and including `date` are passed in, so the score cannot
-    see the future. This calls the engine rather than reimplementing it: when
-    the scoring changes, the backtest measures the new scoring.
+    Lifted out of score_on so a cross-sectional scorer can reach the underlying
+    continuous values rather than the points they are thresholded into. score_on
+    still routes through it, so there is exactly one place that decides which
+    slice of history a ticker is scored on and both modes see the same slice.
+
+    Only sessions up to and including `date` are passed in, so nothing here can
+    see the future.
     """
     end = book.index_upto(ticker, date)
     if end is None:
-        # (None, None), not a bare None. Every other path here returns a
-        # 2-tuple, and callers unpack it; this guard kept its old scalar shape
-        # through the change and crashed the first real run on the first ticker
-        # that had not listed yet. No fixture caught it because every fixture
-        # gives every ticker every date -- a guard for absent data can only be
-        # exercised by absent data.
-        return None, None
+        return None
     series = book.history[ticker]
     upto = end + 1
     dates = series["dates"][:upto]
-    tech = E.compute_technical_indicators(
+    return E.compute_technical_indicators(
         series["closes"][:upto],
         [bench_by_date.get(d) for d in dates],
         series["volumes"][:upto],
@@ -209,6 +207,24 @@ def score_on(book, ticker, date, bench_by_date, rsi_flip=False):
         highs=series["highs"][:upto],
         lows=series["lows"][:upto],
     )
+
+
+def score_on(book, ticker, date, bench_by_date, rsi_flip=False):
+    """The engine's technical score for one ticker as at `date`, or None.
+
+    Only sessions up to and including `date` are passed in, so the score cannot
+    see the future. This calls the engine rather than reimplementing it: when
+    the scoring changes, the backtest measures the new scoring.
+    """
+    tech = technicals_on(book, ticker, date, bench_by_date)
+    if tech is None:
+        # (None, None), not a bare None. Every other path here returns a
+        # 2-tuple, and callers unpack it; this guard kept its old scalar shape
+        # through the change and crashed the first real run on the first ticker
+        # that had not listed yet. No fixture caught it because every fixture
+        # gives every ticker every date -- a guard for absent data can only be
+        # exercised by absent data.
+        return None, None
     # The function returns (score, breakdown, warnings, blocks). Element zero is
     # the composite total; element three is the per-block subtotals. Both are
     # returned now: the composite answers whether the total ranks returns, and
@@ -266,7 +282,145 @@ def _flip_rsi(total, blocks, tech):
     return E.round1(total - current + flipped["momentum"]), flipped
 
 
-def rank_on(book, date, bench_by_date, block=None, rsi_flip=False):
+# --- Continuous scoring, a measurement variant -----------------------------
+# The points model binarizes every feature it scores: "rsi14 > 50 -> 15 points"
+# makes RSI 51 and RSI 89 identical, and "relativeStrength6M > 0 -> 10 points"
+# throws away the difference between beating the index by 0.1% and by 80%. This
+# scores the same twelve quantities on their magnitudes instead.
+#
+# It keeps the engine's own weights -- the within-block weights ARE the point
+# awards, and the blocks combine at TECHNICAL_BLOCK_MAX -- so a difference
+# between the two measures thresholding alone. Rebuilding the weights at the
+# same time would confound the two and answer neither question.
+#
+# Implemented here and never in engine.py, for the reason --rsi-flip is: the
+# engine must keep scoring what it ships, and a cross-sectional score cannot be
+# mirrored into TypeScript anyway, because "the cross-section" there is whatever
+# CSV a user uploaded. Parity would assert equality between two different
+# quantities.
+
+# Fixed before any measurement was run and never tuned. Winsorising at all is a
+# judgement; 2.5% is the conventional choice and adopting a different one
+# because it improved an IC would be fitting. Recorded in the rulebook.
+WINSOR_TAIL = 0.025
+
+# (block, name, extractor, weight). The weight is the engine's own point award
+# for that feature, read off calculate_technical_score rather than off prose.
+# Every extractor is oriented so that larger is better, matching the direction
+# the points model awards in.
+CONTINUOUS_FEATURES = (
+    ("trend", "priceOverSma200", lambda t: _ratio(t.get("currentPrice"), t.get("sma200")), 12.0),
+    ("trend", "priceOverSma50", lambda t: _ratio(t.get("currentPrice"), t.get("sma50")), 8.0),
+    ("trend", "smaCross", lambda t: _ratio(t.get("sma50"), t.get("sma200")), 8.0),
+    ("trend", "adx14", lambda t: t.get("adx14"), 4.0),
+    ("trend", "distFrom52WHighPct", lambda t: t.get("distFrom52WHighPct"), 8.0),
+    ("momentum", "macdHistogramPct", lambda t: _pct_of_price(t.get("macdHistogram"),
+                                                             t.get("currentPrice")), 15.0),
+    ("momentum", "rsi14", lambda t: t.get("rsi14"), 15.0),
+    ("relStrength", "relativeStrength3M", lambda t: t.get("relativeStrength3M"), 5.0),
+    ("relStrength", "relativeStrength6M", lambda t: t.get("relativeStrength6M"), 10.0),
+    ("relStrength", "relativeStrength12M", lambda t: t.get("relativeStrength12M"), 5.0),
+    ("volume", "volumeRatio20D", lambda t: t.get("volumeRatio20D"), 5.0),
+    ("volume", "obvPressure20D", lambda t: t.get("obvPressure20D"), 5.0),
+)
+
+
+def _ratio(numerator, denominator):
+    """numerator/denominator - 1, or None. The engine stores only the boolean."""
+    if numerator is None or denominator is None or denominator == 0:
+        return None
+    return numerator / denominator - 1.0
+
+
+def _pct_of_price(value, price):
+    """The engine's own normalisation for the MACD histogram (percent of price)."""
+    if value is None or price is None or price == 0:
+        return None
+    return value / price * 100.0
+
+
+def _winsorised_z(values, tail=WINSOR_TAIL):
+    """Cross-sectional z-scores after clipping both tails. Ties are not broken.
+
+    Returns a list the same length as `values`, or None when the cross-section
+    has no spread -- in which case the feature orders nothing that month and
+    contributing zero is the honest answer rather than an arbitrary one.
+    """
+    n = len(values)
+    if n < 2:
+        return None
+    ordered = sorted(values)
+    # Index rather than interpolate: with ~90 names the difference is under one
+    # rank and an interpolated quantile is a second convention to keep in step
+    # with the TypeScript side if this ever moves.
+    cut = int(n * tail)
+    lo, hi = ordered[cut], ordered[n - 1 - cut]
+    clipped = [clamp_value(v, lo, hi) for v in values]
+    mean = sum(clipped) / n
+    variance = sum((v - mean) ** 2 for v in clipped) / (n - 1)
+    if variance <= 0:
+        return None
+    sd = math.sqrt(variance)
+    return [(v - mean) / sd for v in clipped]
+
+
+def clamp_value(value, low, high):
+    return low if value < low else (high if value > high else value)
+
+
+def continuous_scores(entries, block=None):
+    """{ticker: score} from [(ticker, tech)], scored on magnitudes not thresholds.
+
+    block=None gives the composite; naming one of TECHNICAL_BLOCK_MAX gives that
+    subtotal alone, so the blocks can be measured separately exactly as they are
+    for the points model.
+
+    Cross-sectional by construction, so it lives here rather than in score_on:
+    a z-score needs the whole cross-section at one date, and a per-ticker
+    function cannot see it.
+
+    A feature the engine could not compute for a ticker contributes zero -- the
+    cross-sectional mean -- rather than the minimum. The points model instead
+    awards nothing, which ranks "not measured" alongside "measured and bad".
+    rank_on already refuses that substitution for blocks, and the same reasoning
+    applies here: absent data is not evidence of a low value.
+    """
+    if not entries:
+        return {}
+    tickers = [ticker for ticker, _tech in entries]
+    zeros = {ticker: 0.0 for ticker in tickers}
+    block_weight = {block: 0.0 for block in E.TECHNICAL_BLOCK_MAX}
+    block_total = {block: dict(zeros) for block in E.TECHNICAL_BLOCK_MAX}
+    # NOT `for block, ...`: that shadows the `block` parameter, and after the
+    # loop every call would return whichever block came last in
+    # CONTINUOUS_FEATURES. It did, silently -- composite and all four blocks
+    # returned the volume subtotal, and the only symptom was that a fixture
+    # produced fewer distinct scores than the points model it was supposed to
+    # out-resolve.
+    for feature_block, _name, extract, weight in CONTINUOUS_FEATURES:
+        raw = [extract(tech) for _ticker, tech in entries]
+        present = [(i, v) for i, v in enumerate(raw) if v is not None]
+        if len(present) < 2:
+            continue
+        z = _winsorised_z([v for _i, v in present])
+        if z is None:
+            continue
+        block_weight[feature_block] += weight
+        for (index, _v), score in zip(present, z):
+            block_total[feature_block][tickers[index]] += weight * score
+    wanted = sorted(E.TECHNICAL_BLOCK_MAX) if block is None else [block]
+    out = {}
+    for ticker in tickers:
+        total = 0.0
+        for name in wanted:
+            if block_weight.get(name, 0.0) > 0:
+                total += (E.TECHNICAL_BLOCK_MAX[name]
+                          * block_total[name][ticker] / block_weight[name])
+        out[ticker] = total
+    return out
+
+
+def rank_on(book, date, bench_by_date, block=None, rsi_flip=False, continuous=False):
     """[(ticker, score)] for every ticker scoreable as at `date`, best first.
 
     Ties break on ticker ascending, the same rule the screener ranks by, so the
@@ -277,17 +431,41 @@ def rank_on(book, date, bench_by_date, block=None, rsi_flip=False):
     subtotal alone, which is how the blocks get measured separately: the
     composite is a weighted sum, and a near-zero result for the sum is
     consistent with one block carrying and another dragging by the same amount.
+
+    continuous=True scores magnitudes instead of thresholds (see
+    continuous_scores). Eligibility is decided by the ENGINE in both modes, so
+    the two rank the same companies and any difference between them is scoring
+    and not universe. ab_compare.py's docstring records what happens when that
+    does not hold: a minimum-session rule changed which companies were rankable,
+    and the comparison became part scoring and part universe with no way to
+    separate them afterwards.
     """
-    scored = []
-    for ticker in book.tickers():
-        score, blocks = score_on(book, ticker, date, bench_by_date, rsi_flip=rsi_flip)
-        if block is not None:
-            # A company with no block breakdown cannot be ranked on a block.
-            # Dropping it is right: substituting zero would rank "not measured"
-            # below every measured company, which is a claim nobody made.
-            score = None if not blocks else blocks.get(block)
-        if score is not None:
-            scored.append((ticker, score))
+    if continuous:
+        entries = []
+        for ticker in book.tickers():
+            tech = technicals_on(book, ticker, date, bench_by_date)
+            if tech is None:
+                continue
+            # The gate is the engine's own refusal, not a reimplementation of
+            # it. Reimplementing "is this scoreable" is how the two modes drift
+            # apart on the universe while both look correct in isolation.
+            gate = E.calculate_technical_score(tech, True)
+            total = gate[0] if isinstance(gate, tuple) else gate
+            if total is None:
+                continue
+            entries.append((ticker, tech))
+        scored = list(continuous_scores(entries, block=block).items())
+    else:
+        scored = []
+        for ticker in book.tickers():
+            score, blocks = score_on(book, ticker, date, bench_by_date, rsi_flip=rsi_flip)
+            if block is not None:
+                # A company with no block breakdown cannot be ranked on a block.
+                # Dropping it is right: substituting zero would rank "not
+                # measured" below every measured company, a claim nobody made.
+                score = None if not blocks else blocks.get(block)
+            if score is not None:
+                scored.append((ticker, score))
     scored.sort(key=lambda pair: (-pair[1], pair[0]))
     return scored
 
@@ -321,7 +499,7 @@ def hold_return(book, tickers, entry_date, exit_date):
 
 
 def run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per_side,
-                  rsi_flip=False):
+                  rsi_flip=False, continuous=False):
     """Monthly top-N by technical score, equal weighted, costs charged on turnover.
 
     Returns a list of per-period records. The period return is measured from the
@@ -337,7 +515,8 @@ def run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per
         exit_date = next_session(calendar, exit_signal)
         if entry_date is None or exit_date is None:
             break
-        ranked = rank_on(book, signal_date, bench_by_date, rsi_flip=rsi_flip)
+        ranked = rank_on(book, signal_date, bench_by_date, rsi_flip=rsi_flip,
+                         continuous=continuous)
         selected = [ticker for ticker, _score in ranked[:top_n]]
         if not selected:
             continue
@@ -897,7 +1076,7 @@ def _ic_statistics(series, family_size, hac_lag=0):
 
 
 def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORIZONS,
-                 block=None, family_size=None, rsi_flip=False):
+                 block=None, family_size=None, rsi_flip=False, continuous=False):
     """Forward returns by score decile, plus the rank correlation each month.
 
     If the top decile does not beat the bottom, the score does not rank future
@@ -934,7 +1113,8 @@ def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORI
         entry_date = next_session(calendar, signal_date)
         if entry_date is None:
             continue
-        ranked = rank_on(book, signal_date, bench_by_date, block=block, rsi_flip=rsi_flip)
+        ranked = rank_on(book, signal_date, bench_by_date, block=block, rsi_flip=rsi_flip,
+                         continuous=continuous)
         if len(ranked) < 10:
             continue
         for horizon in horizons:
@@ -1231,7 +1411,8 @@ def format_report(results):
 
 # --- Orchestration ---------------------------------------------------------
 def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PER_SIDE,
-             variants_tried=1, variants_note="", rsi_flip=False, respect_holdout=True):
+             variants_tried=1, variants_note="", rsi_flip=False, respect_holdout=True,
+             continuous=False):
     book = PriceBook(history)
     calendar = market_calendar(history)
     rebalances = month_end_sessions(calendar, respect_holdout=respect_holdout)
@@ -1239,7 +1420,7 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
     bench_by_date = dict(zip(bench["dates"], bench["closes"]))
 
     periods = run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per_side,
-                            rsi_flip=rsi_flip)
+                            rsi_flip=rsi_flip, continuous=continuous)
     equal = run_equal_weight(book, calendar, rebalances)
     index = run_benchmark_index(book, calendar, rebalances)
     # The composite, then each block on its own. backtest.py's own LIMITATIONS
@@ -1254,10 +1435,11 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
     block_names = sorted(E.TECHNICAL_BLOCK_MAX)
     family = len(DECILE_HORIZONS) * (1 + len(block_names))
     deciles = decile_study(book, calendar, rebalances, bench_by_date, family_size=family,
-                           rsi_flip=rsi_flip)
+                           rsi_flip=rsi_flip, continuous=continuous)
     block_deciles = {
         name: decile_study(book, calendar, rebalances, bench_by_date,
-                           block=name, family_size=family, rsi_flip=rsi_flip)
+                           block=name, family_size=family, rsi_flip=rsi_flip,
+                           continuous=continuous)
         for name in block_names
     }
 
@@ -1442,6 +1624,103 @@ class BacktestTests(unittest.TestCase):
         # which would place "not listed" above every company that scored badly.
         ranked = rank_on(book, early, bench)
         self.assertNotIn("LATE", [ticker for ticker, _ in ranked])
+
+    def test_continuous_mode_ranks_the_same_names_in_a_different_order(self):
+        # Two things must hold and only one is obvious.
+        #
+        # The flag must REACH the ranking: a parameter that is accepted and
+        # never used passes every grep ever written, which is why this asserts
+        # on behaviour rather than on the signature.
+        #
+        # And both modes must rank the SAME COMPANIES. ab_compare.py's docstring
+        # records the alternative: a minimum-session rule changed which names
+        # were rankable, so a comparison became part scoring and part universe
+        # with no way to separate them after the fact. A continuous score that
+        # quietly admits or drops names would reproduce that exactly, and the
+        # IC difference would be uninterpretable while looking fine.
+        dates = self._business_days(420, start="2018-01-01")
+        history = {}
+        for k in range(14):
+            drift = 0.06 if k % 2 else -0.04
+            history["T%02d" % k] = self._series(
+                dates, [100.0 + math.sin(i / (6.0 + k)) * 9.0 + i * drift
+                        for i in range(len(dates))])
+        history[E.BENCHMARK_SYMBOL] = self._series(
+            dates, [1000.0 + i * 0.08 for i in range(len(dates))])
+        book = PriceBook(history)
+        calendar = market_calendar(history)
+        bench = dict(zip(dates, history[E.BENCHMARK_SYMBOL]["closes"]))
+        date = month_end_sessions(calendar)[-1]
+
+        points = rank_on(book, date, bench)
+        continuous = rank_on(book, date, bench, continuous=True)
+        # Guard before asserting: on an empty or single-name ranking every
+        # comparison below passes while proving nothing.
+        self.assertGreater(len(points), 9)
+        self.assertEqual(sorted(t for t, _s in points),
+                         sorted(t for t, _s in continuous),
+                         "the two modes must score the same universe")
+        self.assertNotEqual([t for t, _s in points], [t for t, _s in continuous],
+                            "continuous scoring did not change the order")
+        # The points model ties heavily -- that is the defect being measured --
+        # so the continuous score must be strictly more discriminating, not just
+        # different. Equal-valued scores cannot order anything.
+        self.assertGreater(len({s for _t, s in continuous}),
+                           len({s for _t, s in points}))
+
+    def test_continuous_blocks_are_scored_separately(self):
+        # Each block must be reachable on its own, as it is for the points
+        # model, or the per-block table cannot be produced for this variant.
+        dates = self._business_days(420, start="2018-01-01")
+        history = {}
+        for k in range(12):
+            history["T%02d" % k] = self._series(
+                dates, [100.0 + math.cos(i / (5.0 + k)) * 7.0 + i * (0.05 if k % 3 else -0.03)
+                        for i in range(len(dates))])
+        history[E.BENCHMARK_SYMBOL] = self._series(
+            dates, [1000.0 + i * 0.06 for i in range(len(dates))])
+        book = PriceBook(history)
+        calendar = market_calendar(history)
+        bench = dict(zip(dates, history[E.BENCHMARK_SYMBOL]["closes"]))
+        date = month_end_sessions(calendar)[-1]
+        composite = rank_on(book, date, bench, continuous=True)
+        self.assertGreater(len(composite), 9)
+        orders = {}
+        for name in E.TECHNICAL_BLOCK_MAX:
+            ranked = rank_on(book, date, bench, block=name, continuous=True)
+            self.assertEqual(sorted(t for t, _s in ranked),
+                             sorted(t for t, _s in composite),
+                             "block %s ranked a different universe" % name)
+            orders[name] = tuple(t for t, _s in ranked)
+        # The universe check alone is VACUOUS and was: it passed for a whole
+        # revision in which `block` was shadowed by the feature loop variable,
+        # so every block returned the volume subtotal. Same universe, same
+        # order, same numbers, four different names. Asserting the blocks
+        # actually differ from each other is what catches that.
+        self.assertEqual(len(orders), len(E.TECHNICAL_BLOCK_MAX))
+        self.assertGreater(len(set(orders.values())), 1,
+                           "every block produced an identical ranking")
+
+    def test_winsorised_z_is_standardised_and_clips_both_tails(self):
+        # A z-score that is not actually standardised would silently reweight
+        # every feature by its raw units -- RSI spans 0-100, relative strength
+        # spans percentages, and a composite of unstandardised values is a
+        # composite of whichever feature happens to have the largest scale.
+        values = [float(i) for i in range(100)]
+        z = _winsorised_z(values)
+        self.assertEqual(len(z), len(values))
+        self.assertAlmostEqual(sum(z) / len(z), 0.0, places=12)
+        variance = sum(v * v for v in z) / (len(z) - 1)
+        self.assertAlmostEqual(variance, 1.0, places=12)
+        # An extreme outlier must not be able to dominate the cross-section.
+        # Without clipping this z would be ~9.9 (one point carrying the whole
+        # variance); clipped to the 97.5th percentile it lands near the top of
+        # the real distribution instead.
+        spiked = [float(i) for i in range(99)] + [1.0e9]
+        zs = _winsorised_z(spiked)
+        self.assertLess(max(zs), 3.0)
+        # No spread means the feature orders nothing; None, not a divide by zero.
+        self.assertIsNone(_winsorised_z([3.0] * 40))
 
     def test_the_rsi_flip_reaches_the_ranking_and_changes_it(self):
         # --rsi-flip must actually reach the ranking, not merely be accepted as
@@ -1722,6 +2001,14 @@ def main(argv=None):
     parser.add_argument("--variants-tried", type=int, default=1,
                         help="how many parameter variants were run in total, reported verbatim")
     parser.add_argument("--variants-note", default="No parameter was fitted to the data.")
+    parser.add_argument("--continuous", action="store_true",
+                        help="score the twelve technical features on their MAGNITUDES "
+                             "(winsorised cross-sectional z-scores, combined with the "
+                             "engine's own weights) instead of on the binary thresholds "
+                             "the shipped model uses. A measurement only: engine.py is "
+                             "untouched, so the shipped score is unchanged and the "
+                             "comparison isolates thresholding rather than confounding "
+                             "it with a reweighting.")
     parser.add_argument("--rsi-flip", action="store_true",
                         help="score rsi14 BELOW the momentum floor instead of above it "
                              "(rulebook open item 1). A measurement only: the shipped "
@@ -1745,6 +2032,11 @@ def main(argv=None):
         parser.error("--prices is required unless --self-test is given")
     history, skipped = E.parse_price_history_csv(Path(args.prices).read_text(encoding="utf-8"))
     print("Loaded %d tickers (%d rows skipped)." % (len(history), skipped))
+    if args.continuous:
+        print("CONTINUOUS SCORING: the twelve features are scored on magnitude "
+              "(winsorised z-scores at tail %.3f) rather than on threshold tests. "
+              "The engine's weights are unchanged, so this measures the cost of "
+              "binarizing and nothing else." % WINSOR_TAIL)
     if args.rsi_flip:
         print("RSI SIGN FLIPPED: scoring rsi14 below %s instead of above it. "
               "This measures the alternative; it does not change the engine."
@@ -1759,7 +2051,7 @@ def main(argv=None):
         print("*** final test described in knowledge/holdout.md, stop and record why. ***")
     results = backtest(history, args.top_n, args.cost_bps,
                        args.variants_tried, args.variants_note, rsi_flip=args.rsi_flip,
-                       respect_holdout=respect_holdout)
+                       respect_holdout=respect_holdout, continuous=args.continuous)
     report = format_report(results)
     print(report)
     if args.out_dir:
