@@ -325,7 +325,7 @@ explanations. The one clean test belongs to whichever variant survives Tier 1.
 **These twenty tests are not twenty independent looks, and that fact cuts both
 ways.** The blocks share constituents and the horizons overlap, so the tests are
 positively dependent. One consequence is that Bonferroni is conservative as a
-divisor, and a dependence-aware correction would land below 0.060. The other,
+divisor, and a dependence-aware correction would land below 0.198. The other,
 and the one that matters here, is that relative strength at 6 months is not a
 lone survivor among twenty independent looks: it is one face of a correlated
 cluster that also holds the same block at 3 months (+2.34) and at 12 months

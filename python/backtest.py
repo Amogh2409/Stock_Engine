@@ -1919,10 +1919,15 @@ class BacktestTests(unittest.TestCase):
             values = [float(i) for i in range(n - 1)] + [1.0e6]
             z = _winsorised_z(values)
             self.assertIsNotNone(z, "n=%d returned nothing" % n)
-            # Unclipped, the outlier sits at z ~ sqrt(n-1) and everything else is
-            # squashed against it. Clipped, it cannot exceed the next-highest
-            # point's standing.
-            self.assertLess(max(z), 3.0, "n=%d: the outlier was not clipped" % n)
+            # With one outlier and no clipping the maximum z is EXACTLY
+            # (n-1)/sqrt(n). A flat bound of 3.0 does not discriminate at n=10,
+            # where that value is 2.846 -- a quarter of this loop asserted
+            # nothing. Scaling to the unclipped value discriminates at every n
+            # by construction.
+            unclipped = (n - 1) / math.sqrt(n)
+            self.assertLess(max(z), unclipped * 0.9,
+                            "n=%d: the outlier was not clipped (max z %.4f, "
+                            "unclipped would be %.4f)" % (n, max(z), unclipped))
         # And the middle must survive: clipping must not flatten the spread.
         z30 = _winsorised_z([float(i) for i in range(29)] + [1.0e6])
         self.assertGreater(len({round(v, 9) for v in z30}), 20)
