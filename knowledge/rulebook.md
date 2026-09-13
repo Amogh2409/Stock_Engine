@@ -62,26 +62,138 @@ arbitrage regardless of company news, which makes single-stock price patterns
 erratic. His prescription is longer calculation periods, lower-frequency data,
 and markets tied closely to their fundamentals.
 
-This is consistent with what the backtest measured: rank IC −0.001 / +0.026 /
-+0.004 / +0.069 at 1/3/6/12 months, nothing surviving multiple-testing
-correction.
+## The shipped score has now been measured, and it does not rank returns
 
-**But be precise about which score those numbers describe, because it is not
-the one shipping today.** Commit `40f20e2` states it plainly: "What it found,
-against the five-check score this replaced (commit f62a110)". The ordering
-settles it — `f62a110` at 04:08, then `9939ba7` "Score the chart indicators
-instead of only computing them" at 04:39, then the backtest at 04:43, with 251
-insertions to `engine.py` between the first and the last. The scoring was
-replaced four minutes before the null result was committed.
+Measured 2026-09-13 against real prices: 266,432 rows, 101 tickers, 2015-01-01
+to 2026-09-11, monthly rebalance, next-day-open fills, 15 bps a side. This is
+the score described below, not a predecessor. Artefacts:
+`data-store/reports/backtest_blocks/` (gitignored; re-runs in ~90s from the
+cached price file).
 
-So the honest status of the current technical score is **unmeasured**, not
-measured-and-found-absent. Those are different claims and the weaker one is
-ours. The null result remains the best evidence available and it is evidence
-against the *approach*; it is not a measurement of the rules described below.
-Anyone citing −0.001/+0.069 as this engine's IC is citing a predecessor's.
+**The clean null.** At the 1-month horizon the composite scores
+**IC −0.0015, t −0.09, n = 130, p 1.000** after Bonferroni across the 20 tests
+in the family. The smallest IC that sample could detect at 80% power is
+**0.046**, so this is a powered null and not an absence of evidence.
 
-Keep that in view when reading the per-rule detail — sourcing a rule says the
-indicator is real, not that our use of it earns anything.
+One month carries the whole argument, and the reason is structural. A 1-month
+forward return sampled monthly **cannot overlap**, so the overlapping and
+non-overlapping estimates coincide exactly (both t −0.09 on n 130). Every
+longer horizon must choose: sample every rebalance and reuse (h−1)/h of each
+window, inflating t; or keep one phase offset in h and discard the rest,
+collapsing n. Neither is a second opinion.
+
+| Horizon | IC (non-overlapping) | t | n | p (Bonferroni/20) | detectable at 80% |
+| --- | --- | --- | --- | --- | --- |
+| 1 month | −0.0015 | −0.09 | 130 | 1.000 | 0.046 |
+| 3 months | +0.0481 | +2.46 | 43 | 0.358 | 0.056 |
+| 6 months | +0.0278 | +0.82 | 21 | 1.000 | 0.100 |
+| 12 months | +0.0843 | +2.05 | 10 | 1.000 | 0.128 |
+
+**Read the long horizons as unmeasurable, not as weak evidence.** At 12 months
+the independent sample is n = 10 and cannot detect an IC below 0.128 — several
+times any plausible cross-sectional effect, which is roughly 0.02 to 0.05. A
+null there says the test could not see, not that nothing is there. The 3-month
+figure is the most quotable number in the run and it is an artefact: its sign
+**flips** against the overlapping estimate (+2.46 versus −0.11), which is the
+signature of a phase offset rather than a signal.
+
+### No block carries it
+
+A near-zero total is equally consistent with four dead blocks and with two that
+cancel. Ranking on each subtotal alone settles it. At 1 month — the only
+horizon with real power — every block sits inside its own detection floor:
+
+| Block | IC | t | detectable at 80% |
+| --- | --- | --- | --- |
+| Trend (40) | +0.0035 | +0.21 | 0.048 |
+| Momentum (30) | −0.0126 | −0.96 | 0.037 |
+| Relative strength (20) | +0.0140 | +0.88 | 0.045 |
+| Volume (10) | −0.0126 | −1.07 | 0.033 |
+
+Four flat blocks. Nothing is being cancelled out, so no reweighting recovers an
+edge that is not there — which is what makes `technical_weight_pct = 40`
+unearned rather than merely unvalidated.
+
+**Distrust the overlapping column specifically.** Sign flips fire on composite
+3m, momentum 3m, momentum 6m and volume 3m. Worse, the flag catches sign
+changes but not magnitude collapse of the same sign: relative strength at 6
+months reads t +3.52 overlapping and +0.91 independent, and at 12 months +3.42
+against +2.06. Read the overlapping column alone and relative strength is the
+block that works; it is the block with the largest inflation.
+
+### The portfolio, and two numbers that are not findings
+
+Top 20 against equal-weighting the same 100 names: **20.40% versus 21.15%**
+over the full period, **17.28% versus 20.18%** in sample. It beat equal weight
+in **4 of 12 calendar years**, and **1 of 7 in sample** — losing 2021 by 19.50
+points and 2017 by 14.59. Turnover 754%.
+
+The out-of-sample **24.78% versus 22.63%** is not evidence. That window was
+already used to revise this engine, and TSaM p. 917 is explicit: once the
+out-of-sample data has been used you cannot fix anything, because what comes
+back is overfitting. At 754% turnover it is negative after Indian STCG in any
+case. The 3-month t +2.46 is not evidence either, for the reason above.
+
+### The RSI sign was tested both ways. Neither is adopted.
+
+Open item 1 asked whether the RSI comparison is backwards — whether scoring
+`rsi14 < 50` (mean reversion) beats `> 50` (continuation). Both were measured
+on the same data, via a `--rsi-flip` switch in the backtest; `RSI_MOMENTUM_FLOOR`
+itself was never touched, because changing the shipped comparison would be
+adoption rather than measurement.
+
+Composite, non-overlapping, shipped → flipped:
+
+| Horizon | Shipped | Flipped | Detectable at 80% |
+| --- | --- | --- | --- |
+| 1 month | −0.0015 (t −0.09) | +0.0059 (t +0.39) | 0.046 |
+| 3 months | +0.0481 (t +2.46) | +0.0430 (t +2.01) | 0.056 / 0.061 |
+| 6 months | +0.0278 (t +0.82) | +0.0081 (t +0.26) | 0.100 / 0.092 |
+| 12 months | +0.0843 (t +2.05) | +0.0520 (t +1.18) | 0.128 / 0.136 |
+
+At the only powered horizon both signs sit inside the detection floor. **No
+cell in either run clears Bonferroni**, across all 40 tested. The flip does not
+make the score rank.
+
+**The momentum reversal is mechanical, not empirical.** In the momentum block
+the 12-month IC goes from +0.0848 (t +2.43) to −0.1055 (t −3.12), which looks
+like the strongest signal anywhere in this work. It is an artefact of the
+experiment's own construction: flipping the comparison inverts part of that
+block by definition, so shipped and flipped momentum are partly the same series
+negated. A sign reversal there is guaranteed by the arithmetic. The surprising
+result would have been no change. It also rests on n = 10 against a 0.108 floor.
+
+**The portfolio difference is the number that will tempt someone, so here it is
+with its refutation attached.** Flipped beats equal-weighting in all three
+windows, where the shipped sign loses two of three:
+
+| Window | Shipped | Flipped | Equal weight |
+| --- | --- | --- | --- |
+| Full | 20.40% | 22.88% | 21.15% |
+| In sample | 17.28% | 20.46% | 20.18% |
+| Out of sample | 24.78% | 26.26% | 22.63% |
+
+Turnover falls from 754% to 720%. That table reads like a discovery and is not
+one. The 1-month rank IC under it is **+0.0059** — no ranking signal. With an
+IC of essentially zero the top-20 composition is noise, so what changed is
+which twenty names the noise happened to select, plus whatever volatility tilt
+comes from preferring low-RSI stocks. A portfolio result with no IC beneath it
+is a story about twenty draws, not about a rule.
+
+And it is a second variant measured on a window already spent revising this
+engine, which makes adopting it the feedback failure twice over. Both signs are
+recorded; neither is adopted; the shipped comparison stays where it is until
+data nobody has examined says otherwise.
+
+**Historical note, so nobody re-derives it.** An earlier null (IC −0.001 /
++0.026 / +0.004 / +0.069) circulated as this engine's result. It was not:
+commit `40f20e2` says it measured "the five-check score this replaced (commit
+f62a110)", and `9939ba7` replaced the scoring four minutes before that commit
+landed. Those figures describe a predecessor. The ones above describe what
+ships.
+
+Keep all of this in view when reading the per-rule detail — sourcing a rule
+says the indicator is real, not that our use of it earns anything.
 
 ---
 
