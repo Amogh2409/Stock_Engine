@@ -852,8 +852,22 @@ def _ic_statistics(series, family_size, hac_lag=0):
     # so 2.8 understates the detectable effect by about a tenth -- at precisely
     # the horizon where a reader is likeliest to read no-power as no-effect,
     # which is the misreading this figure exists to prevent.
-    detectable = ((_t_critical(n - 1) + Z_FOR_80_PERCENT_POWER) * spread / math.sqrt(n)) \
-        if n > 1 and spread == spread and spread > 0 else float("nan")
+    #
+    # The floor must use the SAME standard error as the t-statistic it is read
+    # beside, and for an overlapping series that is the HAC one. Tier 0 moved
+    # the t to Newey-West and left this figure on the i.i.d. SE, which is the
+    # estimator Tier 0 exists to say is invalid here. The cost was not small:
+    # at 6 months the published floor read 0.0478 where the honest figure is
+    # 0.0607, understating it by 27%.
+    #
+    # The direction matters more than the size. An understated floor makes the
+    # test look better powered than it is, which makes a null look more
+    # conclusive than it is -- the same error as the "powered null" overclaim
+    # this very figure was added to prevent. A number that guards against an
+    # overclaim is worth checking for the overclaim it guards against.
+    inference_se = hac_se if hac_lag > 0 else (spread / math.sqrt(n) if n > 0 else float("nan"))
+    detectable = ((_t_critical(n - 1) + Z_FOR_80_PERCENT_POWER) * inference_se) \
+        if n > 1 and inference_se == inference_se and inference_se > 0 else float("nan")
     return {
         "mean_ic": mean_ic,
         "ic_periods": n,
@@ -1537,6 +1551,41 @@ class BacktestTests(unittest.TestCase):
         ar_sd = math.sqrt(sum((v - m) ** 2 for v in ar) / (len(ar) - 1))
         ar_iid = ar_sd / math.sqrt(len(ar))
         self.assertGreater(_newey_west_se(ar, 11), ar_iid * 1.5)
+
+    def test_the_detection_floor_uses_the_same_standard_error_as_the_t(self):
+        # A floor computed from an i.i.d. SE beside a t computed from a HAC one
+        # is not a pair of numbers about the same test. On the real pre-holdout
+        # file the 6-month floor read 0.0478 where the honest figure is 0.0607:
+        # understated by 27%, in the direction that makes a null look more
+        # conclusive than the data supports.
+        # An AR(1) with phi=0.8, the same construction the HAC test above uses.
+        # A first attempt built the series from sin(i * 1.7), which oscillates
+        # fast enough to be NEGATIVELY autocorrelated -- the guard below caught
+        # it, which is the only reason this test is not quietly backwards.
+        rng = random.Random(4242)
+        series, prev = [], 0.0
+        for _ in range(200):
+            prev = 0.8 * prev + rng.gauss(0.0, 1.0)
+            series.append(prev)
+        n = len(series)
+        mean = sum(series) / n
+        spread = math.sqrt(sum((v - mean) ** 2 for v in series) / (n - 1))
+        iid_floor = (_t_critical(n - 1) + Z_FOR_80_PERCENT_POWER) * spread / math.sqrt(n)
+
+        overlapping = _ic_statistics(series, family_size=1, hac_lag=11)
+        # Guard: if the fixture were not actually autocorrelated the two SEs
+        # would coincide and every assertion below would pass without
+        # distinguishing the fix from the defect.
+        self.assertGreater(overlapping["hac_se"], spread / math.sqrt(n))
+        hac_floor = (_t_critical(n - 1) + Z_FOR_80_PERCENT_POWER) * overlapping["hac_se"]
+        self.assertAlmostEqual(overlapping["detectable_ic_80pct"], hac_floor, places=12)
+        self.assertGreater(overlapping["detectable_ic_80pct"] - iid_floor, 1e-4)
+
+        # At lag 0 there is no overlap to correct for, so the floor stays on the
+        # sample standard deviation and the published non-overlapping figures
+        # are unaffected.
+        independent = _ic_statistics(series, family_size=1, hac_lag=0)
+        self.assertAlmostEqual(independent["detectable_ic_80pct"], iid_floor, places=12)
 
     def test_the_stationary_bootstrap_is_reproducible_and_sane(self):
         # Reproducibility is not decoration in this repository: a confidence
