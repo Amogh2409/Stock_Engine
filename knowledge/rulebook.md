@@ -243,8 +243,48 @@ index; TSaM's "relative strength" discussions concern Wilder's RSI, a different
 thing sharing a name. The 6-month emphasis and the 5/10/5 split are ours.
 
 This is the block with the strongest outside literature behind it (the
-cross-sectional momentum effect) and the weakest support *in this repo*. Worth
-sourcing properly from a book we actually have, or demoting.
+cross-sectional momentum effect) and the weakest support *in this repo*.
+
+### The two-point form — the one citation this block has, and it is a criticism
+
+`_relative_strength()` is a **two-point** calculation. It takes the stock and the
+benchmark close at `pairs[-sessions]` and at `pairs[-1]`, turns each into a
+simple return, and subtracts. Everything between the two endpoints is discarded.
+
+TSaM p. 851 lists exactly this form as its first volatility measure — the change
+in price over n days — and p. 852 states the objection: such a measure depends
+entirely on its two points regardless of the price activity between them, so a
+series that moved violently but ended near where it began registers as nothing.
+
+Two honesty notes about that citation. Kaufman is criticising the form as a
+*volatility* measure, not as a relative-strength measure; what transfers is the
+structural argument about two-endpoint statistics, not a claim he made about
+this rule. And a source that criticises the construction does **not** promote
+the block out of Convention — the 5/10/5 split, the `> 0` threshold and the
+choice of windows remain unsourced. What the block now has is one citation, and
+it argues against how the number is built.
+
+The practical consequence: two companies with identical 6-month relative
+strength may have arrived there completely differently, one grinding steadily
+ahead and one round-tripping a crash. The engine scores them the same and cannot
+tell them apart, because the measurement discards the evidence that would.
+
+### Sector-relative strength — a diagnostic, not points
+
+Measured against a broad index, this block cannot distinguish a company that
+outran its peers from one carried by a hot sector: a pharma name beating the
+Nifty while every pharma name beats it has shown nothing about itself. Since
+736899c the engine also reports the 6-month figure minus the median of the
+company's own sector peers, bucketed by industry, then coarse group, then
+universe, under the same `MIN_MEDIAN_SAMPLE` floor and the same rule that the
+basis text must name whichever bucket actually answered.
+
+It earns **no points**, deliberately. The block is already 20 points resting on
+convention, and the backtest found the technical score does not rank forward
+returns, so a second unsourced scoring rule would be moving the wrong way. It is
+computed after scoring, so it structurally cannot reach a score. And nothing
+validates it: the A/B cannot test it, for the feedback reason under **Testing
+methodology** below. It is a better question asked, not a measured improvement.
 
 ## Volume — 10 points
 
@@ -486,5 +526,9 @@ Ranked by value, cheapest first where value ties.
 6. **Reconsider ADX as a gate** on the trend block rather than 4 points beside
    it, per TSaM p. 310 — and find the Directional Movement section in Chapter 23
    to source the threshold.
-7. **Source or demote the relative-strength block.** 20 points currently rest on
-   convention alone.
+7. **Decide what the relative-strength points are for.** The block now has one
+   citation (TSaM pp. 851–852) and it argues against the two-point form the
+   engine uses, so the 20 points still rest on convention alone. The peer-
+   relative diagnostic added in 736899c asks the better question without scoring
+   it; whether it should replace the index comparison rather than sit beside it
+   is the part still open.
