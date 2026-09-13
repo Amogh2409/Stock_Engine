@@ -97,7 +97,7 @@ cells that overlap had inflated (relative strength at 6 months falls from
 i.i.d. t +4.67 to +3.06) and restores power where discarding overlap had
 destroyed it. On the pre-holdout window the composite reads:
 
-| Horizon | IC | n | i.i.d. t | HAC t | bootstrap t | p (corrected) |
+| Horizon (pre-holdout window) | IC | n | i.i.d. t | HAC t | bootstrap t | p (corrected) |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 month | −0.0060 | 86 | −0.29 | −0.29 | −0.30 | 1.000 |
 | 3 months | +0.0157 | 84 | +0.89 | +0.85 | +0.94 | 1.000 |
@@ -180,14 +180,16 @@ adoption rather than measurement.
 > Re-running it on the pre-holdout window is the only way to get comparable
 > numbers, and nothing turns on having them.
 
-Composite, non-overlapping, shipped → flipped:
+Composite, non-overlapping, shipped → flipped. The window is repeated in every
+row rather than stated once above the table, so no row can be lifted without
+carrying the basis it was measured on:
 
-| Horizon | Shipped | Flipped | Detectable at 80% |
+| Horizon (full span, pre-alignment) | Shipped | Flipped | Detectable at 80% |
 | --- | --- | --- | --- |
-| 1 month | −0.0015 (t −0.09) | +0.0059 (t +0.39) | 0.046 |
-| 3 months | +0.0481 (t +2.46) | +0.0430 (t +2.01) | 0.056 / 0.061 |
-| 6 months | +0.0278 (t +0.82) | +0.0081 (t +0.26) | 0.100 / 0.092 |
-| 12 months | +0.0843 (t +2.05) | +0.0520 (t +1.18) | 0.128 / 0.136 |
+| 1 month — full span, incl. reserved | −0.0015 (t −0.09) | +0.0059 (t +0.39) | 0.046 |
+| 3 months — full span, incl. reserved | +0.0481 (t +2.46) | +0.0430 (t +2.01) | 0.056 / 0.061 |
+| 6 months — full span, incl. reserved | +0.0278 (t +0.82) | +0.0081 (t +0.26) | 0.100 / 0.092 |
+| 12 months — full span, incl. reserved | +0.0843 (t +2.05) | +0.0520 (t +1.18) | 0.128 / 0.136 |
 
 At the only powered horizon both signs sit inside the detection floor. **No
 cell in either run clears Bonferroni**, across all 40 tested. The flip does not
@@ -201,18 +203,23 @@ block by definition, so shipped and flipped momentum are partly the same series
 negated. A sign reversal there is guaranteed by the arithmetic. The surprising
 result would have been no change. It also rests on n = 10 against a 0.108 floor.
 
-**The portfolio difference is the number that will tempt someone, so here it is
-with its refutation attached.** Flipped beats equal-weighting in all three
-windows, where the shipped sign loses two of three:
+**The portfolio difference is the number that will tempt someone, so it is
+written into the sentence that refutes it rather than set out in a table.**
+Over the full 2015–2026 span, on 130 strategy months against a 139-month
+benchmark and with reserved data included — so on a basis nothing else in this
+file uses and none of it comparable to the figures above — flipping the sign
+returned 22.88% against the shipped 20.40% and equal-weighting's 21.15%,
+in-sample 20.46% against 17.28% and 20.18%, with turnover falling from 754% to
+720%.
 
-| Window | Shipped | Flipped | Equal weight |
-| --- | --- | --- | --- |
-| Full | 20.40% | 22.88% | 21.15% |
-| In sample | 17.28% | 20.46% | 20.18% |
-| Out of sample | 24.78% | 26.26% | 22.63% |
+Those numbers are in prose deliberately. As a table they were a self-contained
+block that survived copy-paste while the caveat above them did not, which is the
+same defect this file rejects elsewhere: a warning that can be separated from
+the number by copying one row is not a warning. The defect now travels inside
+the same sentence as the figure.
 
-Turnover falls from 754% to 720%. That table reads like a discovery and is not
-one. The 1-month rank IC under it is **+0.0059** — no ranking signal. With an
+It reads like a discovery and is not one. The 1-month rank IC under it is
+**+0.0059** — no ranking signal. With an
 IC of essentially zero the top-20 composition is noise, so what changed is
 which twenty names the noise happened to select, plus whatever volatility tilt
 comes from preferring low-RSI stocks. A portfolio result with no IC beneath it
