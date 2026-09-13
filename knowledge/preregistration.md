@@ -210,3 +210,36 @@ so. Learning that here is cheaper than learning it after the window is gone.
 
 When it is run, append below: the date, the command, `mean_ic`, `hac_t`, the
 bootstrap CI, the verdict against §5, and the conclusion actually drawn.
+
+---
+
+## 9. Amendment log
+
+Appended, never rewritten. Sections 1–8 are as originally committed at `2536a0d`.
+
+### 2026-09-14 — the engine's relative-strength window changed
+
+`engine.py` now skips the most recent month in relative strength
+(`RELATIVE_STRENGTH_SKIP_SESSIONS`), sourced for the 12-month leg by CFA
+`rf-v2016-n4-1#71`. §1 says "engine.py is untouched", which was true when
+written and is no longer.
+
+**The pre-registered cell is unaffected, and this was verified, not assumed.**
+Rung C regenerated on the changed engine:
+
+| | before | after |
+| --- | --- | --- |
+| momentum / trend / volume blocks | — | **bit-identical** |
+| scoreable universe, all 86 periods | — | identical |
+| momentum 1m `mean_ic` | −0.040666455273968276 | −0.040666455273968276 |
+| momentum 1m `hac_t` | −3.0475295241371669 | −3.0475295241371669 |
+| bootstrap CI | [−0.067347, −0.015366] | [−0.067347, −0.015366] |
+| relStrength 6m (the change is live) | +0.0413 | +0.0485 |
+
+`test_relative_strength_cannot_disturb_the_preregistered_cell` asserts it, with a
+guard that the fixture actually moves relative strength.
+
+**Nothing in §§1–7 changes**: not the cell, not the prediction, not the decision
+rule, not the power analysis. The features named in §1 are still the engine's
+twelve; one of them is now measured over a window a source states. The holdout
+test remains **NOT RUN**.

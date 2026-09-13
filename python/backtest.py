@@ -182,8 +182,14 @@ def month_end_sessions(calendar, respect_holdout=True):
     return kept
 
 
-def _apply_skip_month(tech, closes_raw, bench_raw):
-    """Rewrite relative strength to measure t-12..t-2 instead of t-12..t-1.
+def _apply_no_skip_month(tech, closes_raw, bench_raw):
+    """Rewrite relative strength back to t-h..t-1, the pre-2026-09-14 window.
+
+    The ENGINE now skips the most recent month by default (see
+    E.RELATIVE_STRENGTH_SKIP_SESSIONS), because CFA rf-v2016-n4-1#71 sources the
+    2-12 construction. This flag restores the old window so the change remains
+    measurable from the harness, exactly as --rsi-flip keeps the other side of
+    the RSI question measurable. It does not edit the engine.
 
     Short-horizon reversal contaminates the most recent month, which is why the
     academic momentum construction (Jegadeesh-Titman) skips it. The engine
@@ -205,18 +211,14 @@ def _apply_skip_month(tech, closes_raw, bench_raw):
         return
     bench = E._align_to_end([E._finite_or_nan(v) for v in bench_raw], n, float("nan"))
     pairs = [(closes[i], bench[i]) for i in valid if not math.isnan(bench[i])]
-    skip = E.SESSIONS_1_MONTH
-    if len(pairs) <= skip:
-        return
-    shortened = pairs[:-skip]
     for key, sessions in (("relativeStrength3M", E.SESSIONS_3_MONTH),
                           ("relativeStrength6M", E.SESSIONS_6_MONTH),
                           ("relativeStrength12M", E.SESSIONS_12_MONTH)):
-        tech[key] = E._relative_strength(shortened, sessions - skip)
+        tech[key] = E._relative_strength(pairs, sessions)
     tech["available"]["relativeStrength6M"] = tech["relativeStrength6M"] is not None
 
 
-def technicals_on(book, ticker, date, bench_by_date, skip_month=False):
+def technicals_on(book, ticker, date, bench_by_date, no_skip_month=False):
     """The engine's raw technical indicators for one ticker as at `date`, or None.
 
     Lifted out of score_on so a cross-sectional scorer can reach the underlying
@@ -243,19 +245,19 @@ def technicals_on(book, ticker, date, bench_by_date, skip_month=False):
         highs=series["highs"][:upto],
         lows=series["lows"][:upto],
     )
-    if skip_month:
-        _apply_skip_month(tech, series["closes"][:upto], bench_raw)
+    if no_skip_month:
+        _apply_no_skip_month(tech, series["closes"][:upto], bench_raw)
     return tech
 
 
-def score_on(book, ticker, date, bench_by_date, rsi_flip=False, skip_month=False):
+def score_on(book, ticker, date, bench_by_date, rsi_flip=False, no_skip_month=False):
     """The engine's technical score for one ticker as at `date`, or None.
 
     Only sessions up to and including `date` are passed in, so the score cannot
     see the future. This calls the engine rather than reimplementing it: when
     the scoring changes, the backtest measures the new scoring.
     """
-    tech = technicals_on(book, ticker, date, bench_by_date, skip_month=skip_month)
+    tech = technicals_on(book, ticker, date, bench_by_date, no_skip_month=no_skip_month)
     if tech is None:
         # (None, None), not a bare None. Every other path here returns a
         # 2-tuple, and callers unpack it; this guard kept its old scalar shape
@@ -675,7 +677,7 @@ def neutralise(scores, buckets, sizes):
 
 
 def rank_on(book, date, bench_by_date, block=None, rsi_flip=False, continuous=False,
-            neutral=False, skip_month=False, sectors=None):
+            neutral=False, no_skip_month=False, sectors=None):
     """[(ticker, score)] for every ticker scoreable as at `date`, best first.
 
     Ties break on ticker ascending, the same rule the screener ranks by, so the
@@ -700,7 +702,7 @@ def rank_on(book, date, bench_by_date, block=None, rsi_flip=False, continuous=Fa
         points_blocks = {}
         for ticker in book.tickers():
             tech = technicals_on(book, ticker, date, bench_by_date,
-                                 skip_month=skip_month)
+                                 no_skip_month=no_skip_month)
             if tech is None:
                 continue
             # The gate is the engine's own refusal, not a reimplementation of
@@ -721,7 +723,7 @@ def rank_on(book, date, bench_by_date, block=None, rsi_flip=False, continuous=Fa
         scored = []
         for ticker in book.tickers():
             score, blocks = score_on(book, ticker, date, bench_by_date,
-                                     rsi_flip=rsi_flip, skip_month=skip_month)
+                                     rsi_flip=rsi_flip, no_skip_month=no_skip_month)
             if block is not None:
                 # A company with no block breakdown cannot be ranked on a block.
                 # Dropping it is right: substituting zero would rank "not
@@ -778,7 +780,7 @@ def hold_return(book, tickers, entry_date, exit_date):
 
 
 def run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per_side,
-                  rsi_flip=False, continuous=False, neutral=False, skip_month=False,
+                  rsi_flip=False, continuous=False, neutral=False, no_skip_month=False,
                   sectors=None):
     """Monthly top-N by technical score, equal weighted, costs charged on turnover.
 
@@ -797,7 +799,7 @@ def run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per
             break
         ranked = rank_on(book, signal_date, bench_by_date, rsi_flip=rsi_flip,
                          continuous=continuous, neutral=neutral,
-                         skip_month=skip_month, sectors=sectors)
+                         no_skip_month=no_skip_month, sectors=sectors)
         selected = [ticker for ticker, _score in ranked[:top_n]]
         if not selected:
             continue
@@ -1424,7 +1426,7 @@ def _ic_statistics(series, family_size, hac_lag=0):
 
 def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORIZONS,
                  block=None, family_size=None, rsi_flip=False, continuous=False,
-                 neutral=False, skip_month=False, sectors=None):
+                 neutral=False, no_skip_month=False, sectors=None):
     """Forward returns by score decile, plus the rank correlation each month.
 
     If the top decile does not beat the bottom, the score does not rank future
@@ -1463,7 +1465,7 @@ def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORI
             continue
         ranked = rank_on(book, signal_date, bench_by_date, block=block, rsi_flip=rsi_flip,
                          continuous=continuous, neutral=neutral,
-                         skip_month=skip_month, sectors=sectors)
+                         no_skip_month=no_skip_month, sectors=sectors)
         if len(ranked) < 10:
             continue
         for horizon in horizons:
@@ -1761,7 +1763,7 @@ def format_report(results):
 # --- Orchestration ---------------------------------------------------------
 def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PER_SIDE,
              variants_tried=1, variants_note="", rsi_flip=False, respect_holdout=True,
-             continuous=False, neutral=False, skip_month=False):
+             continuous=False, neutral=False, no_skip_month=False):
     book = PriceBook(history)
     calendar = market_calendar(history)
     rebalances = month_end_sessions(calendar, respect_holdout=respect_holdout)
@@ -1778,7 +1780,7 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
             "no-op wearing the name of a treatment." % SECTOR_SOURCE)
     periods = run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per_side,
                             rsi_flip=rsi_flip, continuous=continuous, neutral=neutral,
-                            skip_month=skip_month, sectors=sectors)
+                            no_skip_month=no_skip_month, sectors=sectors)
     equal = run_equal_weight(book, calendar, rebalances)
     index = run_benchmark_index(book, calendar, rebalances)
     # The composite, then each block on its own. backtest.py's own LIMITATIONS
@@ -1794,12 +1796,12 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
     family = len(DECILE_HORIZONS) * (1 + len(block_names))
     deciles = decile_study(book, calendar, rebalances, bench_by_date, family_size=family,
                            rsi_flip=rsi_flip, continuous=continuous, neutral=neutral,
-                           skip_month=skip_month, sectors=sectors)
+                           no_skip_month=no_skip_month, sectors=sectors)
     block_deciles = {
         name: decile_study(book, calendar, rebalances, bench_by_date,
                            block=name, family_size=family, rsi_flip=rsi_flip,
                            continuous=continuous, neutral=neutral,
-                           skip_month=skip_month, sectors=sectors)
+                           no_skip_month=no_skip_month, sectors=sectors)
         for name in block_names
     }
 
@@ -2107,10 +2109,12 @@ class BacktestTests(unittest.TestCase):
             # blocks would agree on spread and carry no information.
             self.assertGreater(len({round(v, 9) for v in got.values()}), 1)
 
-    def test_skip_month_measures_the_window_it_claims(self):
-        # t-12 to t-2, not t-13 to t-1. The START stays anchored and only the END
-        # moves back a month; shifting the whole window would be a different
-        # quantity. Checked against the value computed by hand from the series.
+    def test_the_engine_skips_the_month_and_the_flag_restores_it(self):
+        # The ENGINE now measures t-h to t-2 by default (CFA rf-v2016-n4-1#71).
+        # --no-skip-month restores t-h to t-1 so the change stays measurable.
+        # The START stays anchored and only the END moves; shifting the whole
+        # window would give t-13 to t-1, a different quantity. Both windows are
+        # checked against values computed by hand from the series.
         dates = self._business_days(400, start="2018-01-01")
         prices = [100.0 + i * 0.3 + math.sin(i / 11.0) * 6.0 for i in range(len(dates))]
         bench = [1000.0 + i * 0.2 for i in range(len(dates))]
@@ -2120,9 +2124,10 @@ class BacktestTests(unittest.TestCase):
         bench_by_date = dict(zip(dates, bench))
         date = dates[-1]
 
-        plain = technicals_on(book, "AAA", date, bench_by_date)
-        skipped = technicals_on(book, "AAA", date, bench_by_date, skip_month=True)
-        skip = E.SESSIONS_1_MONTH
+        shipped = technicals_on(book, "AAA", date, bench_by_date)
+        restored = technicals_on(book, "AAA", date, bench_by_date, no_skip_month=True)
+        skip = E.RELATIVE_STRENGTH_SKIP_SESSIONS
+        self.assertEqual(skip, E.SESSIONS_1_MONTH)
 
         for key, sessions in (("relativeStrength3M", E.SESSIONS_3_MONTH),
                               ("relativeStrength6M", E.SESSIONS_6_MONTH),
@@ -2134,13 +2139,54 @@ class BacktestTests(unittest.TestCase):
             # The skip-month window: same start, end one month earlier.
             expected_skip = ((prices[-1 - skip] - start_price) / start_price
                              - (bench[-1 - skip] - start_bench) / start_bench) * 100.0
-            self.assertAlmostEqual(plain[key], expected_plain, places=9, msg=key)
-            self.assertAlmostEqual(skipped[key], expected_skip, places=9, msg=key)
+            # Shipped behaviour is now the SKIPPED window.
+            self.assertAlmostEqual(shipped[key], expected_skip, places=9, msg=key)
+            # The flag restores the old one.
+            self.assertAlmostEqual(restored[key], expected_plain, places=9, msg=key)
             # Guard: the two windows must actually differ on this fixture.
             self.assertGreater(abs(expected_plain - expected_skip), 1e-6, key)
         # Nothing outside relative strength may move.
         for key in ("rsi14", "adx14", "macdHistogram", "volumeRatio20D", "sma200"):
-            self.assertEqual(plain[key], skipped[key], key)
+            self.assertEqual(shipped[key], restored[key], key)
+
+    def test_relative_strength_cannot_disturb_the_preregistered_cell(self):
+        # knowledge/preregistration.md names one cell: the MOMENTUM block at
+        # 1 month, rung C. Changing relative strength in the engine must leave it
+        # bit-identical, or the pre-registration is invalidated before it is ever
+        # run. Momentum is MACD + RSI and neutralisation residualises on sector
+        # and liquidity, so nothing in that path reads relative strength -- but
+        # that is an argument, and this is the assertion.
+        dates = self._business_days(420, start="2018-01-01")
+        history = {}
+        for k in range(14):
+            history["T%02d" % k] = self._series(
+                dates, [100.0 + math.sin(i / (6.0 + k)) * 9.0 + i * (0.06 if k % 2 else -0.04)
+                        for i in range(len(dates))])
+        history[E.BENCHMARK_SYMBOL] = self._series(
+            dates, [1000.0 + i * 0.08 for i in range(len(dates))])
+        book = PriceBook(history)
+        calendar = market_calendar(history)
+        bench = dict(zip(dates, history[E.BENCHMARK_SYMBOL]["closes"]))
+        date = month_end_sessions(calendar)[-1]
+        sectors = {t: ("Alpha" if i % 3 == 0 else "Beta" if i % 3 == 1 else "Gamma")
+                   for i, t in enumerate(sorted(book.tickers()))}
+
+        shipped = rank_on(book, date, bench, block="momentum", continuous=True,
+                          neutral=True, sectors=sectors)
+        restored = rank_on(book, date, bench, block="momentum", continuous=True,
+                           neutral=True, sectors=sectors, no_skip_month=True)
+        self.assertGreater(len(shipped), 9)
+        self.assertEqual(shipped, restored,
+                         "the relative-strength window moved the momentum block")
+
+        # Guard: the fixture must be one where relative strength ACTUALLY moves,
+        # or the equality above holds for a reason unrelated to the claim.
+        rs_shipped = rank_on(book, date, bench, block="relStrength", continuous=True,
+                             neutral=True, sectors=sectors)
+        rs_restored = rank_on(book, date, bench, block="relStrength", continuous=True,
+                              neutral=True, sectors=sectors, no_skip_month=True)
+        self.assertNotEqual(rs_shipped, rs_restored,
+                            "fixture does not exercise the relative-strength change")
 
     def test_neutralising_removes_sector_and_size(self):
         # Build a score that is ENTIRELY sector effect plus size effect, so a
@@ -2587,11 +2633,8 @@ def main(argv=None):
                              "constituents file and is a snapshot as of %s, so it is "
                              "stale; turnover is a point-in-time LIQUIDITY proxy that "
                              "correlates with size and is not market cap." % SECTOR_AS_OF)
-    parser.add_argument("--skip-month", action="store_true",
-                        help="measure relative strength t-12 to t-2 instead of t-12 to "
-                             "t-1, skipping the most recent month because short-horizon "
-                             "reversal contaminates it. A measurement only: engine.py is "
-                             "untouched.")
+    parser.add_argument("--no-skip-month", action="store_true",
+                        help="measure relative strength t-h to t-1, the window the engine used before 2026-09-14. The engine now skips the most recent month by default (CFA rf-v2016-n4-1#71); this restores the old window so the change stays measurable. A measurement only: engine.py is untouched by this flag.")
     parser.add_argument("--continuous", action="store_true",
                         help="score the twelve technical features on their MAGNITUDES "
                              "(winsorised cross-sectional z-scores, combined with the "
@@ -2643,7 +2686,7 @@ def main(argv=None):
     results = backtest(history, args.top_n, args.cost_bps,
                        args.variants_tried, args.variants_note, rsi_flip=args.rsi_flip,
                        respect_holdout=respect_holdout, continuous=args.continuous,
-                       neutral=args.neutral, skip_month=args.skip_month)
+                       neutral=args.neutral, no_skip_month=args.no_skip_month)
     report = format_report(results)
     print(report)
     if args.out_dir:

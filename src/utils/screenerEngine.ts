@@ -1152,6 +1152,13 @@ const OBV_LOOKBACK = 20;
 export const SESSIONS_1_MONTH = 21;
 export const SESSIONS_3_MONTH = 63;
 export const SESSIONS_12_MONTH = 252;
+/**
+ * Relative strength skips the most recent month: t-h to t-2, not t-h to t-1.
+ * Counterpart of RELATIVE_STRENGTH_SKIP_SESSIONS. Sourced for the 12-month leg
+ * only (CFA rf-v2016-n4-1#71, "excluding the most recent month (2-12)"); the
+ * 3- and 6-month legs are an extension by consistency, with no citation.
+ */
+export const RELATIVE_STRENGTH_SKIP_SESSIONS = SESSIONS_1_MONTH;
 
 /** EMA at each index from period-1 onwards. Counterpart of _ema_series(). */
 function emaSeries(values: readonly number[], period: number): number[] {
@@ -1483,9 +1490,14 @@ export function computeTechnicalIndicators(
     const pairs = valid
       .filter((i) => !Number.isNaN(bench[i]))
       .map((i) => [closes[i], bench[i]] as [number, number]);
-    tech.relativeStrength3M = relativeStrength(pairs, SESSIONS_3_MONTH);
-    tech.relativeStrength12M = relativeStrength(pairs, SESSIONS_12_MONTH);
-    const sixMonth = relativeStrength(pairs, SESSIONS_6_MONTH);
+    // See RELATIVE_STRENGTH_SKIP_SESSIONS. Dropping the tail moves each window's
+    // END back one month; subtracting the same count from the lookback keeps its
+    // START anchored at t-h.
+    const skip = RELATIVE_STRENGTH_SKIP_SESSIONS;
+    const skipped = pairs.length > skip ? pairs.slice(0, pairs.length - skip) : [];
+    tech.relativeStrength3M = relativeStrength(skipped, SESSIONS_3_MONTH - skip);
+    tech.relativeStrength12M = relativeStrength(skipped, SESSIONS_12_MONTH - skip);
+    const sixMonth = relativeStrength(skipped, SESSIONS_6_MONTH - skip);
     if (sixMonth !== null) {
       tech.relativeStrength6M = sixMonth;
       tech.available.relativeStrength6M = true;

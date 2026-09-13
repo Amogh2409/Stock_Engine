@@ -1827,6 +1827,22 @@ SESSIONS_1_MONTH = 21
 SESSIONS_3_MONTH = 63
 SESSIONS_12_MONTH = 252
 
+# Relative strength skips the most recent month: the window is t-h to t-2, not
+# t-h to t-1. Short-horizon reversal contaminates the latest month, which is why
+# the academic momentum factor is defined that way.
+#
+# SOURCED for the 12-month leg, and only that leg. CFA Institute Research
+# Foundation Monograph rf-v2016-n4-1, chunk #71: "The momentum factor is based
+# on the prior 12 months of returns, excluding the most recent month (2-12)."
+# The corpus was searched for a 3- or 6-month equivalent and has none, so those
+# two legs are an EXTENSION justified by consistency, not by a citation. The
+# rulebook says so in those words.
+#
+# The start of each window stays anchored at t-h and only the end moves back, so
+# the 12-month leg is the 2-12 construction. Shifting the whole window would give
+# t-13 to t-1, a different quantity.
+RELATIVE_STRENGTH_SKIP_SESSIONS = SESSIONS_1_MONTH
+
 
 def _ema_series(values, period):
     """EMA at each index from period-1 onwards, seeded with the first mean.
@@ -2153,9 +2169,14 @@ def compute_technical_indicators(price_series, bench_series=None, volume_series=
     if bench_series is not None:
         bench = _align_to_end([_finite_or_nan(v) for v in bench_series], n, float("nan"))
         pairs = [(closes[i], bench[i]) for i in valid if not math.isnan(bench[i])]
-        tech["relativeStrength3M"] = _relative_strength(pairs, SESSIONS_3_MONTH)
-        tech["relativeStrength12M"] = _relative_strength(pairs, SESSIONS_12_MONTH)
-        six_month = _relative_strength(pairs, SESSIONS_6_MONTH)
+        # See RELATIVE_STRENGTH_SKIP_SESSIONS. Dropping the tail moves each
+        # window's END back one month; subtracting the same count from the
+        # lookback keeps its START anchored at t-h.
+        skip = RELATIVE_STRENGTH_SKIP_SESSIONS
+        skipped = pairs[:len(pairs) - skip] if len(pairs) > skip else []
+        tech["relativeStrength3M"] = _relative_strength(skipped, SESSIONS_3_MONTH - skip)
+        tech["relativeStrength12M"] = _relative_strength(skipped, SESSIONS_12_MONTH - skip)
+        six_month = _relative_strength(skipped, SESSIONS_6_MONTH - skip)
         if six_month is not None:
             tech["relativeStrength6M"] = six_month
             tech["available"]["relativeStrength6M"] = True

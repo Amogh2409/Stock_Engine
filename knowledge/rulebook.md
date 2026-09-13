@@ -732,6 +732,21 @@ real "flat" observation rather than a missing one. Normalising the histogram by
 price is necessary for cross-stock comparison, for the same reason ATR is
 normalised — see the volatility section.
 
+**The method is endorsed and the value is ours by a factor of forty.**
+`TA_wrkbk.pdf#50` states the engine's exact qualitative rule — ignore the signal
+while the indicator hugs its reference line — and `TSaM.pdf#271` states the same
+for momentum crossing zero, so the concept of a dead band is not this project's
+invention. `TSaM.pdf#230` then lists **2% of price** as one of four legitimate
+band constructions. Ours is **±0.05% of price**.
+
+**That is a 40× gap, and it is the largest divergence between a sourced method
+and our parameter anywhere in this file.** A band forty times narrower admits
+forty times more of what the source calls noise, which means the MACD award
+fires far more often than the cited construction would allow. Nothing is changed
+in response — the replacement value is not measured here and adopting 2% because
+a book names it would be swapping one unvalidated constant for another — but the
+ratio is now stated rather than left for a reader to compute.
+
 ## Relative strength — 20 points
 
 | Rule | Points |
@@ -740,11 +755,68 @@ normalised — see the volatility section.
 | 6-month relative strength vs benchmark > 0 | 10 |
 | 12-month relative strength vs benchmark > 0 | 5 |
 
-**Adapted on coverage, Contradicted on the window and the threshold** — see the corpus
-sweep. TSaM and the CFA monographs do cover cross-sectional momentum; what they do
-not cover is this construction. Neither book covers cross-sectional relative strength against an
-index; TSaM's "relative strength" discussions concern Wilder's RSI, a different
-thing sharing a name. The 6-month emphasis and the 5/10/5 split are ours.
+**Adapted on coverage, Contradicted on the window, the threshold and the SHAPE of
+the weighting** — see the corpus sweep. TSaM and the CFA monographs do cover
+cross-sectional momentum; what they do not cover is this construction. Neither
+book covers cross-sectional relative strength against an index; TSaM's "relative
+strength" discussions concern Wilder's RSI, a different thing sharing a name.
+
+**The 5/10/5 split is contradicted in shape, not merely unsourced, and the
+distinction matters.** `TSaM.pdf#605` describes Pring's KST, the only scheme in
+the corpus for combining several momentum horizons into one score, as
+**step-weighted in proportion to its period** — monotone increasing in horizon
+length. Ours is a hump: 5 / 10 / 5 at 3 / 6 / 12 months, which hands the
+12-month window **half** the weight of the 6-month. The corpus does not merely
+fail to justify our profile; it states the opposite ordering.
+
+**Recorded, not acted on.** Changing the split would be a scoring change with no
+source for the replacement numbers — KST's proportional weights are not a set of
+three integers we could lift — so swapping an unsourced hump for an unsourced
+ramp buys nothing but motion.
+
+### The skip month — **Sourced** for the 12-month leg, adopted 2026-09-14
+
+**The engine now measures relative strength from t−h to t−2, not t−h to t−1.**
+`RELATIVE_STRENGTH_SKIP_SESSIONS = SESSIONS_1_MONTH` in `engine.py`, mirrored in
+`screenerEngine.ts`. The start of each window stays anchored at t−h and only the
+end moves back, so the 12-month leg is the 2–12 construction; shifting the whole
+window would give t−13 to t−1, a different quantity.
+
+**The citation is the justification, and it covers one leg of three.**
+CFA Institute Research Foundation Monograph `rf-v2016-n4-1#71`: *"The momentum
+factor is based on the prior 12 months of returns, excluding the most recent
+month (2–12)."* The corpus was searched for a 3-month or 6-month equivalent and
+**has none**. So the 12-month leg is **Sourced**; the 3- and 6-month legs are an
+**extension by consistency, with no citation**, and that is stated here rather
+than allowed to shelter under the 12-month source.
+
+**The measurement is not the reason, and this matters.** Rung D of the Tier 1
+ladder measured the skip and it bought **+0.0053 IC at 6 months** — far inside
+the detection floor, and nothing at any horizon cleared correction. The change is
+adopted because a source states the construction; the measurement only shows the
+change **costs nothing**. Adopting because a number improved would be fitting on
+data already used, which is the feedback failure this file exists to record.
+
+**The pre-registered cell is untouched, verified rather than argued.** The one
+cell in `knowledge/preregistration.md` is the momentum block at 1 month, rung C.
+Momentum is MACD + RSI and neutralisation residualises on sector and liquidity,
+so nothing in that path reads relative strength — but that is reasoning, so it
+was checked. Regenerating rung C on the changed engine leaves momentum, trend and
+volume **bit-identical** and the scoreable universe identical, while relative
+strength moves from +0.0413 to +0.0485 at 6 months, proving the change is live.
+The pre-registered IC of −0.040666455273968276 and HAC t of −3.0475295241371669
+are unchanged to every digit stored.
+`test_relative_strength_cannot_disturb_the_preregistered_cell` asserts it, with a
+guard that the fixture actually moves relative strength.
+
+**A near-miss worth recording.** The first attempt at that verification compared
+the artefact **to itself**: the regeneration had crashed on a stale keyword left
+by renaming the flag, the old `results.json` was never overwritten, and the
+"bit-identical" result included relative strength — which cannot be true if the
+change is live. It was caught by noticing that impossible row, not by the exit
+code, because the exit code read was the background wrapper's rather than the
+Python process's. The rule this file already carries was violated in the act of
+verifying a change: read the exit code from the command that produced it.
 
 This is the block with the strongest outside literature behind it (the
 cross-sectional momentum effect) and the weakest support *in this repo*.
