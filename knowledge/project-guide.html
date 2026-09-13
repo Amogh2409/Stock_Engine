@@ -396,10 +396,24 @@ edge that is not there.</p>
 <h3>Portfolio results</h3>
 <table>
   <tr><th>Window</th><th class="num">Top 20 by score</th><th class="num">Equal-weight all 100</th><th class="num">Nifty index</th></tr>
-  <tr><td>Full period</td><td class="num">20.40%</td><td class="num">21.15%</td><td class="num">9.07%</td></tr>
-  <tr><td>In sample (to 2021)</td><td class="num">17.28%</td><td class="num">20.18%</td><td class="num">10.39%</td></tr>
-  <tr><td>Out of sample (2022+)</td><td class="num">24.78%</td><td class="num">22.63%</td><td class="num">7.09%</td></tr>
+  <tr><td>Full period</td><td class="num">20.40% <span style="color:#64748b">(130 mo)</span></td>
+      <td class="num">21.15% <span style="color:#64748b">(139 mo)</span></td><td class="num">9.07%</td></tr>
+  <tr><td>In sample (to 2021)</td><td class="num">17.28% <span style="color:#64748b">(75 mo)</span></td>
+      <td class="num">20.18% <span style="color:#64748b">(84 mo)</span></td><td class="num">10.39%</td></tr>
+  <tr><td>Out of sample (2022+)</td><td class="num">24.78% <span style="color:#64748b">(55 mo)</span></td>
+      <td class="num">22.63% <span style="color:#64748b">(55 mo)</span></td><td class="num">7.09%</td></tr>
 </table>
+<div class="warn">
+  <strong>Do not subtract these columns.</strong> The month counts differ: the strategy cannot
+  trade until enough companies are scoreable, while equal-weighting can, so the first two rows
+  compare a 130-month CAGR against a 139-month one and a 75 against an 84. Only the third row is
+  matched. A like-for-like gap has to pair the months on their signal dates, and on the
+  pre-holdout window that paired figure is <strong>−3.89pp</strong> over 86 shared months
+  (95% CI −11.47 to +2.32, p 0.217 — straddling zero), against <strong>−6.49pp</strong>
+  in-sample over 75 (CI −13.79 to −0.05, p 0.049). The second only excludes zero by five
+  hundredths of a point and does not survive correction for the number of tests run, so the
+  supported claim is the direction, not the magnitude.
+</div>
 <p>
   Beat equal-weighting in <strong>4 of 12</strong> calendar years, and <strong>1 of 7</strong>
   in-sample — losing 2021 by 19.5 points and 2017 by 14.6. Annual turnover <strong>754%</strong>.
@@ -726,10 +740,11 @@ edge that is not there.</p>
       the numbers will be close to but not identical with section 5; add
       <code>--no-respect-holdout</code> only if you need an exact match, and understand what
       that flag costs before you use it.</li>
-  <li><strong>Check what a label means before quoting it.</strong> The report's
-      &ldquo;Out of sample (2022 on)&rdquo; block means calendar 2022 alone once the holdout is
-      active — 11 months, not the multi-year window the name suggests. It currently shows a
-      large outperformance that rests on that single year.</li>
+  <li><strong>Trust the report's own headings over this document.</strong> Each performance
+      block now names the span it actually covers — first rebalance, last, and the count — and
+      any block under two years carries a warning that its CAGR annualises too few months to
+      read. That machinery post-dates this guide, so where the two disagree, the report is
+      current and this is not.</li>
   <li><strong>Do not tune thresholds to improve the IC.</strong> That is the trap this repository
       has already documented against itself. Measuring is fine; adopting on data already used is
       fitting.</li>
