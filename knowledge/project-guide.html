@@ -98,7 +98,7 @@
   <h1>TradeBot — Indian Equity Screening Engine</h1>
   <div class="sub">Project guide: how it works, what is done, what is left</div>
   <div class="meta">
-    Repository: github.com/Amogh2409/Stock_Engine &nbsp;·&nbsp; Branch main @ 163ae40 &nbsp;·&nbsp; 28 commits<br>
+    Repository: github.com/Amogh2409/Stock_Engine &nbsp;·&nbsp; Branch main @ db97f7f &nbsp;·&nbsp; 31 commits<br>
     Generated 13 September 2026 &nbsp;·&nbsp; All figures verified against the repository and its measurement artefacts
   </div>
 </div>
@@ -176,8 +176,21 @@ npm ci</code></pre>
   <tr><td class="mono">npm run verify</td><td>The full release gate — 24 steps, clean-room build, ~20 min. Run before pushing.</td></tr>
   <tr><td class="mono">npm test</td><td>Frontend and cross-engine parity suite (234 tests).</td></tr>
   <tr><td class="mono">.venv/bin/python python/backtest.py --prices &lt;csv&gt; --out-dir &lt;dir&gt;</td>
-      <td>Re-runs the measurement. ~90 seconds against the cached price file.</td></tr>
+      <td>Re-runs the measurement. ~90 seconds against the cached price file.
+          <strong>Stops at 2023-01-01 by default</strong> — see the reserved window below.</td></tr>
 </table>
+
+<div class="warn">
+  <strong>A reserved window now exists, and it changes what a re-run returns.</strong>
+  <code>2023-01-01</code> onward is held back (<code>knowledge/holdout.md</code>). The backtest
+  truncates there by default, which surrenders <strong>45 of 141 rebalances — 32% of the
+  sample</strong> — and leaves roughly eight independent 12-month observations.
+  <br><br>
+  The figures in section 5 of this guide were measured across the <em>full</em> span before that
+  cut existed. To reproduce them exactly, pass <code>--no-respect-holdout</code>. Do not make a
+  habit of it: that flag exists for one final test, and every casual use spends the window
+  permanently.
+</div>
 
 <h3>The four checks before any commit</h3>
 <pre><code>npm run lint            # tsc --noEmit                → expect exit 0
@@ -327,6 +340,17 @@ Price history CSV ─┘                                        │
   next-day-open execution, 15 bps per side. No look-ahead by construction.
 </p>
 
+<div class="info">
+  <strong>These figures span the full period, measured before the reserved window was
+  introduced.</strong> The backtest now stops at 2023-01-01 by default, so a plain re-run returns
+  numbers over 2015–2022 instead and will not match the tables below. Add
+  <code>--no-respect-holdout</code> to reproduce them. The reserved window is documented in
+  <code>knowledge/holdout.md</code>, which states honestly that it is <em>not</em> pristine: it
+  was observed once, on 13 September 2026, at composite and block level. What has not happened
+  is the thing that actually matters — no engine parameter was changed in response to it. Used
+  once for observation, never for fitting.
+</div>
+
 <h3>The headline null</h3>
 <table>
   <tr><th>Horizon</th><th class="num">Rank IC</th><th class="num">t</th><th class="num">n</th>
@@ -435,6 +459,10 @@ edge that is not there.</p>
   <li>Bonferroni correction across the whole family of 20 tests</li>
   <li>Student's t rather than a normal approximation (at df=9 the difference decides significance)</li>
   <li>The backtest's own mechanics are now inside the release gate, and proven to fail when broken</li>
+  <li>A reserved window from 2023-01-01, enforced in the one function every caller passes
+      through, so a new caller inherits the protection instead of having to remember it</li>
+  <li>Newey-West standard errors for overlapping windows, validated against series with known
+      overlap structure and cross-checked by an independent bootstrap</li>
   <li><code>knowledge/rulebook.md</code> — 961 lines tracing every rule to a source or marking it unsourced</li>
   <li>Dated, hashed archive of every fundamentals export used</li>
 </ul>
@@ -659,6 +687,8 @@ edge that is not there.</p>
       <td>The measurement. No look-ahead, next-day-open fills, both samplings.</td></tr>
   <tr><td class="mono">knowledge/rulebook.md</td><td class="num">961</td>
       <td><strong>Read this first.</strong> Every rule, its source, and what it does not rest on.</td></tr>
+  <tr><td class="mono">knowledge/holdout.md</td><td class="num">—</td>
+      <td>What is reserved, why, and the honest admission that it is not pristine.</td></tr>
   <tr><td class="mono">README.md</td><td class="num">553</td><td>Operational detail and data contracts.</td></tr>
   <tr><td class="mono">src/types.ts</td><td class="num">397</td><td>Shared types, mirroring the Python dicts field for field.</td></tr>
   <tr><td class="mono">python/ab_compare.py</td><td class="num">166</td>
@@ -689,10 +719,15 @@ edge that is not there.</p>
   <li><strong>Run <code>npm run dev</code></strong> and upload the bundled sample to see the
       output shape. Remember the sample's figures are invented.</li>
   <li><strong>Run the backtest</strong> against the cached price file (~90 s) to reproduce the
-      null yourself rather than trusting this document.</li>
+      null yourself rather than trusting this document. It stops at 2023-01-01 by default, so
+      the numbers will be close to but not identical with section 5; add
+      <code>--no-respect-holdout</code> only if you need an exact match, and understand what
+      that flag costs before you use it.</li>
   <li><strong>Do not tune thresholds to improve the IC.</strong> That is the trap this repository
       has already documented against itself. Measuring is fine; adopting on data already used is
       fitting.</li>
+  <li><strong>Leave the reserved window alone.</strong> 2023 onward is held back for one final
+      test. <code>--no-respect-holdout</code> exists for that test, not for curiosity.</li>
   <li><strong>Get the real Screener export in.</strong> Almost everything else is downstream of it.</li>
 </ol>
 
