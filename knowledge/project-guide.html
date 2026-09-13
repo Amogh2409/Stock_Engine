@@ -183,8 +183,11 @@ npm ci</code></pre>
 <div class="warn">
   <strong>A reserved window now exists, and it changes what a re-run returns.</strong>
   <code>2023-01-01</code> onward is held back (<code>knowledge/holdout.md</code>). The backtest
-  truncates there by default, which surrenders <strong>45 of 141 rebalances — 32% of the
-  sample</strong> — and leaves roughly eight independent 12-month observations.
+  truncates there by default, which surrenders <strong>44 of 130 traded periods — 34% of the
+  sample</strong> — and leaves roughly seven independent 12-month observations.
+  (Counted as traded periods, not month-end dates: a month-end with no scoreable universe
+  contributes nothing to any statistic. By dates it is 45 of 141, which is the same cut
+  described from the other side.)
   <br><br>
   The figures in section 5 of this guide were measured across the <em>full</em> span before that
   cut existed. To reproduce them exactly, pass <code>--no-respect-holdout</code>. Do not make a
@@ -723,6 +726,10 @@ edge that is not there.</p>
       the numbers will be close to but not identical with section 5; add
       <code>--no-respect-holdout</code> only if you need an exact match, and understand what
       that flag costs before you use it.</li>
+  <li><strong>Check what a label means before quoting it.</strong> The report's
+      &ldquo;Out of sample (2022 on)&rdquo; block means calendar 2022 alone once the holdout is
+      active — 11 months, not the multi-year window the name suggests. It currently shows a
+      large outperformance that rests on that single year.</li>
   <li><strong>Do not tune thresholds to improve the IC.</strong> That is the trap this repository
       has already documented against itself. Measuring is fine; adopting on data already used is
       fitting.</li>
