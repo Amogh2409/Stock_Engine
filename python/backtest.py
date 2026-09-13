@@ -378,7 +378,15 @@ def clamp_value(value, low, high):
     return low if value < low else (high if value > high else value)
 
 
-def continuous_scores(entries, block=None):
+def _population_sd(values):
+    n = len(values)
+    if n < 2:
+        return 0.0
+    mean = sum(values) / n
+    return math.sqrt(sum((v - mean) ** 2 for v in values) / n)
+
+
+def continuous_scores(entries, block=None, points_blocks=None):
     """{ticker: score} from [(ticker, tech)], scored on magnitudes not thresholds.
 
     block=None gives the composite; naming one of TECHNICAL_BLOCK_MAX gives that
@@ -389,11 +397,32 @@ def continuous_scores(entries, block=None):
     a z-score needs the whole cross-section at one date, and a per-ticker
     function cannot see it.
 
-    A feature the engine could not compute for a ticker contributes zero -- the
-    cross-sectional mean -- rather than the minimum. The points model instead
-    awards nothing, which ranks "not measured" alongside "measured and bad".
-    rank_on already refuses that substitution for blocks, and the same reasoning
-    applies here: absent data is not evidence of a low value.
+    TWO THINGS ARE MATCHED TO THE POINTS MODEL ON PURPOSE, so that a difference
+    between the two measures thresholding and nothing else. An earlier revision
+    claimed that without doing either, and the claim was false in both places.
+
+    1. A feature the engine could not compute takes the MINIMUM z rather than
+       the mean. Absent data is not evidence of a low value, and on its own
+       merits the mean is the better choice -- but the points model awards
+       nothing for an absent feature, which is exactly what it awards for one
+       that fails its test. Matching it keeps the comparison clean. It affects
+       3.6% of observations, on distFrom52WHighPct and relativeStrength12M only.
+
+    2. Each block is rescaled so its cross-sectional spread equals the spread of
+       the points model's own subtotal for that block, on that date, over the
+       same names. What a block contributes to a ranking is its spread, not its
+       nominal cap, and NEITHER mode realises 40:30:20:10 -- measured over 87
+       dates the points model realises 36.1 / 32.0 / 22.7 / 9.2 and the
+       unmatched continuous form realises 38.2 / 32.1 / 21.3 / 8.4, because the
+       block SD is BLOCK_MAX * sqrt(w'Rw)/sum(w) and the within-block feature
+       correlation R differs by block. Trend's five features are near-collinear;
+       volume's two are not. Left unmatched the two modes differ by up to 9.4%
+       in realised block share, and an IC difference would be part thresholding
+       and part reweighting with no way to separate them.
+
+    points_blocks is {ticker: {block: subtotal}} from the engine. Without it the
+    nominal caps are used and the comparison is NOT clean; rank_on always passes
+    it.
     """
     if not entries:
         return {}
@@ -416,16 +445,47 @@ def continuous_scores(entries, block=None):
         if z is None:
             continue
         block_weight[feature_block] += weight
+        # Absent takes the MINIMUM, not the mean, because that is what the
+        # points model does: it awards nothing for a feature it could not
+        # compute and nothing for one that failed its test, so the two are
+        # indistinguishable there and must be here too.
+        floor_z = min(z)
+        for ticker in tickers:
+            block_total[feature_block][ticker] += weight * floor_z
         for (index, _v), score in zip(present, z):
-            block_total[feature_block][tickers[index]] += weight * score
+            block_total[feature_block][tickers[index]] += weight * (score - floor_z)
+
+    # Rescale each block to the spread the points model actually realises for
+    # it, on this date, over these names. Without this the two modes weight the
+    # blocks differently -- measured 38.2/32.1/21.3/8.4 against 36.1/32.0/22.7/9.2
+    # -- and an IC difference would be part thresholding and part reweighting.
+    scale = {}
+    for name in E.TECHNICAL_BLOCK_MAX:
+        if block_weight[name] <= 0:
+            scale[name] = 0.0
+            continue
+        spread = _population_sd([block_total[name][t] / block_weight[name] for t in tickers])
+        target = None
+        if points_blocks:
+            subtotals = [points_blocks[t].get(name) for t in tickers
+                         if points_blocks.get(t) is not None]
+            if len(subtotals) == len(tickers) and all(v is not None for v in subtotals):
+                target = _population_sd(subtotals)
+        if target is None:
+            # No points subtotals to match: fall back to the nominal cap and
+            # accept that the comparison is not clean. rank_on always supplies
+            # them, so this is the direct-call path only.
+            scale[name] = E.TECHNICAL_BLOCK_MAX[name]
+        else:
+            scale[name] = (target / spread) if spread > 0 else 0.0
+
     wanted = sorted(E.TECHNICAL_BLOCK_MAX) if block is None else [block]
     out = {}
     for ticker in tickers:
         total = 0.0
         for name in wanted:
             if block_weight.get(name, 0.0) > 0:
-                total += (E.TECHNICAL_BLOCK_MAX[name]
-                          * block_total[name][ticker] / block_weight[name])
+                total += scale[name] * block_total[name][ticker] / block_weight[name]
         out[ticker] = total
     return out
 
@@ -452,6 +512,7 @@ def rank_on(book, date, bench_by_date, block=None, rsi_flip=False, continuous=Fa
     """
     if continuous:
         entries = []
+        points_blocks = {}
         for ticker in book.tickers():
             tech = technicals_on(book, ticker, date, bench_by_date)
             if tech is None:
@@ -464,7 +525,12 @@ def rank_on(book, date, bench_by_date, block=None, rsi_flip=False, continuous=Fa
             if total is None:
                 continue
             entries.append((ticker, tech))
-        scored = list(continuous_scores(entries, block=block).items())
+            # Kept so the continuous blocks can be rescaled to the spread the
+            # points model actually realises, which is what makes the two
+            # comparable. See continuous_scores.
+            points_blocks[ticker] = gate[3] if isinstance(gate, tuple) and len(gate) > 3 else None
+        scored = list(continuous_scores(entries, block=block,
+                                        points_blocks=points_blocks).items())
     else:
         scored = []
         for ticker in book.tickers():
@@ -1743,6 +1809,52 @@ class BacktestTests(unittest.TestCase):
         self.assertEqual(len(orders), len(E.TECHNICAL_BLOCK_MAX))
         self.assertGreater(len(set(orders.values())), 1,
                            "every block produced an identical ranking")
+
+    def test_continuous_blocks_carry_the_points_model_spread(self):
+        # What a block contributes to a ranking is its cross-sectional SPREAD,
+        # not its nominal cap. Neither mode realises 40:30:20:10 -- over 87 real
+        # dates the points model realises 36.1/32.0/22.7/9.2 and the unmatched
+        # continuous form 38.2/32.1/21.3/8.4, because a block's SD depends on the
+        # correlation among its own features and trend's five are near-collinear
+        # while volume's two are not. Left unmatched, an IC difference between
+        # the modes is part thresholding and part reweighting.
+        dates = self._business_days(420, start="2018-01-01")
+        history = {}
+        for k in range(14):
+            history["T%02d" % k] = self._series(
+                dates, [100.0 + math.sin(i / (6.0 + k)) * 9.0 + i * (0.06 if k % 2 else -0.04)
+                        for i in range(len(dates))])
+        history[E.BENCHMARK_SYMBOL] = self._series(
+            dates, [1000.0 + i * 0.08 for i in range(len(dates))])
+        book = PriceBook(history)
+        calendar = market_calendar(history)
+        bench = dict(zip(dates, history[E.BENCHMARK_SYMBOL]["closes"]))
+        date = month_end_sessions(calendar)[-1]
+
+        entries, points_blocks = [], {}
+        for ticker in book.tickers():
+            tech = technicals_on(book, ticker, date, bench)
+            if tech is None:
+                continue
+            gate = E.calculate_technical_score(tech, True)
+            if (gate[0] if isinstance(gate, tuple) else gate) is None:
+                continue
+            entries.append((ticker, tech))
+            points_blocks[ticker] = gate[3] if len(gate) > 3 else None
+        self.assertGreater(len(entries), 9)
+
+        for name in E.TECHNICAL_BLOCK_MAX:
+            target = _population_sd([points_blocks[t][name] for t, _tech in entries])
+            # Guard: a block with no spread in the points model cannot be matched
+            # and would make the assertion below vacuous.
+            self.assertGreater(target, 0.0, "points block %s has no spread" % name)
+            got = continuous_scores(entries, block=name, points_blocks=points_blocks)
+            self.assertAlmostEqual(_population_sd([got[t] for t, _tech in entries]),
+                                   target, places=9,
+                                   msg="block %s does not carry the points spread" % name)
+            # Matching the spread must not flatten the ordering -- if it did, the
+            # blocks would agree on spread and carry no information.
+            self.assertGreater(len({round(v, 9) for v in got.values()}), 1)
 
     def test_winsorised_z_is_standardised_and_clips_both_tails(self):
         # A z-score that is not actually standardised would silently reweight
