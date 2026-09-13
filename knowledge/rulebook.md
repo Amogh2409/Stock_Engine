@@ -30,6 +30,88 @@ Each rule carries a **status**, and the status is the point of the exercise:
 change anything today. They are labels that stop a future reader from assuming
 a number was measured when it was inherited.
 
+## The corpus sweep, 2026-09-14
+
+Until this date the **Convention** tag conflated two different claims: *searched
+the corpus and found nothing*, and *never searched*. Mostly it meant the second.
+`Books_TO_study/` holds 319 documents, 42,745 indexed chunks and a knowledge
+graph of 1,519 nodes, with a query tool at `Books_TO_study/_tools/ask.py`, and
+nothing in this repository referenced it until `CLAUDE.md` was written. The
+earlier sourcing work searched 7 files.
+
+**The count, because the first number quoted was wrong.** A `grep -c Convention`
+returns 23. Reading the matching lines gives **15 Convention-tagged sections**:
+**10 engine parameters**, which are what this sweep queried, and **5 policies or
+facts**, which are not corpus-answerable and were rightly out of scope — the HAC
+Bartlett bandwidth (L133), the pre-holdout exploratory policy (L157), the
+realised block weights (L253), the relative-strength cell record (L320) and the
+measurement-standard correction (L890). The remaining 8 grep hits are the legend,
+three cross-references, prose, and two lines stating something is *no longer*
+Convention.
+
+### The guardrail this sweep was run under
+
+Searching for support for rules the engine already uses is confirmation-seeking
+by construction. `ask.py` states the danger in its own output: *"lexical match
+shows the corpus discusses this, it does not by itself make the claim true."*
+It was right to: `verify` returned **SUPPORTED ON TOPIC** for the 15%-of-52-week-high
+rule, for the MACD band and for the 1%-risk rule, and **all three were false
+positives** on common-word overlap. None was counted.
+
+So a passage mentioning a concept did not move a tag; only a span stating the
+specific parameter, or an explicitly equivalent rule, did. A contradiction was
+recorded with the same weight as support.
+
+### The result
+
+| Rule | Verdict | Moved | Chunk ids |
+| --- | --- | --- | --- |
+| 50/200 pair, `50 SMA > 200 SMA` | **Sourced** | Convention → Sourced | `The-Complete-Guide-to-Trading.pdf#65`, `#37`, `TA_wrkbk.pdf#56` |
+| 50/200 pair, `price > 50 SMA` and `price > 200 SMA` | Convention | no | none — corpus never ties price-vs-MA to these periods |
+| Within 15% of the 52-week high | Convention | no | none — no span names a 52-week lookback or any proximity threshold |
+| RSI > 50 momentum floor | **Adapted** | Convention → Adapted | `TSaM.pdf#277` (30/70), `#278` (Aan 32/72), `#784`, `TA_wrkbk.pdf#48` |
+| MACD flat band ±0.05% of price | **Adapted** | Convention → Adapted | `TA_wrkbk.pdf#50`, `TSaM.pdf#271`, `#230` ("2% of price" band) |
+| Relative strength — cross-sectional coverage | **Adapted** | Convention → Adapted | `TSaM.pdf#199`, `#200`, CFA `rf-v2011-n4#19`, `rf-v2016-n4-1#71` |
+| Relative strength — 6-month emphasis, 5/10/5 | **Contradicted** | Convention → Contradicted | `TSaM.pdf#605`, `#604`, CFA `rf-v2016-n4-1#71` |
+| Relative strength — threshold of exactly zero | **Contradicted** | Convention → Contradicted | `TSaM.pdf#271`, `#268`, CFA `rf-v2012-n4-1#71` |
+| ATR% > 5.0 | **Adapted** | Convention → Adapted | `TSaM.pdf#451`, `#456` (ratio 2.0 vs 60-day ATR) |
+| Deep drawdown 25% | Convention | no | none — no span names any drawdown level as a rule |
+| Volatility window, 252 sessions | **Adapted** | Convention → Adapted | `TSaM.pdf#254` (20 rolling), `#573` (≤25), `#832` (126 already slow) |
+| Position cap 10%, sector cap 25% | Convention | no | none — `TSaM.pdf#817`'s 0.10 is an illustrative GA constraint, not an endorsement |
+| Risk 1–2% of capital per trade | Convention | no | none — **the zero is re-confirmed**; see below |
+
+**Six of ten moved; four stayed, and now say *searched and not found* rather than
+*never searched*.** That distinction is the point of the exercise.
+
+### Three findings worth more than the tag changes
+
+**The relative-strength block is contradicted twice over, and this is new.** The
+corpus's momentum horizon is 12 months *skipping the most recent one* — the
+engine's plain trailing 12-month includes exactly the month the literature
+excludes. And Pring's KST, the only scheme here for weighting several momentum
+horizons into one score, is **monotone increasing in horizon length**; the
+engine's 5/10/5 is a hump that gives 12 months half the weight of 6. Both are
+different numbers for the same purpose, which is a contradiction and not a failed
+search. This is the block that carries the project's strongest exploratory cell.
+
+**The 1–2% risk-per-trade finding survives a 2.2× larger corpus.** The earlier
+search ran over 165 documents and 19,081 chunks and returned zero; this one ran
+over 319 and 42,745 — eleven phrasings, including the exact folklore wordings —
+and returned zero again. What the corpus *does* offer for the same job is Ralph
+Vince's **optimal f** (`TSaM.pdf#790`), a principled method rather than a round
+number. The rulebook was right to refuse the 1%.
+
+**The one promotion is weak and is labelled weak.** `The-Complete-Guide-to-Trading.pdf#65`
+states the 50/200 crossover rule verbatim, so it clears the bar — but it is a
+corporatefinanceinstitute.com primer whose stated justification is popularity,
+*"a favorite of many stock market traders"*. The most rigorous source in the
+corpus runs its own two-MA comparison at **40/80** (`TSaM.pdf#257`),
+`TA_wrkbk.pdf#43` says outright *"There is no perfect time span"*, and
+`TSaM.pdf#650` warns that hunting for "the single best moving average speed" is
+the most misused technique in the field. The corpus names 50/200; nothing in it
+shows 50/200 is better than its neighbours.
+
+
 ## Sources
 
 Both books are copyrighted and gitignored, so this file summarises and cites
@@ -504,7 +586,7 @@ and we do not use trendline direction at all. Kaufman is careful that this is a
 single example rather than a general proof, but the asymmetry is worth
 recording: the cheaper signal is the one we implement.
 
-### The 50/200 pair and the crossover — **Convention**
+### The 50/200 pair and the crossover — **Sourced** (crossover only), **Convention** (the two price tests)
 
 Nothing in either book justifies 50 and 200 specifically. TSaM's worked examples
 use 5, 10, 20, 40 and 80 days, and settle on 40 as "the fastest one that also
@@ -548,7 +630,7 @@ trend, the moving-average points measure nothing — rather than as 4 points add
 alongside them. As written, a company with no trend still banks up to 36 trend
 points and merely forgoes 4.
 
-### Within 15% of the 52-week high — **Convention**, and see *Contradicted* below
+### Within 15% of the 52-week high — **Convention**, searched and not found, and see *Contradicted* below
 
 Neither book states this rule. It is standard momentum practice. MtM pp. 19 and
 22 give an argument against one configuration of it; that is set out in
@@ -582,7 +664,7 @@ TSaM p. 386 gives Wilder's formula, RSI = 100 × RS/(1 + RS) with RS = AU/AD ove
 Wilder chose 14 because it is half a natural 1-month cycle. Our period and
 smoothing match the source exactly.
 
-### RSI > 50 as a momentum floor — **Convention**
+### RSI > 50 as a momentum floor — **Adapted**, and the corpus names different levels
 
 50 appears nowhere in the source. It is the RSI's own midpoint, the level where
 14 days of up-closes exactly balance the down-closes, so "RSI > 50" reads as
@@ -642,7 +724,7 @@ Kaufman prescribe. 80 is not itself derived — 1.5σ on Aan's distribution woul
 land elsewhere — but the *direction* of the adjustment is sourced, which is more
 than can be said for most thresholds here.
 
-### MACD flat band, ±0.05% of price — **Convention**
+### MACD flat band, ±0.05% of price — **Adapted**, the method is endorsed and the value is ours
 
 MACD's 12/26/9 parameters are standard and unremarked in either book. The flat
 band is ours: it exists so that a steady trend with no acceleration reads as a
@@ -658,7 +740,9 @@ normalised — see the volatility section.
 | 6-month relative strength vs benchmark > 0 | 10 |
 | 12-month relative strength vs benchmark > 0 | 5 |
 
-**Convention.** Neither book covers cross-sectional relative strength against an
+**Adapted on coverage, Contradicted on the window and the threshold** — see the corpus
+sweep. TSaM and the CFA monographs do cover cross-sectional momentum; what they do
+not cover is this construction. Neither book covers cross-sectional relative strength against an
 index; TSaM's "relative strength" discussions concern Wilder's RSI, a different
 thing sharing a name. The 6-month emphasis and the 5/10/5 split are ours.
 
@@ -785,7 +869,7 @@ sizing positions to equalise risk. Raw ATR is therefore not comparable across a
 hundred companies at different price levels, and `atrPct` (ATR ÷ price) is the
 right normalisation.
 
-### ATR% > 5.0 — **Convention**, with a sourced replacement available
+### ATR% > 5.0 — **Adapted**, and the sourced replacement is now named
 
 The 5% level is arbitrary; no absolute threshold appears in the source. TSaM
 p. 854 offers a principled alternative, **relative volatility**:
@@ -797,7 +881,7 @@ judged against its *own* normal rather than a universal 5%. With our ATR(14),
 f = 10 gives ATR(14) / ATR(140). This would replace a made-up constant with a
 sourced construction and is a clean, contained improvement.
 
-### Deep drawdown, 25% — **Convention**
+### Deep drawdown, 25% — **Convention**, searched and not found
 
 Unsourced. Descriptive only, so the cost of it being arbitrary is low.
 
@@ -1065,7 +1149,7 @@ outright that "diversification can disappear under stress", and when
 correlations rise the measured portfolio volatility rises with them and
 deployment falls. That is the mechanism working, not failing.
 
-### The measurement window, 252 sessions — **Convention**, and the first version was wrong
+### The measurement window, 252 sessions — **Adapted**, and the corpus argues for shorter
 
 No book here fixes a window length, so 252 is ours, chosen to match the
 annualisation used everywhere else.
@@ -1158,7 +1242,7 @@ whether it helps. That does not make publishing it wrong — p.1032 principle 2
 still wants an exit known in advance — but it does mean the stop is an
 untested addition to a style the source says may not benefit from one.
 
-### Position cap 10%, sector cap 25% — **Convention**
+### Position cap 10%, sector cap 25% — **Convention**, searched and not found
 
 p.1040 warns that a portfolio concentrating on fewer groups carries greater
 risk, which is the argument *for* having caps. It names **no level**, so both
@@ -1191,7 +1275,7 @@ average down, never meet margin calls, **liquidate the worst position first** �
 restate p.1032 principles 5 and 6. "Liquidate the worst first" therefore has two
 independent citations, more than almost any rule in this file.
 
-### A rule that is in no book here — **Convention**, and it was nearly written in
+### A rule that is in no book here — **Convention**, re-confirmed on a corpus 2.2x larger
 
 The first draft of this section defaulted to risking **1% of capital per
 position**. Searched against every machine-readable book in the library, with
