@@ -76,11 +76,38 @@ in the family. The smallest IC that sample could detect at 80% power is
 **0.046**, so this is a powered null and not an absence of evidence.
 
 One month carries the whole argument, and the reason is structural. A 1-month
-forward return sampled monthly **cannot overlap**, so the overlapping and
-non-overlapping estimates coincide exactly (both t −0.09 on n 130). Every
-longer horizon must choose: sample every rebalance and reuse (h−1)/h of each
-window, inflating t; or keep one phase offset in h and discard the rest,
-collapsing n. Neither is a second opinion.
+forward return sampled monthly **cannot overlap**, so every estimator agrees
+there by construction (t −0.09 either way, n 130).
+
+**Correction to what this section first said.** It described longer horizons as
+a forced choice between reusing (h−1)/h of each window and inflating t, or
+keeping one phase offset and collapsing n. That was a false dichotomy, and the
+third option is the correct one: **keep every window and use a standard error
+that accounts for their dependence.** Overlap is not the defect. Applying an
+i.i.d. standard error to overlapping windows is. Newey-West at lag h−1 does
+this, and at 12 months it restores the sample from n = 6 to n = 75.
+
+The estimator was validated before it touched real data — checked against
+series with *known* overlap structure, confirmed to equal the i.i.d. figure at
+h = 1 to four decimals as it must, and cross-checked by an independent
+Politis–Romano bootstrap agreeing to within 2% at every horizon.
+
+**It corrects in both directions, and the null survives it.** HAC deflates the
+cells that overlap had inflated (relative strength at 6 months falls from
+i.i.d. t +4.67 to +3.06) and restores power where discarding overlap had
+destroyed it. On the pre-holdout window the composite reads:
+
+| Horizon | IC | n | i.i.d. t | HAC t | bootstrap t | p (corrected) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 month | −0.0060 | 86 | −0.29 | −0.29 | −0.30 | 1.000 |
+| 3 months | +0.0157 | 84 | +0.89 | +0.85 | +0.94 | 1.000 |
+| 6 months | +0.0459 | 81 | +2.72 | +2.14 | +2.26 | 0.706 |
+| 12 months | +0.0443 | 75 | +2.22 | +1.91 | +2.00 | 1.000 |
+
+More observations with a correct standard error bought *less* significance, not
+more, because the all-windows point estimate is the smaller one. Nothing clears
+correction. The conclusion did not move; the best estimate did, and it moved
+against us.
 
 | Horizon | IC (non-overlapping) | t | n | p (Bonferroni/20) | detectable at 80% |
 | --- | --- | --- | --- | --- | --- |
