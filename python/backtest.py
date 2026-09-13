@@ -127,14 +127,50 @@ def market_calendar(history):
     return list(bench["dates"])
 
 
-def month_end_sessions(calendar):
-    """The last session of each month, which is when the screen is re-run."""
-    out = []
+# Reserved data. See knowledge/holdout.md for what this window is and, more
+# importantly, what it is not: it was observed once on 2026-09-13, though no
+# engine parameter has been changed in response. Used once for observation,
+# never for fitting.
+HOLDOUT_START = "2023-01-01"
+
+
+def month_end_sessions(calendar, respect_holdout=True):
+    """The last session of each month, which is when the screen is re-run.
+
+    Truncated at HOLDOUT_START by default. The cut lives here rather than in
+    each caller because this is the single point every consumer goes through --
+    backtest() and ab_compare's analyse() both build their rebalances from it --
+    so a new caller inherits the protection instead of having to remember it.
+
+    The technical half is entirely price-driven, so reserving a window costs
+    nothing but data and needs no fundamentals export. It does cost data: the
+    cut surrenders roughly 44 of 130 rebalances, which at 12 months leaves about
+    seven independent observations. A 12-month claim was not settleable on this
+    span before the cut and is less so after it. That is a real price, paid
+    because a window measured twice answers nothing the second time.
+    """
+    every_month = []
     for index, date in enumerate(calendar):
         is_last = index + 1 == len(calendar) or calendar[index + 1][:7] != date[:7]
         if is_last:
-            out.append(date)
-    return out
+            every_month.append(date)
+    if not respect_holdout:
+        return every_month
+    kept = [d for d in every_month if d < HOLDOUT_START]
+    if every_month and not kept:
+        # Refusing rather than returning []. An empty rebalance list produces a
+        # portfolio of nothing, a report of nothing, and an exit code of zero --
+        # a run that looks completed and carries no information. That is the
+        # failure mode this repository keeps rediscovering, so it fails loudly
+        # here instead of silently downstream.
+        raise SystemExit(
+            "Every month in this price file falls inside the reserved window "
+            "(%s onward), so respecting the holdout leaves nothing to measure. "
+            "The file spans %s to %s. Supply price history that reaches back "
+            "before %s, or pass --no-respect-holdout if this is the single "
+            "final test described in knowledge/holdout.md."
+            % (HOLDOUT_START, every_month[0], every_month[-1], HOLDOUT_START))
+    return kept
 
 
 def score_on(book, ticker, date, bench_by_date, rsi_flip=False):
@@ -653,6 +689,94 @@ def _stationary_bootstrap_se(series, mean_block, draws=BOOTSTRAP_DRAWS, seed=BOO
     return math.sqrt(variance), lo, hi
 
 
+def cagr_difference_ci(strategy_periods, benchmark_periods, mean_block=6,
+                       draws=BOOTSTRAP_DRAWS, seed=BOOTSTRAP_SEED):
+    """Bootstrap interval for strategy CAGR minus benchmark CAGR.
+
+    The headline comparison in this file -- 20.40% against 21.15% -- has carried
+    no error bar at all. Three quarters of a percentage point over eleven years
+    is very plausibly noise, and stating it without an interval invites reading
+    a coin-flip as a finding in either direction.
+
+    Two things this gets right that a naive bootstrap would not:
+
+    Months are resampled JOINTLY as (strategy, benchmark) pairs. The two series
+    hold overlapping names in the same market and move together; resampling them
+    independently would destroy that contemporaneous correlation and inflate the
+    interval to uselessness. What is being estimated is the difference, so the
+    pairing is the whole point.
+
+    CAGR is recomputed by compounding each resampled path, not differenced as a
+    mean. It is a nonlinear function of the path, so the difference of means is
+    not the mean of differences, and a bootstrap of monthly means would answer a
+    different question from the one the table asks.
+
+    Periods are aligned on signal_date rather than by index: the strategy series
+    is shorter than the equal-weight one (it needs a scoreable universe), and
+    zipping them positionally would silently compare different months.
+    """
+    by_date = {p["signal_date"]: p["net_return"] for p in benchmark_periods}
+    pairs = [(p["net_return"], by_date[p["signal_date"]])
+             for p in strategy_periods if p["signal_date"] in by_date]
+    n = len(pairs)
+    if n < 12:
+        return {"months": n, "difference": float("nan"), "ci_lo": float("nan"),
+                "ci_hi": float("nan"), "p_value": float("nan"),
+                "excludes_zero": False, "draws": 0}
+
+    def cagr(returns):
+        value = 1.0
+        for r in returns:
+            value *= 1.0 + r
+        years = len(returns) / float(MONTHS_PER_YEAR)
+        return value ** (1.0 / years) - 1.0 if years > 0 and value > 0 else float("nan")
+
+    observed = cagr([a for a, _ in pairs]) - cagr([b for _, b in pairs])
+    rng = random.Random(seed)
+    p_restart = 1.0 / mean_block
+    diffs = []
+    for _ in range(draws):
+        strat, bench = [], []
+        index = rng.randrange(n)
+        for _step in range(n):
+            a, b = pairs[index]
+            strat.append(a)
+            bench.append(b)
+            index = rng.randrange(n) if rng.random() < p_restart else (index + 1) % n
+        d = cagr(strat) - cagr(bench)
+        if d == d:
+            diffs.append(d)
+    if len(diffs) < 100:
+        return {"months": n, "difference": observed, "ci_lo": float("nan"),
+                "ci_hi": float("nan"), "p_value": float("nan"),
+                "excludes_zero": False, "draws": len(diffs)}
+    diffs.sort()
+    lo = diffs[int(0.025 * len(diffs))]
+    hi = diffs[min(len(diffs) - 1, int(0.975 * len(diffs)))]
+    # Two-sided bootstrap p as 2 * min(P(d <= 0), P(d >= 0)), capped at 1.
+    #
+    # The earlier form counted resamples "on the other side of zero from the
+    # observed difference" using strict > 0, which sorted exactly-zero into the
+    # negative bucket. Two identical return series then reported p 0.000 and an
+    # interval excluding zero -- the strongest possible claim of a difference,
+    # for series with no difference at all. Ties have to count on both sides.
+    at_or_below = sum(1 for d in diffs if d <= 0)
+    at_or_above = sum(1 for d in diffs if d >= 0)
+    p_value = min(1.0, 2.0 * min(at_or_below, at_or_above) / len(diffs))
+    return {
+        "months": n,
+        "difference": observed,
+        "ci_lo": lo,
+        "ci_hi": hi,
+        "p_value": p_value,
+        # An interval containing zero does not exclude it, including the
+        # degenerate case where both bounds ARE zero.
+        "excludes_zero": (lo > 0 and hi > 0) or (lo < 0 and hi < 0),
+        "draws": len(diffs),
+        "mean_block": mean_block,
+    }
+
+
 def _ic_statistics(series, family_size, hac_lag=0):
     """Mean, n and THREE standard errors for one series of monthly rank correlations.
 
@@ -976,6 +1100,21 @@ def format_report(results):
                     cells.append(pct(value))
             out.append("| %s | %s |" % (title, " | ".join(cells)))
         out.append("")
+        gap = block.get("cagr_vs_equal_weight") or {}
+        if gap.get("draws"):
+            verdict = ("**excludes zero**" if gap["excludes_zero"]
+                       else "**straddles zero — consistent with no difference**")
+            out.append("CAGR against equal weight: **%s** "
+                       "(95%% bootstrap CI %s to %s, p %.3f, %d paired months, "
+                       "%d draws). %s"
+                       % (pct(gap["difference"]), pct(gap["ci_lo"]), pct(gap["ci_hi"]),
+                          gap["p_value"], gap["months"], gap["draws"], verdict))
+            out.append("")
+            out.append("Months are resampled jointly as (strategy, equal-weight) pairs so "
+                       "the contemporaneous correlation between them survives, and each "
+                       "resampled path is compounded rather than averaged, because CAGR is "
+                       "a function of the path and not a mean.")
+            out.append("")
     out.append("## Did the score rank anything?")
     out.append("")
     out.append("If the top decile does not beat the bottom, the score does not order "
@@ -1030,10 +1169,10 @@ def format_report(results):
 
 # --- Orchestration ---------------------------------------------------------
 def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PER_SIDE,
-             variants_tried=1, variants_note="", rsi_flip=False):
+             variants_tried=1, variants_note="", rsi_flip=False, respect_holdout=True):
     book = PriceBook(history)
     calendar = market_calendar(history)
-    rebalances = month_end_sessions(calendar)
+    rebalances = month_end_sessions(calendar, respect_holdout=respect_holdout)
     bench = history[E.BENCHMARK_SYMBOL]
     bench_by_date = dict(zip(bench["dates"], bench["closes"]))
 
@@ -1073,6 +1212,10 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
             "strategy": performance(chooser(periods)),
             "equal_weight": performance(chooser(equal)),
             "index": performance(chooser(index)),
+            # The CAGR gap with an interval around it. Without one, a 0.75-point
+            # difference over eleven years reads as a result rather than as the
+            # coin-flip it probably is.
+            "cagr_vs_equal_weight": cagr_difference_ci(chooser(periods), chooser(equal)),
         }
 
     total_fills = sum(len(p["holdings"]) * 2 for p in periods)
@@ -1146,7 +1289,12 @@ class BacktestTests(unittest.TestCase):
         # Asserted as a property rather than as pinned dates, so changing the
         # fixture's length cannot quietly invalidate it.
         dates, _ = self._history()
-        ends = month_end_sessions(dates)
+        # respect_holdout=False because this test is about month-end detection,
+        # not holdout policy. The fixture sits entirely inside the reserved
+        # window, so the default cut would empty it and the assertion below
+        # would be comparing two empty lists -- passing while testing nothing.
+        # The cut itself is covered by its own test.
+        ends = month_end_sessions(dates, respect_holdout=False)
         last_of_month = {}
         for date in dates:
             last_of_month[date[:7]] = date
@@ -1261,7 +1409,11 @@ class BacktestTests(unittest.TestCase):
         dates, history = self._history()
         book = PriceBook(history)
         bench = dict(zip(dates, history[E.BENCHMARK_SYMBOL]["closes"]))
-        periods = run_portfolio(book, dates, month_end_sessions(dates), bench, 1, 15.0)
+        # respect_holdout=False: this fixture is dated after HOLDOUT_START and
+        # the test is about cost arithmetic, not about which months are
+        # measurable.
+        periods = run_portfolio(book, dates, month_end_sessions(dates, respect_holdout=False),
+                                bench, 1, 15.0)
         self.assertTrue(periods)
         for period in periods:
             expected = 2.0 * period["turnover"] * 0.0015
@@ -1342,6 +1494,60 @@ class BacktestTests(unittest.TestCase):
         self.assertNotEqual(se, se2)
         self.assertLess(abs(se - se2) / se, 0.25)
 
+    def test_cagr_difference_ci_on_cases_with_known_answers(self):
+        # Constructed rather than real, so the right answer is known in advance
+        # and the test can fail. Two identical series must read as no
+        # difference: the first version reported p 0.000 and an interval
+        # excluding zero for them, because strict > 0 comparisons sorted
+        # exactly-zero into the negative bucket, making ties count on one side
+        # only. That bug would never surface on real data and would silently
+        # promote any interval with a bound at zero.
+        rng = random.Random(1)
+        base = [rng.gauss(0.01, 0.05) for _ in range(130)]
+
+        def periods(returns, start=0):
+            return [{"signal_date": "20%02d-%02d-28" % (15 + (start + i) // 12,
+                                                        1 + (start + i) % 12),
+                     "net_return": r} for i, r in enumerate(returns)]
+
+        same = cagr_difference_ci(periods(base), periods(base))
+        self.assertAlmostEqual(same["difference"], 0.0, places=12)
+        self.assertFalse(same["excludes_zero"])
+        self.assertAlmostEqual(same["p_value"], 1.0, places=12)
+
+        # A large consistent edge must be detected, or the test above would pass
+        # for a function that always says "no difference".
+        better = cagr_difference_ci(periods([r + 0.02 for r in base]), periods(base))
+        self.assertGreater(better["difference"], 0.2)
+        self.assertTrue(better["excludes_zero"])
+        self.assertLess(better["p_value"], 0.01)
+
+        # Months pair on signal_date, not by position: the strategy series is
+        # shorter than the equal-weight one in every real run.
+        offset = cagr_difference_ci(periods(base[:60]), periods(base, start=30))
+        self.assertEqual(offset["months"], 30)
+
+    def test_the_holdout_cut_removes_reserved_months_and_can_be_lifted(self):
+        # A flag that is wired but does nothing passes every grep and every
+        # type check. This asserts on the rebalance list itself, in both
+        # directions, because a cut that never cuts and a cut that cannot be
+        # lifted are different bugs and the second only shows at the final test.
+        calendar = self._business_days(900, start="2021-01-01")
+        self.assertGreater(calendar[-1], HOLDOUT_START)
+
+        reserved = month_end_sessions(calendar, respect_holdout=True)
+        everything = month_end_sessions(calendar, respect_holdout=False)
+
+        self.assertTrue(reserved, "the cut must not empty the list")
+        self.assertLess(len(reserved), len(everything))
+        self.assertTrue(all(d < HOLDOUT_START for d in reserved))
+        self.assertTrue(any(d >= HOLDOUT_START for d in everything))
+        # Lifting the cut must restore exactly the reserved months and nothing
+        # else -- not reorder, not duplicate.
+        self.assertEqual(everything[:len(reserved)], reserved)
+        # And the default is the protective one.
+        self.assertEqual(month_end_sessions(calendar), reserved)
+
     def test_bonferroni_scales_and_caps(self):
         self.assertAlmostEqual(bonferroni(0.0175, 8), 0.14, places=6)
         self.assertEqual(bonferroni(0.5, 8), 1.0)
@@ -1367,6 +1573,12 @@ def main(argv=None):
                              "engine is untouched and RSI_MOMENTUM_FLOOR is not edited, "
                              "because changing the live comparison to see whether it "
                              "backtests better is adoption rather than measurement.")
+    parser.add_argument("--no-respect-holdout", action="store_true",
+                        help="measure against the reserved window from %s onward. "
+                             "Reserved data answers a question once; this flag spends "
+                             "it. Exists for the single final test described in "
+                             "knowledge/holdout.md, and for nothing else."
+                             % HOLDOUT_START)
     parser.add_argument("--self-test", action="store_true", help="run the offline checks and exit")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
@@ -1382,8 +1594,17 @@ def main(argv=None):
         print("RSI SIGN FLIPPED: scoring rsi14 below %s instead of above it. "
               "This measures the alternative; it does not change the engine."
               % E.RSI_MOMENTUM_FLOOR)
+    respect_holdout = not args.no_respect_holdout
+    if respect_holdout:
+        print("Holdout respected: measuring only up to %s. See knowledge/holdout.md."
+              % HOLDOUT_START)
+    else:
+        print("*** SPENDING THE RESERVED WINDOW (%s onward). ***" % HOLDOUT_START)
+        print("*** Reserved data answers a question once. If this is not the single ***")
+        print("*** final test described in knowledge/holdout.md, stop and record why. ***")
     results = backtest(history, args.top_n, args.cost_bps,
-                       args.variants_tried, args.variants_note, rsi_flip=args.rsi_flip)
+                       args.variants_tried, args.variants_note, rsi_flip=args.rsi_flip,
+                       respect_holdout=respect_holdout)
     report = format_report(results)
     print(report)
     if args.out_dir:
