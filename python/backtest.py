@@ -937,10 +937,43 @@ def _newey_west_se(series, lag):
 def _stationary_bootstrap_se(series, mean_block, draws=BOOTSTRAP_DRAWS, seed=BOOTSTRAP_SEED):
     """(standard error, 2.5th pct, 97.5th pct) by the Politis-Romano bootstrap.
 
-    A third, independent estimate, and it is here because HAC is known to be
-    UNDERSIZED in small samples -- it under-states the variance and so
-    over-rejects, exactly where our n is smallest. Two estimators that disagree
-    are more informative than one that cannot be checked.
+    A third, independent estimate. It was introduced as a CONSERVATIVE check on
+    HAC, on the reasoning that HAC is undersized in small samples. **That claim
+    was false as configured and has been withdrawn.** Across the 15 overlapping
+    cells of the pre-holdout run the bootstrap SE is SMALLER than the HAC SE in
+    10 of them, including every high-dependence cell, so it was systematically
+    the LESS conservative of the two -- the opposite of what it was here to do.
+
+    Both are biased the same way, and badly. Scored against a series whose true
+    standard error is known -- a moving average of h shocks, which is exactly
+    the structure an overlapping h-window IC series has -- every estimator
+    understates it (4,000 replications, n matching the real study):
+
+        h=6,  n=81:  i.i.d. -61%,  HAC(lag 5) -22%,  bootstrap(block 6) -25%
+        h=12, n=75:  i.i.d. -74%,  HAC(lag 11) -29%, bootstrap(block 12) -38%
+        h=3,  n=84:  i.i.d. -44%,  HAC(lag 2) -17%,  bootstrap(block 3) -20%
+
+    Lengthening the block makes the bootstrap WORSE, not better: at h=6 blocks
+    of 12 and 18 give -29% and -32%. With n around 80 a long block makes the
+    resampled paths too alike, so the draws under-disperse. There is no block
+    length that fixes it.
+
+    Nor is there a Bartlett bandwidth that fixes HAC. Sweeping lag from h-1 to
+    4h, the best attainable is -17.5% at h=6 (lag 11), -28% at h=12 (lag 18) and
+    -10.6% at h=3 (lag 6); beyond that the bias grows again. The bandwidth is
+    left at h-1 because a few points of a twenty-point bias is not worth
+    re-opening every published figure for, and because the honest statement is
+    not "we found the right bandwidth" but "these standard errors understate".
+
+    SO READ EVERY t IN THIS FILE AS INFLATED, by roughly a quarter to a third at
+    the longer horizons. That direction is unhelpful for any positive finding
+    and harmless for a null, which is the whole of what this study reports.
+
+    The stationary bootstrap resamples blocks whose lengths are geometric with
+    mean `mean_block`, wrapping circularly, which preserves serial dependence up
+    to roughly that length while keeping the resampled series stationary. Fixed
+    blocks would not be stationary; a plain i.i.d. bootstrap would destroy the
+    dependence this is trying to respect.
 
     The stationary bootstrap resamples blocks whose lengths are geometric with
     mean `mean_block`, wrapping circularly, which preserves serial dependence up
@@ -2099,6 +2132,33 @@ class BacktestTests(unittest.TestCase):
         se2, _, _ = _stationary_bootstrap_se(series, 4, seed=BOOTSTRAP_SEED + 1)
         self.assertNotEqual(se, se2)
         self.assertLess(abs(se - se2) / se, 0.25)
+
+    def test_the_bootstrap_is_not_a_conservative_check_on_hac(self):
+        # It was introduced as one and the docstring said so. It is not: across
+        # the 15 overlapping cells of the pre-holdout run the bootstrap SE is
+        # SMALLER than the HAC SE in 10, including every high-dependence cell.
+        # This pins the direction so the claim cannot be quietly re-added.
+        #
+        # The fixture is a moving average of h shocks, which is exactly the
+        # dependence an overlapping h-window IC series carries, and whose true
+        # long-run variance is the shock variance -- so the true standard error
+        # of the mean is 1/sqrt(n) and both estimators can be scored against it
+        # rather than only against each other.
+        rng = random.Random(31)
+        h, n = 6, 81
+        shocks = [rng.gauss(0.0, 1.0) for _ in range(n + h - 1)]
+        series = [sum(shocks[t:t + h]) / h for t in range(n)]
+        true_se = 1.0 / math.sqrt(n)
+        hac = _newey_west_se(series, h - 1)
+        boot, _lo, _hi = _stationary_bootstrap_se(series, h, draws=400, seed=31)
+        self.assertGreater(hac, 0.0)
+        self.assertGreater(boot, 0.0)
+        # Not the conservative one.
+        self.assertLessEqual(boot, hac * 1.05,
+                             "the bootstrap is being treated as a conservative check")
+        # And both understate the truth, which is why every t here reads inflated.
+        self.assertLess(hac, true_se, "HAC did not understate on a known structure")
+        self.assertLess(boot, true_se, "the bootstrap did not understate")
 
     def test_cagr_difference_ci_on_cases_with_known_answers(self):
         # Constructed rather than real, so the right answer is known in advance
