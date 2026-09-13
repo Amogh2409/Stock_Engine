@@ -111,6 +111,12 @@ def analyse(engine, backtest, history):
     return {
         "performance": results["performance"],
         "turnover": results["turnover"],
+        # Reported so the banner can state the span it actually measured. This
+        # function builds its rebalances through month_end_sessions(), which
+        # truncates at HOLDOUT_START by default, so the span is NOT the span of
+        # the price file handed in -- and a header that implies otherwise is how
+        # a reader takes a partial answer for a whole one.
+        "span": (rebalances[0], rebalances[-1], len(rebalances)) if rebalances else None,
         # Overlapping windows correlate out to lag h-1, which is the Newey-West
         # bandwidth; the non-overlapping series shares no days, so lag 0 there.
         "ics": {h: {"overlapping": summarise(ic_series(h, 1), backtest, h - 1),
@@ -147,7 +153,17 @@ def main(argv=None):
     total_tests = 4 * len(labels)
     print()
     print("RANK CORRELATION WITH FORWARD RETURNS")
-    print("Non-overlapping is the headline. Overlapping is shown only to expose its inflation.")
+    # State the measured span rather than letting the price file's name imply it.
+    # month_end_sessions() truncates at HOLDOUT_START, so this is routinely
+    # shorter than the file handed in, and silently so.
+    span = next((o["span"] for o in outcomes.values() if o.get("span")), None)
+    if span:
+        print("Measured over %s to %s (%d rebalances). Data from %s onward is RESERVED"
+              % (span[0], span[1], span[2], backtest.HOLDOUT_START))
+        print("and excluded by default; see knowledge/holdout.md.")
+    print("Overlapping windows are not a defect in themselves -- applying an i.i.d.")
+    print("standard error to them is. The overlapping column carries a Newey-West SE")
+    print("at lag h-1, so it keeps every window instead of discarding most of them.")
     print("p-values are two-sided from Student's t, adjusted for every test in this run.")
     print("The revisions do not score the same universe; see the module docstring.")
     print()
