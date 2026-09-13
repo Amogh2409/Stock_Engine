@@ -353,7 +353,17 @@ def _winsorised_z(values, tail=WINSOR_TAIL):
     # Index rather than interpolate: with ~90 names the difference is under one
     # rank and an interpolated quantile is a second convention to keep in step
     # with the TypeScript side if this ever moves.
-    cut = int(n * tail)
+    # int(n * tail) is ZERO for every n below 40 at tail=0.025, which silently
+    # disables clipping altogether -- no error, no warning, and the only symptom
+    # is a slightly wrong number. It does not bite on the full universe (80 to 95
+    # scoreable names across every pre-holdout period) but it would bite the
+    # moment anything z-scores within a smaller group, which is exactly where a
+    # single outlier does the most damage.
+    #
+    # Floor it at one point per tail, then refuse to clip so hard that fewer than
+    # three points survive in the middle: at n=3 or 4 there is no tail to speak
+    # of, and destroying the spread would be worse than leaving it alone.
+    cut = min(max(1, int(n * tail)), max(0, (n - 3) // 2))
     lo, hi = ordered[cut], ordered[n - 1 - cut]
     clipped = [clamp_value(v, lo, hi) for v in values]
     mean = sum(clipped) / n
@@ -1721,6 +1731,29 @@ class BacktestTests(unittest.TestCase):
         self.assertLess(max(zs), 3.0)
         # No spread means the feature orders nothing; None, not a divide by zero.
         self.assertIsNone(_winsorised_z([3.0] * 40))
+
+    def test_winsorising_still_clips_below_forty_names(self):
+        # int(n * 0.025) is 0 for every n < 40, so the tails were never touched
+        # there. Nothing raised; the transform just quietly stopped being a
+        # winsorisation. This asserts the tails actually MOVED, which is the
+        # only observable difference between clipping and not clipping.
+        for n in (10, 20, 30, 39):
+            values = [float(i) for i in range(n - 1)] + [1.0e6]
+            z = _winsorised_z(values)
+            self.assertIsNotNone(z, "n=%d returned nothing" % n)
+            # Unclipped, the outlier sits at z ~ sqrt(n-1) and everything else is
+            # squashed against it. Clipped, it cannot exceed the next-highest
+            # point's standing.
+            self.assertLess(max(z), 3.0, "n=%d: the outlier was not clipped" % n)
+        # And the middle must survive: clipping must not flatten the spread.
+        z30 = _winsorised_z([float(i) for i in range(29)] + [1.0e6])
+        self.assertGreater(len({round(v, 9) for v in z30}), 20)
+        # Below five names there is no tail to identify, and destroying the
+        # spread would be worse than leaving it: these must still order.
+        for n in (3, 4):
+            z = _winsorised_z([float(i) for i in range(n)])
+            self.assertIsNotNone(z)
+            self.assertEqual(len({round(v, 9) for v in z}), n)
 
     def test_the_rsi_flip_reaches_the_ranking_and_changes_it(self):
         # --rsi-flip must actually reach the ranking, not merely be accepted as
