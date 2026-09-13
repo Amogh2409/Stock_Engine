@@ -718,12 +718,23 @@ independent citations, more than almost any rule in this file.
 ### A rule that is in no book here — **Convention**, and it was nearly written in
 
 The first draft of this section defaulted to risking **1% of capital per
-position**. That number appears **nowhere in the library**. `Books_TO_study/`
-holds **134 book files**, of which 126 yield machine-readable text; searching
-all of them, with the pattern validated against a line known to exist first,
-returns **zero** hits for 1% or 2% risk-per-trade phrasing. It is practitioner
-folklore, and it was about to be written in as a default with citation-shaped
-confidence.
+position**. Searched against every machine-readable book in the library, with
+the pattern validated against a line known to exist first, that number returns
+**zero** hits for 1% or 2% risk-per-trade phrasing. It is practitioner folklore,
+and it was about to be written in as a default with citation-shaped confidence.
+
+**No book count is stated here, deliberately.** This paragraph has now been
+wrong about the size of the library twice: once at seven files, which was a
+top-level directory listing rather than the library, and once at 134, which was
+true for about an hour. A bulk download is still running against an 885-item
+catalogue, so any figure written down now has a short life and would make this
+entry false again by tomorrow. The search behind the finding was last run over a
+rebuilt corpus of 165 machine-readable documents and 19,081 chunks; re-run it
+when the download finishes, which is cheap because
+`Books_TO_study/_tools/build_corpus.py` is incremental.
+
+The finding itself is robust to the count, which is the point: every book added
+so far has moved the denominator and none has produced a hit.
 
 An earlier version of this entry said "nowhere in any of the seven books" and
 "exactly one hit for a percentage of capital — the 5% ceiling at p.1032". Both
