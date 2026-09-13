@@ -556,6 +556,7 @@ export default function App() {
             belowCutOff={result.passedBelowCutOff}
             fundamentalOnly={result.fundamentalOnly}
             priceHistory={prices?.history ?? null}
+            sizing={result.sizing}
           />
         )}
         {activeTab === 'changes' && (

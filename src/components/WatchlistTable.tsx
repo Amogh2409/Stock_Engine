@@ -3,7 +3,8 @@ import React, { useState } from 'react';
 
 import { StockEvaluation, TechnicalIndicators } from '../types';
 import { downloadText, todayStamp } from '../utils/download';
-import { fmt1, generateWatchlistCsv, PriceHistory } from '../utils/screenerEngine';
+import { fmt1, generateWatchlistCsv, PriceHistory, SizingSummary } from '../utils/screenerEngine';
+import { PositionSizingSummary } from './PositionSizingSummary';
 import { PriceChart } from './PriceChart';
 
 interface WatchlistTableProps {
@@ -23,6 +24,12 @@ interface WatchlistTableProps {
    * were derived from, and nothing here recomputes them.
    */
   priceHistory?: PriceHistory | null;
+  /**
+   * What the sizing pass concluded for the run. Optional because the tests and
+   * any older caller render the table without it; when absent the summary is
+   * simply not shown, which is honest -- nothing is claimed about exposure.
+   */
+  sizing?: SizingSummary | null;
 }
 
 /**
@@ -167,6 +174,7 @@ export const WatchlistTable: React.FC<WatchlistTableProps> = ({
   belowCutOff = [],
   fundamentalOnly = [],
   priceHistory = null,
+  sizing = null,
 }) => {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
@@ -191,6 +199,11 @@ export const WatchlistTable: React.FC<WatchlistTableProps> = ({
 
   return (
     <div className="space-y-6" id="watchlist-container">
+      {/* Above the table on purpose: the weights in the rows below sum to less
+          than 100 by design, and a reader who meets them without this first
+          reads a deliberate risk decision as an arithmetic bug. */}
+      {sizing && <PositionSizingSummary sizing={sizing} holdings={watchlist.length} />}
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
           <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-3 bg-slate-50/50">
@@ -225,6 +238,12 @@ export const WatchlistTable: React.FC<WatchlistTableProps> = ({
                   </th>
                   <th className="py-3 px-3 text-right">Fund. Score</th>
                   <th className="py-3 px-3 text-right">Tech. Score</th>
+                  <th
+                    className="py-3 px-3 text-right"
+                    title="Share of total capital, by equal risk. A dash means this company was not sized; hover the dash for why."
+                  >
+                    Weight
+                  </th>
                   <th className="py-3 px-3 text-center">Flags</th>
                   <th className="py-3 px-2 w-8"></th>
                 </tr>
@@ -291,6 +310,25 @@ export const WatchlistTable: React.FC<WatchlistTableProps> = ({
                         >
                           {techScore === null ? 'N/A' : `${techScore}/100`}
                         </span>
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono">
+                        {/* A dash, never a blank or a zero: an unsized company
+                            was not measured, and a 0% would say it was measured
+                            and found worthless. Same rule as the CSV. */}
+                        {item.positionWeightPct === null ? (
+                          <span className="text-slate-300" title={item.sizingBasis}>
+                            —
+                          </span>
+                        ) : (
+                          <span title={item.sizingBasis}>
+                            {fmt1(item.positionWeightPct)}%
+                            {item.stopPrice !== null && (
+                              <span className="block text-[10px] font-normal text-slate-400">
+                                stop ₹{item.stopPrice.toLocaleString('en-IN')}
+                              </span>
+                            )}
+                          </span>
+                        )}
                       </td>
                       <td className="py-3 px-3 text-center">
                         {item.warningFlags.length > 0 ? (

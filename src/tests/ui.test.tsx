@@ -338,6 +338,94 @@ describe('Technical panel', () => {
   });
 });
 
+describe('Position sizing in the browser', () => {
+  // evaluateStock leaves these null on purpose -- the pipeline attaches them
+  // after the top_n cut -- so a fixture built from ranked() alone would assert
+  // against nulls and pass while proving nothing. The sizing arithmetic itself
+  // is covered in engine.test.ts; these cover only what reaches the screen.
+  const sized = (overrides: Partial<StockEvaluation>): StockEvaluation => ({
+    ...ranked({}, 1),
+    ...overrides,
+  });
+
+  const SUMMARY = {
+    measure: 'atrPct' as const,
+    targetVolatilityPct: 12,
+    portfolioVolatilityPct: 14.9,
+    deploymentPct: 80.6,
+    investedPct: 75.2,
+    basis: '252 sessions common to 9 holdings',
+  };
+
+  it('explains the cash rather than leaving weights that do not add up', () => {
+    render(
+      <WatchlistTable watchlist={[sized({ positionWeightPct: 12.5 })]} sizing={SUMMARY} />,
+    );
+    const panel = screen.getByTestId('sizing-summary');
+    expect(panel.textContent).toContain('75.2%');
+    // 100 - 75.2, the number the Python run prints as cash.
+    expect(panel.textContent).toContain('24.8%');
+    // What the target permitted before the caps bit, which is a different
+    // question from what was finally invested.
+    expect(panel.textContent).toContain('80.6%');
+    expect(panel.textContent).toMatch(/volatility target doing its job/);
+  });
+
+  it('says nothing was sized instead of showing a confident zero', () => {
+    render(
+      <WatchlistTable
+        watchlist={[sized({})]}
+        sizing={{
+          ...SUMMARY,
+          measure: null,
+          portfolioVolatilityPct: null,
+          deploymentPct: null,
+          investedPct: null,
+          basis: 'no company has a usable volatility measure',
+        }}
+      />,
+    );
+    const panel = screen.getByTestId('sizing-summary');
+    expect(panel.textContent).toContain('no company has a usable volatility measure');
+    // A null figure means "not measured"; a 0% would claim it was measured and
+    // found to be nothing.
+    expect(panel.textContent).not.toMatch(/\d%/);
+  });
+
+  it('shows no summary at all when the run reported no sizing', () => {
+    render(<WatchlistTable watchlist={[sized({})]} />);
+    expect(screen.queryByTestId('sizing-summary')).toBeNull();
+  });
+
+  it('renders an unsized company as a dash carrying its reason', () => {
+    render(
+      <WatchlistTable
+        watchlist={[sized({ positionWeightPct: null, sizingBasis: 'no volatility measure' })]}
+        sizing={SUMMARY}
+      />,
+    );
+    const cell = screen.getByTitle('no volatility measure');
+    expect(cell.textContent).toBe('—');
+  });
+
+  it('shows the weight and its stop for a sized company', () => {
+    render(
+      <WatchlistTable
+        watchlist={[sized({
+          positionWeightPct: 12.5,
+          stopPrice: 88.4,
+          stopDistancePct: 11.6,
+          sizingBasis: 'equal risk by ATR, stop 2x ATR',
+        })]}
+        sizing={SUMMARY}
+      />,
+    );
+    const cell = screen.getByTitle('equal risk by ATR, stop 2x ATR');
+    expect(cell.textContent).toContain('12.5%');
+    expect(cell.textContent).toMatch(/stop/);
+  });
+});
+
 function ConfigHarness() {
   const [app, setApp] = useState<AppConfig>({ ...DEFAULT_APP_CONFIG, universe_mode: 'custom' });
   const [screening, setScreening] = useState<ScreeningConfig>(DEFAULT_SCREENING_CONFIG);
