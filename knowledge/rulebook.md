@@ -70,10 +70,36 @@ the score described below, not a predecessor. Artefacts:
 `data-store/reports/backtest_blocks/` (gitignored; re-runs in ~90s from the
 cached price file).
 
-**The clean null.** At the 1-month horizon the composite scores
-**IC −0.0015, t −0.09, n = 130, p 1.000** after Bonferroni across the 20 tests
-in the family. The smallest IC that sample could detect at 80% power is
-**0.046**, so this is a powered null and not an absence of evidence.
+**The null, and an honest account of what it can and cannot rule out.** On the
+**pre-holdout window** — the data we are permitted to measure — the composite at
+1 month scores **IC −0.0060, HAC t −0.29, n = 86, p 1.000** after Bonferroni
+across the 20 tests in the family.
+
+**This section previously called that a "powered null, not an absence of
+evidence". That was an overclaim, and it contradicted this same section 45
+lines below.** The smallest IC this sample could detect at 80% power is
+**0.059**. The text further down puts a plausible cross-sectional effect at
+roughly **0.02 to 0.05** — so the detection floor sits *above the entire range*
+of effects anyone would expect to find. The test cannot see a realistic effect,
+and a null from a test that could not have seen one is not a powered null.
+
+The full-span measurement, which includes reserved data and is therefore not
+available as evidence, was better powered but not by enough to rescue the claim:
+its floor was **0.046**, which reaches only the very top of that same range.
+
+So the supportable statement is narrower than what was here before:
+
+- **No evidence of ranking skill** at any horizon. Nothing clears correction.
+- **A small real effect cannot be ruled out.** The measurement is not sensitive
+  enough to exclude an IC in the 0.02–0.05 band, which is where a genuine effect
+  would most likely live.
+- **The portfolio evidence is separate and does not depend on power.** Ranking
+  by this score returned 19.41% against 23.29% for equal-weighting the same
+  names over the same months. That is a measured shortfall, not a failure to
+  detect.
+
+The engine is not shown to work, and it is not shown that nothing could. What is
+shown is that this construction underperformed the naive alternative.
 
 One month carries the whole argument, and the reason is structural. A 1-month
 forward return sampled monthly **cannot overlap**, so every estimator agrees
@@ -109,12 +135,21 @@ more, because the all-windows point estimate is the smaller one. Nothing clears
 correction. The conclusion did not move; the best estimate did, and it moved
 against us.
 
-| Horizon | IC (non-overlapping) | t | n | p (Bonferroni/20) | detectable at 80% |
+Below is the earlier **full-span** measurement, kept because it is the
+better-powered version and dropping it would mean hiding the stronger
+measurement rather than the weaker one. It includes reserved data and is
+therefore **not available as evidence**; it also discards overlapping windows
+rather than correcting their standard error, which is the method superseded
+above. Each row repeats both facts, because this table sits directly beneath a
+pre-holdout one and the nearest window cue a reader has is otherwise the wrong
+one:
+
+| Horizon (historical) | IC (non-overlapping) | t | n | p (Bonferroni/20) | detectable at 80% |
 | --- | --- | --- | --- | --- | --- |
-| 1 month | −0.0015 | −0.09 | 130 | 1.000 | 0.046 |
-| 3 months | +0.0481 | +2.46 | 43 | 0.358 | 0.056 |
-| 6 months | +0.0278 | +0.82 | 21 | 1.000 | 0.100 |
-| 12 months | +0.0843 | +2.05 | 10 | 1.000 | 0.128 |
+| 1 month — full span, incl. reserved, not evidence | −0.0015 | −0.09 | 130 | 1.000 | 0.046 |
+| 3 months — full span, incl. reserved, not evidence | +0.0481 | +2.46 | 43 | 0.358 | 0.056 |
+| 6 months — full span, incl. reserved, not evidence | +0.0278 | +0.82 | 21 | 1.000 | 0.100 |
+| 12 months — full span, incl. reserved, not evidence | +0.0843 | +2.05 | 10 | 1.000 | 0.128 |
 
 **Read the long horizons as unmeasurable, not as weak evidence.** At 12 months
 the independent sample is n = 10 and cannot detect an IC below 0.128 — several
@@ -127,15 +162,17 @@ signature of a phase offset rather than a signal.
 ### No block carries it
 
 A near-zero total is equally consistent with four dead blocks and with two that
-cancel. Ranking on each subtotal alone settles it. At 1 month — the only
-horizon with real power — every block sits inside its own detection floor:
+cancel. Ranking on each subtotal alone settles it. At 1 month — the cleanest
+horizon, though not a well-powered one — every block sits inside its own
+detection floor, and those floors are themselves at or above the range where a
+real effect would sit. Pre-holdout window, HAC:
 
-| Block | IC | t | detectable at 80% |
+| Block (pre-holdout, 1 month) | IC | t | detectable at 80% |
 | --- | --- | --- | --- |
-| Trend (40) | +0.0035 | +0.21 | 0.048 |
-| Momentum (30) | −0.0126 | −0.96 | 0.037 |
-| Relative strength (20) | +0.0140 | +0.88 | 0.045 |
-| Volume (10) | −0.0126 | −1.07 | 0.033 |
+| Trend (40) | +0.0032 | +0.14 | 0.062 |
+| Momentum (30) | −0.0277 | −1.67 | 0.047 |
+| Relative strength (20) | +0.0218 | +1.08 | 0.057 |
+| Volume (10) | −0.0231 | −1.66 | 0.040 |
 
 Four flat blocks. Nothing is being cancelled out, so no reweighting recovers an
 edge that is not there — which is what makes `technical_weight_pct = 40`
@@ -150,10 +187,22 @@ block that works; it is the block with the largest inflation.
 
 ### The portfolio, and two numbers that are not findings
 
-Top 20 against equal-weighting the same 100 names: **20.40% versus 21.15%**
-over the full period, **17.28% versus 20.18%** in sample. It beat equal weight
-in **4 of 12 calendar years**, and **1 of 7 in sample** — losing 2021 by 19.50
-points and 2017 by 14.59. Turnover 754%.
+On the **pre-holdout window**, with every column covering the months the
+strategy actually traded, top 20 against equal-weighting the same 100 names is
+**19.41% versus 23.29%** over the whole span — a gap of **−3.89pp** — and
+**17.28% versus 23.77%** in sample, a gap of **−6.49pp**. It beat equal weight
+in **2 of 8 calendar years**. Turnover **733%**.
+
+The gap's interval straddles zero on the whole pre-holdout span (95% CI −11.47
+to +2.32, p 0.217) and excludes it in-sample only by five hundredths of a point
+(−13.79 to −0.05, p 0.049), which does not survive correction for the number of
+tests run. So the supported claim is the **direction**, not the magnitude: on
+every window measured, this score has never beaten equal-weighting in sample.
+
+The earlier full-span figures — 20.40% versus 21.15%, 4 of 12 years, 754%
+turnover — are superseded twice over and are **not evidence**: they include
+reserved data, and their benchmark column covered 139 months against the
+strategy's 130, which flattered the gap roughly five-fold.
 
 The out-of-sample **24.78% versus 22.63%** is not evidence. That window was
 already used to revise this engine, and TSaM p. 917 is explicit: once the

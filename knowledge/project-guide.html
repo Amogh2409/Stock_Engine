@@ -106,12 +106,21 @@
 
 <div class="alert">
   <strong>Read this before anything else.</strong> The technical scoring model has been measured
-  against real prices, and <strong>it does not predict returns.</strong> Rank correlation with
-  next-month returns is <span class="mono">−0.0060</span> (t −0.29, n=86) where the smallest
-  detectable effect is <span class="mono">0.059</span> — a properly powered null, not a shortage
-  of data. All four scoring blocks are independently flat. Ranking by this score returned
-  <strong>19.41% a year against 23.29%</strong> for simply equal-weighting the same 100 stocks:
-  a gap of <strong>−3.89 points</strong>, measured over the same months for both.
+  against real prices and <strong>there is no evidence it predicts returns.</strong> Rank
+  correlation with next-month returns is <span class="mono">−0.0060</span> (t −0.29, n=86),
+  and nothing at any horizon survives correction for the number of tests run. All four scoring
+  blocks are independently flat.
+  <br><br>
+  <strong>Be precise about what that does and does not establish.</strong> The smallest effect
+  this test could reliably detect is an IC of <span class="mono">0.059</span>, and a realistic
+  cross-sectional effect is roughly <span class="mono">0.02–0.05</span> — so the measurement is
+  not sensitive enough to rule out a small real edge. It shows an absence of evidence, not
+  evidence of absence.
+  <br><br>
+  <strong>The portfolio result is the part that does not depend on statistical power.</strong>
+  Ranking by this score returned <strong>19.41% a year against 23.29%</strong> for simply
+  equal-weighting the same 100 stocks over the same months — a shortfall of
+  <strong>−3.89 points</strong>. That is a measured underperformance, not a failure to detect.
   <br><br>
   The engine is well-built, well-tested and honestly documented. What it is <em>not</em>, on
   current evidence, is a stock picker. Everything in this guide should be read with that in view.
@@ -377,18 +386,24 @@ Price history CSV ─┘                                        │
 </p>
 
 <div class="info">
-  <strong>Why the 1-month row carries the whole argument.</strong> A 1-month forward return
-  sampled monthly <em>cannot overlap</em>, so the two possible estimates coincide exactly.
-  Every longer horizon must either reuse (h−1)/h of each window — inflating the t-statistic — or
-  keep one phase offset in h and collapse the sample. At 12 months the independent sample is
-  <strong>n = 10</strong> and cannot detect an IC below 0.128, against a realistic effect of
-  0.02–0.05. A null there means the test could not see, not that nothing is there.
+  <strong>None of these horizons can see a realistic effect.</strong> A plausible
+  cross-sectional IC is roughly <strong>0.02–0.05</strong>, and the detection floors above run
+  <strong>0.048 to 0.059</strong> — at or beyond the top of that range at every horizon. So
+  every row here is an absence of evidence rather than evidence of absence, and that is true of
+  the 1-month row too, which is the best-powered of them.
+  <br><br>
+  One month is still the cleanest row, for a structural reason: a 1-month forward return
+  sampled monthly <em>cannot overlap</em>, so every estimator agrees there by construction.
+  Longer horizons do overlap, which is handled by correcting the standard error rather than by
+  discarding windows — an earlier version of this guide described that as a forced choice
+  between inflating the t-statistic and collapsing the sample, which was wrong.
 </div>
 
 <h3>No block carries it</h3>
 <p>
   A near-zero total is equally consistent with four dead blocks and two that cancel out.
-  Ranking on each subtotal alone settles it. At 1 month — the only horizon with real power —
+  Ranking on each subtotal alone settles it. At 1 month — the cleanest horizon, though not a
+  well-powered one —
   every block sits inside its own detection floor:
 </p>
 <table>
