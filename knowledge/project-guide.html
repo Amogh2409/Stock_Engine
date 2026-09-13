@@ -423,9 +423,10 @@ edge that is not there.</p>
 <p>
   Every column now covers the same months as the strategy, so the subtraction in the Gap column
   is valid — and it agrees to twelve decimal places with the independently computed paired
-  figure. Earlier versions of this table compared a 130-month CAGR against a 139-month one,
-  which flattered the strategy: the honest gap is roughly five times wider than that comparison
-  implied.
+  figure. Earlier versions compared CAGRs computed over different numbers of months, which
+  flattered the strategy. Measured on this same window, the unaligned comparison would have
+  given <strong>−0.76pp</strong> where the matched one gives <strong>−3.89pp</strong>: the real
+  gap is about five times wider than the flawed comparison implied.
 </p>
 <p>
   Beat equal-weighting in <strong>2 of 8</strong> calendar years. Annual turnover
@@ -435,10 +436,6 @@ edge that is not there.</p>
   survive correction for the number of tests run. <strong>The supported claim is the direction,
   not the magnitude:</strong> on every window measured, the strategy has never beaten
   equal-weighting in-sample.
-</p>
-<p>
-  Beat equal-weighting in <strong>4 of 12</strong> calendar years, and <strong>1 of 7</strong>
-  in-sample — losing 2021 by 19.5 points and 2017 by 14.6. Annual turnover <strong>754%</strong>.
 </p>
 
 <h3>Three numbers that look like findings and are not</h3>
@@ -455,11 +452,15 @@ edge that is not there.</p>
   precisely why 2023 onward is now reserved and untouched.
 </div>
 <div class="warn">
-  <strong>3. The RSI flip beating equal-weight in all three windows</strong> (22.88 / 20.46 /
-  26.26). Tested both directions; the rank IC underneath is <span class="mono">+0.0059</span>.
-  With essentially zero IC the top-20 composition is noise, so what changed is <em>which twenty
-  names the noise picked</em> — a story about twenty draws, not about a rule. Neither sign is
-  adopted.
+  <strong>3. The RSI flip appearing to beat equal-weighting.</strong> Scoring
+  <code>rsi14 &lt; 50</code> instead of <code>&gt; 50</code> was tested, and its portfolio
+  figures look better than the shipped sign's. The rank IC underneath them is approximately
+  <strong>zero</strong>, and with no ranking signal the top-20 composition is noise — so what
+  changed is <em>which twenty names the noise picked</em>, a story about twenty draws rather
+  than about a rule. Neither sign is adopted. The figures themselves are deliberately not
+  reproduced here: that experiment ran over the full span before the holdout and before
+  benchmark alignment, so they are not comparable with anything above and re-running it on the
+  pre-holdout window is the only way to get numbers that would be.
 </div>
 
 <h2 class="break">6. Status — what is done</h2>

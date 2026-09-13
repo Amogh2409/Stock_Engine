@@ -169,6 +169,17 @@ on the same data, via a `--rsi-flip` switch in the backtest; `RSI_MOMENTUM_FLOOR
 itself was never touched, because changing the shipped comparison would be
 adoption rather than measurement.
 
+> **Provenance of every figure in this section, and why none of them may be
+> quoted alongside the ones above.** This experiment ran on 2026-09-13 over the
+> *full* 2015–2026 span, before the holdout was reserved and before the
+> benchmark was aligned to the strategy's traded months. So its numbers carry
+> both defects the sections above were rewritten to remove: they include
+> reserved data, and their equal-weight column covers 139 months against the
+> strategy's 130. They are kept because they record a decision — both signs
+> tested, neither adopted — and that record is worth more than the figures.
+> Re-running it on the pre-holdout window is the only way to get comparable
+> numbers, and nothing turns on having them.
+
 Composite, non-overlapping, shipped → flipped:
 
 | Horizon | Shipped | Flipped | Detectable at 80% |
@@ -648,11 +659,18 @@ this repository states it; it is arithmetic. A CAGR is a function of its
 period, so differencing two CAGRs computed over different periods measures the
 periods as much as the strategies.
 
-The cost was not small and it ran in the flattering direction. The old table
-implied a gap of **−0.75pp** on the full span. Over matched months the
-pre-holdout gap is **−3.89pp**, roughly five times wider. The strategy looked
-better than it was because its benchmark was credited with months the strategy
-could not trade.
+The cost was not small and it ran in the flattering direction. Held to one
+window — the pre-holdout span, so the comparison is like for like — the
+unaligned figures gave 19.41% against 20.17%, a gap of **−0.76pp**. Aligned,
+the same window gives 19.41% against 23.29%, a gap of **−3.89pp**: about five
+times wider. The strategy looked better than it was because its benchmark was
+credited with months the strategy could not trade.
+
+The first draft of this paragraph took the −0.76pp from the full span and the
+−3.89pp from the pre-holdout window and called the ratio five-fold. Same
+answer, invalid route — and differencing across mismatched periods is the exact
+error this entry exists to record. Worth leaving visible: knowing the rule does
+not stop you breaking it in the paragraph where you state it.
 
 Two details worth keeping, because both are about how the defect survived:
 
