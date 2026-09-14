@@ -10,9 +10,10 @@ pins them together.
 **1,519 nodes** (319 documents, 1,200 concepts), **10,529 edges**, and
 **42,745 indexed chunks** — plus a working offline query tool. Nothing in the
 rest of this repository referenced it until 2026-09-14, and it had never been
-queried in anger. `knowledge/rulebook.md` carries 23 rules tagged **Convention**,
-meaning "no book in this repo justifies it" — a claim that was, until that sweep,
-mostly untested against this corpus rather than tested and failed.
+queried in anger. `knowledge/rulebook.md` carries **15 Convention-tagged sections** — 10 engine
+parameters and 5 policies or facts, not the 23 a `grep -c` returns — meaning "no
+book in this repo justifies it", a claim that was, until that sweep, mostly
+untested against this corpus rather than tested and failed.
 
 **Check it is present before relying on it.** `Books_TO_study/` is **gitignored**,
 so a fresh clone, a clean-room worktree and most CI checkouts will not have it:
@@ -79,7 +80,7 @@ So:
 - **`engine.py` is the source of truth.** After any change to it run
   `npm run build:python` and `npm run generate:notebook`, or `npm run check:python`
   fails. Measurement variants belong in `python/backtest.py`, never in the engine
-  — see `--rsi-flip`, `--continuous`, `--neutral`, `--skip-month` for the pattern.
+  — see `--rsi-flip`, `--continuous`, `--neutral`, `--no-skip-month` for the pattern.
 - **Update `knowledge/rulebook.md` in the same commit as any rule change**, with
   its status: Sourced / Adapted / Convention / Contradicted.
 - **A scoring change trips `npm run check:docs`.** It hashes `engine.py`'s two

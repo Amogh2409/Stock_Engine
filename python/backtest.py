@@ -1141,6 +1141,11 @@ def _newey_west_se(series, lag):
     return math.sqrt(total / n)
 
 
+def _percentile_index(quantile, count):
+    """Index of the nearest-rank percentile in a sorted list of `count` values."""
+    return max(0, min(count - 1, math.ceil(quantile * count) - 1))
+
+
 def _stationary_bootstrap_se(series, mean_block, draws=BOOTSTRAP_DRAWS, seed=BOOTSTRAP_SEED):
     """(standard error, 2.5th pct, 97.5th pct) by the Politis-Romano bootstrap.
 
@@ -1207,8 +1212,12 @@ def _stationary_bootstrap_se(series, mean_block, draws=BOOTSTRAP_DRAWS, seed=BOO
     means.sort()
     centre = sum(means) / draws
     variance = sum((m - centre) ** 2 for m in means) / (draws - 1)
-    lo = means[int(0.025 * draws)]
-    hi = means[min(draws - 1, int(0.975 * draws))]
+    # Nearest-rank percentile: the qth percentile of n sorted values is at index
+    # ceil(q*n) - 1, not int(q*n). At draws=2000 the old form took index 50 and
+    # 1950 where the 2.5th and 97.5th are 49 and 1949 -- both off by one rank,
+    # a sub-percentile error but a wrong one in both tails.
+    lo = means[_percentile_index(0.025, draws)]
+    hi = means[_percentile_index(0.975, draws)]
     return math.sqrt(variance), lo, hi
 
 
@@ -1424,6 +1433,64 @@ def _ic_statistics(series, family_size, hac_lag=0):
     }
 
 
+def _phase_averaged_statistics(phases, family_size):
+    """Non-overlapping IC statistics using EVERY phase, not an arbitrary one.
+
+    At horizon h there are h valid non-overlapping series -- windows starting at
+    month 0, h, 2h..., or at 1, h+1..., and so on. The study used to keep phase 0
+    alone, which threw away (h-1)/h of the observations and made the column
+    depend on which month the price file happened to begin in. At h=12 that meant
+    6 windows out of 75.
+
+    THE POINT ESTIMATE IS AVERAGED; THE STANDARD ERROR IS NOT REDUCED. Averaging
+    the h phase means uses every observation and removes the arbitrary choice. It
+    does NOT buy a sqrt(h) improvement in precision, because the phases are not
+    independent OF EACH OTHER: phase 0's first window spans months 0..h and phase
+    1's spans 1..h+1, sharing h-1 of them. Dividing the standard error by sqrt(h)
+    would assume an independence that does not hold and would understate it --
+    the direction this project keeps having to correct.
+
+    So the reported standard error is the average of the per-phase standard
+    errors, each honestly derived from its own phase's independent observations.
+    That is conservative: the true SE of the averaged mean lies below it and
+    above SE/sqrt(h), and the overlapping column with a HAC standard error is the
+    estimate to read when precision matters.
+    """
+    if not phases:
+        return _ic_statistics([], family_size, hac_lag=0)
+    per_phase = [_ic_statistics(series, family_size, hac_lag=0)
+                 for _key, series in sorted(phases.items()) if len(series) > 1]
+    if not per_phase:
+        return _ic_statistics(max(phases.values(), key=len), family_size, hac_lag=0)
+    count = len(per_phase)
+    mean_ic = sum(p["mean_ic"] for p in per_phase) / count
+    observations = sum(p["ic_periods"] for p in per_phase)
+    spreads = [p["ic_sd"] / math.sqrt(p["ic_periods"]) for p in per_phase
+               if p["ic_sd"] == p["ic_sd"] and p["ic_periods"] > 0]
+    standard_error = (sum(spreads) / len(spreads)) if spreads else float("nan")
+    # df from ONE phase's length, not the pooled count, for the same reason the
+    # standard error is not divided by sqrt(h).
+    typical = sum(p["ic_periods"] for p in per_phase) / count
+    df = max(1, int(typical) - 1)
+    t_stat = (mean_ic / standard_error) \
+        if standard_error == standard_error and standard_error > 0 else float("nan")
+    p_value = two_sided_p(t_stat, df)
+    detectable = ((_t_critical(df) + Z_FOR_80_PERCENT_POWER) * standard_error) \
+        if standard_error == standard_error and standard_error > 0 else float("nan")
+    merged = dict(per_phase[0])
+    merged.update({
+        "mean_ic": mean_ic,
+        "ic_periods": observations,
+        "ic_t_stat": t_stat,
+        "ic_p_value": p_value,
+        "ic_p_bonferroni": bonferroni(p_value, family_size),
+        "detectable_ic_80pct": detectable,
+        "phases_averaged": count,
+        "phase_periods": typical,
+    })
+    return merged
+
+
 def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORIZONS,
                  block=None, family_size=None, rsi_flip=False, continuous=False,
                  neutral=False, no_skip_month=False, sectors=None):
@@ -1458,7 +1525,7 @@ def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORI
     if family_size is None:
         family_size = len(horizons)
     buckets = {h: {d: [] for d in range(10)} for h in horizons}
-    ics = {h: {"overlapping": [], "non_overlapping": []} for h in horizons}
+    ics = {h: {"overlapping": [], "phases": {}} for h in horizons}
     for index, signal_date in enumerate(rebalances):
         entry_date = next_session(calendar, signal_date)
         if entry_date is None:
@@ -1496,8 +1563,11 @@ def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORI
                 # rather than inheriting the composite's.
                 continue
             ics[horizon]["overlapping"].append(ic)
-            if index % horizon == 0:
-                ics[horizon]["non_overlapping"].append(ic)
+            # EVERY phase, not just phase 0. There are h valid non-overlapping
+            # series at horizon h; keeping only `index % horizon == 0` threw away
+            # h-1 of them and made the column depend on which month the price
+            # file happened to begin in.
+            ics[horizon]["phases"].setdefault(index % horizon, []).append(ic)
     summary = {}
     for horizon in horizons:
         deciles = {}
@@ -1515,8 +1585,7 @@ def decile_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORI
         # is wrong rather than the data.
         overlapping = _ic_statistics(ics[horizon]["overlapping"], family_size,
                                      hac_lag=horizon - 1)
-        non_overlapping = _ic_statistics(ics[horizon]["non_overlapping"], family_size,
-                                         hac_lag=0)
+        non_overlapping = _phase_averaged_statistics(ics[horizon]["phases"], family_size)
         summary[horizon] = {
             "deciles": deciles,
             "overlapping": overlapping,
@@ -2484,6 +2553,50 @@ class BacktestTests(unittest.TestCase):
         se2, _, _ = _stationary_bootstrap_se(series, 4, seed=BOOTSTRAP_SEED + 1)
         self.assertNotEqual(se, se2)
         self.assertLess(abs(se - se2) / se, 0.25)
+
+    def test_percentile_index_is_nearest_rank(self):
+        # The qth percentile of n sorted values sits at ceil(q*n) - 1, not
+        # int(q*n). At the study's 2000 draws the old form took index 50 and 1950
+        # where the answers are 49 and 1949 -- both tails off by one rank.
+        self.assertEqual(_percentile_index(0.025, 2000), 49)
+        self.assertEqual(_percentile_index(0.975, 2000), 1949)
+        self.assertNotEqual(_percentile_index(0.025, 2000), int(0.025 * 2000))
+        self.assertNotEqual(_percentile_index(0.975, 2000), int(0.975 * 2000))
+        values = list(range(100))
+        self.assertEqual(values[_percentile_index(0.50, 100)], 49)
+        self.assertEqual(values[_percentile_index(0.01, 100)], 0)
+        self.assertEqual(values[_percentile_index(1.00, 100)], 99)
+        self.assertEqual(_percentile_index(0.0, 10), 0)
+        self.assertEqual(_percentile_index(1.5, 10), 9)
+
+    def test_every_phase_is_used_not_just_the_first(self):
+        # At horizon h there are h non-overlapping series. Keeping only phase 0
+        # discarded (h-1)/h of the observations and made the column depend on
+        # which month the price file began in.
+        phases = {0: [0.10] * 9, 1: [0.20] * 9, 2: [0.30] * 9, 3: [0.40] * 9}
+        stats = _phase_averaged_statistics(phases, family_size=1)
+        self.assertEqual(stats["phases_averaged"], 4)
+        self.assertAlmostEqual(stats["mean_ic"], 0.25, places=12)
+        self.assertEqual(stats["ic_periods"], 36)
+        # Guard: phase 0 alone gives 0.10. If this ever equals 0.10 the averaging
+        # has silently stopped happening.
+        self.assertNotAlmostEqual(stats["mean_ic"], 0.10, places=6)
+
+    def test_phase_averaging_does_not_shrink_the_standard_error(self):
+        # Averaging h phase means does NOT buy a sqrt(h) precision gain: phase 0's
+        # first window spans months 0..h and phase 1's spans 1..h+1, sharing h-1
+        # of them. Dividing by sqrt(h) would understate the SE -- the direction
+        # this project keeps having to correct.
+        rng = random.Random(5)
+        phases = {k: [rng.gauss(0.05, 0.2) for _ in range(20)] for k in range(4)}
+        stats = _phase_averaged_statistics(phases, family_size=1)
+        singles = [_ic_statistics(series, 1, hac_lag=0) for series in phases.values()]
+        typical_se = sum(p["ic_sd"] / math.sqrt(p["ic_periods"]) for p in singles) / 4
+        self.assertAlmostEqual(abs(stats["mean_ic"] / stats["ic_t_stat"]), typical_se,
+                               places=12)
+        self.assertGreater(abs(stats["mean_ic"] / stats["ic_t_stat"]),
+                           typical_se / math.sqrt(4) * 1.5)
+        self.assertEqual(stats["phase_periods"], 20)
 
     def test_the_bootstrap_is_not_a_conservative_check_on_hac(self):
         # It was introduced as one and the docstring said so. It is not: across

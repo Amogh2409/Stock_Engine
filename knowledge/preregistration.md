@@ -243,3 +243,24 @@ guard that the fixture actually moves relative strength.
 rule, not the power analysis. The features named in §1 are still the engine's
 twelve; one of them is now measured over a window a source states. The holdout
 test remains **NOT RUN**.
+
+### 2026-09-14 — the bootstrap percentile index was off by one rank
+
+Audit finding 7. `means[int(0.025 * draws)]` took index 50 of 2000 where the
+nearest-rank 2.5th percentile is index 49; both tails were off by one.
+
+**§2's published bootstrap CI moves by that one rank**, from
+**[−0.0673, −0.0154]** to **[−0.0675, −0.0155]**. §2 is not rewritten — that is
+what an amendment log is for — and the superseded pair is recorded here so a
+reader comparing the two knows which is current.
+
+Everything else in the cell is unchanged to every stored digit: `mean_ic`
+−0.040666455273968276, `hac_t` −3.0475295241371669, `ic_t` −3.0297595211989994,
+`bootstrap_t` −3.0980523911121942, floor 0.037983442542370106, p×20
+0.061481547200361045.
+
+**The decision rule in §5 is unaffected.** It tests the sign, `hac_t ≤ −2.0167`,
+and whether the CI lies entirely below zero. The corrected interval still lies
+entirely below zero, and the t did not move.
+
+The holdout test remains **NOT RUN**.

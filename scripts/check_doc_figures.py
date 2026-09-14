@@ -67,6 +67,13 @@ RETIRED = {
     "0.0688": ("relStrength 12m detection floor", "0.0828"),
     "0.706": ("composite 6m Bonferroni p", "1.000"),
     "5.9%": ("family-wise chance at 20 tests", "18%"),
+    # Superseded 2026-09-14 when the skip-month window changed what relative
+    # strength measures. The cell no longer clears its floor.
+    "0.0774": ("relStrength 6m floor, pre-skip-month engine", "0.0880"),
+    "+0.0784": ("relStrength 6m IC, pre-skip-month engine", "+0.0781"),
+    "0.198": ("relStrength 6m Bonferroni p, pre-skip-month engine", "0.402"),
+    "−0.0060": ("composite 1m IC, pre-skip-month engine", "−0.0033"),
+    "19.41%": ("strategy CAGR, pre-skip-month engine", "22.52%"),
     "within 2% at every horizon": (
         "claim that the bootstrap agreed with HAC",
         "withdrawn; the bootstrap is smaller in 10 of 15 cells"),
@@ -87,6 +94,28 @@ def key_figures(results):
         out["relStrength %sm floor" % horizon] = round(block["detectable_ic_80pct"], 4)
         out["relStrength %sm p*" % horizon] = round(block["hac_p_bonferroni"], 3)
         out["relStrength %sm df" % horizon] = block["hac_df"]
+    return out
+
+
+def _paragraphs(body):
+    """(line number, line, enclosing paragraph) for every line.
+
+    Paragraphs are blank-line separated, which is the unit a retraction is
+    actually written in. HTML gets the same treatment: its blocks are separated
+    by blank lines too, and a tag-aware parse would buy nothing here.
+    """
+    lines = body.splitlines()
+    out, start = [], 0
+    for index, line in enumerate(lines):
+        if line.strip():
+            continue
+        block = "\n".join(lines[start:index])
+        for offset in range(start, index):
+            out.append((offset + 1, lines[offset], block))
+        start = index + 1
+    block = "\n".join(lines[start:])
+    for offset in range(start, len(lines)):
+        out.append((offset + 1, lines[offset], block))
     return out
 
 
@@ -175,10 +204,14 @@ def main():
     print("RETIRED -- superseded values must appear only on a retraction line")
     for value, (was, now) in sorted(RETIRED.items()):
         for name in DOCS:
-            for number, line in enumerate(text[name].splitlines(), start=1):
+            for number, line, block in _paragraphs(text[name]):
                 if value not in line:
                     continue
-                lowered = line.lower()
+                # Scoped to the PARAGRAPH, not the line. A retraction is prose and
+                # routinely puts the marker a line or two from the figure it is
+                # retracting; a line-scoped check forced the two onto one line and
+                # distorted the writing to satisfy the tool.
+                lowered = block.lower()
                 if any(marker in lowered for marker in RETRACTION_MARKERS):
                     print("  ok (retraction)  %s:%d  %s" % (name, number, value))
                     continue

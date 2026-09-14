@@ -10,20 +10,7 @@ or labelling nit waits here until something substantive touches the same file.
 
 ## Open
 
-- **The non-overlapping IC series keeps only phase 0 of h.** `backtest.py`'s
-  decile study appends to `non_overlapping` when `index % horizon == 0`, which
-  retains one of the h valid non-overlapping series and discards the other h−1.
-  Averaging all h phases is the efficient estimator and throws nothing away. Less
-  urgent now that HAC carries the headline, but it is free information currently
-  unused. (Audit finding 6.)
-- **The bootstrap percentile index is off by one rank.** `means[int(0.025 * draws)]`
-  is index 50 of 2000; the 2.5th percentile by nearest-rank is index 49.
-  Sub-percentile effect on the reported interval. (Audit finding 7.)
 
-- **`PROJECT_GUIDE.pdf` is stale** relative to `knowledge/project-guide.html`
-  as of 2026-09-14. The HTML carries the horizon-qualified block claims and the
-  relative-strength 6-month cell; the PDF predates them. Regenerate next time
-  the guide is edited for a substantive reason, not on its own.
 - **The guide does not carry the full-span dilution figures** (relative strength
   +0.0784 pre-holdout against +0.0485 including reserved years, and 12 of 16
   block-horizon cells larger pre-holdout). They are in `rulebook.md` under
@@ -31,6 +18,16 @@ or labelling nit waits here until something substantive touches the same file.
   treatment of that cell is ever expanded.
 
 ## Resolved
+
+- ~~Audit finding 6: the non-overlapping IC series kept only phase 0 of h.~~
+  Fixed 2026-09-14. All h phases are now averaged. The effect was larger than
+  "free information" suggested: at 12 months the column went from 6 observations
+  to 75, and the composite IC from +0.0725 to +0.0156 — the old figure was an
+  artefact of which month the price file happened to begin in.
+- ~~Audit finding 7: the bootstrap percentile index was off by one rank.~~
+  Fixed 2026-09-14, nearest-rank. Sub-percentile, and it moved the
+  pre-registration's published CI by one rank; recorded in its amendment log.
+- ~~`PROJECT_GUIDE.pdf` is stale.~~ Regenerated 2026-09-14.
 
 - ~~Guide and rulebook claimed "four flat blocks" without a horizon qualifier,
   and the guide's alert generalised a 1-month result across all horizons.~~

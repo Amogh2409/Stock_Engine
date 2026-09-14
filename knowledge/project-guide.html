@@ -107,25 +107,29 @@
 <div class="alert">
   <strong>Read this before anything else.</strong> The technical scoring model has been measured
   against real prices and <strong>there is no evidence it predicts returns.</strong> Rank
-  correlation with next-month returns is <span class="mono">−0.0060</span> (t −0.29, n=86),
+  correlation with next-month returns is <span class="mono">−0.0033</span> (t −0.16, n=86),
   and nothing at any horizon survives correction for the number of tests run. All four scoring
   blocks are independently flat <strong>at one month</strong> — and that is a 1-month claim
-  which does not extend. At six months relative strength is the one cell in twenty that rises
-  above its own detection floor (IC <span class="mono">+0.0784</span>, HAC t +3.06, corrected
-  p <span class="mono">0.198</span>). It clears that floor by 1.3%, does not clear correction,
-  and comes from a window searched about 80 different ways. It is recorded rather than
-  claimed; see <em>No block carries it</em> below for why.
+  which does not extend.
+  <br><br>
+  <strong>Since 2026-09-14, no cell clears its own detection floor at any horizon — zero of
+  twenty.</strong> Relative strength at six months used to, by 1.3%. Adopting the sourced
+  skip-month window (CFA <span class="mono">rf-v2016-n4-1#71</span>) moved that cell to
+  IC <span class="mono">+0.0781</span> against a floor of <span class="mono">0.0880</span>,
+  corrected p <span class="mono">0.402</span>. The project's last above-floor cell was removed
+  by adopting a citation, not by a measurement chosen to remove it.
   <br><br>
   <strong>Be precise about what that does and does not establish.</strong> The smallest effect
-  this test could reliably detect is an IC of <span class="mono">0.059</span>, and a realistic
+  this test could reliably detect is an IC of <span class="mono">0.058</span>, and a realistic
   cross-sectional effect is roughly <span class="mono">0.02–0.05</span> — so the measurement is
   not sensitive enough to rule out a small real edge. It shows an absence of evidence, not
   evidence of absence.
   <br><br>
   <strong>The portfolio result is the part that does not depend on statistical power.</strong>
-  Ranking by this score returned <strong>19.41% a year against 23.29%</strong> for simply
+  Ranking by this score returned <strong>22.52% a year against 23.29%</strong> for simply
   equal-weighting the same 100 stocks over the same months — a shortfall of
-  <strong>−3.89 points</strong>. That is a measured underperformance, not a failure to detect.
+  <strong>−0.78 points</strong> (95% CI −7.68 to +5.00, p 0.794). It has never beaten
+  equal-weighting on any window measured, but the gap is now well inside its own interval.
   <br><br>
   The engine is well-built, well-tested and honestly documented. What it is <em>not</em>, on
   current evidence, is a stock picker. Everything in this guide should be read with that in view.
@@ -383,14 +387,14 @@ Price history CSV ─┘                                        │
 <table>
   <tr><th>Horizon</th><th class="num">Rank IC</th><th class="num">t (HAC)</th><th class="num">n</th>
       <th class="num">p (corrected)</th><th class="num">Detectable</th></tr>
-  <tr><td><strong>1 month</strong></td><td class="num">−0.0060</td><td class="num">−0.29</td>
-      <td class="num">86</td><td class="num">1.000</td><td class="num">0.059</td></tr>
-  <tr><td>3 months</td><td class="num">+0.0157</td><td class="num">+0.85</td><td class="num">84</td>
-      <td class="num">1.000</td><td class="num">0.053</td></tr>
-  <tr><td>6 months</td><td class="num">+0.0459</td><td class="num">+2.14</td><td class="num">81</td>
-      <td class="num">1.000</td><td class="num">0.065</td></tr>
-  <tr><td>12 months</td><td class="num">+0.0443</td><td class="num">+1.91</td><td class="num">75</td>
-      <td class="num">1.000</td><td class="num">0.079</td></tr>
+  <tr><td><strong>1 month</strong></td><td class="num">−0.0033</td><td class="num">−0.16</td>
+      <td class="num">86</td><td class="num">1.000</td><td class="num">0.058</td></tr>
+  <tr><td>3 months</td><td class="num">+0.0183</td><td class="num">+0.95</td><td class="num">84</td>
+      <td class="num">1.000</td><td class="num">0.056</td></tr>
+  <tr><td>6 months</td><td class="num">+0.0504</td><td class="num">+2.15</td><td class="num">81</td>
+      <td class="num">1.000</td><td class="num">0.071</td></tr>
+  <tr><td>12 months</td><td class="num">+0.0434</td><td class="num">+1.81</td><td class="num">75</td>
+      <td class="num">1.000</td><td class="num">0.082</td></tr>
 </table>
 <p style="font-size:9.3pt;color:#475569">
   Every window is kept and the standard error corrected for their dependence (Newey–West at
@@ -401,7 +405,7 @@ Price history CSV ─┘                                        │
 <div class="info">
   <strong>None of these horizons can see a realistic effect.</strong> A plausible
   cross-sectional IC is roughly <strong>0.02–0.05</strong>, and the detection floors above run
-  <strong>0.053 to 0.079</strong> — strictly above the top of that range at every horizon. So
+  <strong>0.056 to 0.082</strong> — strictly above the top of that range at every horizon. So
   every row here is an absence of evidence rather than evidence of absence, and that is true of
   the 1-month row too, which is the best-powered of them.
   <br><br>
@@ -423,7 +427,7 @@ Price history CSV ─┘                                        │
   <tr><th>Block</th><th class="num">IC</th><th class="num">t (HAC)</th><th class="num">Detectable at 80% power</th></tr>
   <tr><td>Trend (40 pts)</td><td class="num">+0.0032</td><td class="num">+0.14</td><td class="num">0.062</td></tr>
   <tr><td>Momentum (30 pts)</td><td class="num">−0.0277</td><td class="num">−1.67</td><td class="num">0.047</td></tr>
-  <tr><td>Relative strength (20 pts)</td><td class="num">+0.0218</td><td class="num">+1.08</td><td class="num">0.057</td></tr>
+  <tr><td>Relative strength (20 pts)</td><td class="num">+0.0300</td><td class="num">+1.56</td><td class="num">0.055</td></tr>
   <tr><td>Volume (10 pts)</td><td class="num">−0.0231</td><td class="num">−1.66</td><td class="num">0.040</td></tr>
 </table>
 <p><strong>Four flat blocks at one month.</strong> Nothing is cancelling out at that horizon, so
@@ -434,10 +438,10 @@ stated it without the qualifier, which generalised a 1-month result across all f
 <div class="info">
   <strong>At six months, one cell in twenty clears its floor.</strong> Relative strength,
   pre-holdout window, overlapping windows with Newey–West at lag 5:
-  IC <span class="mono">+0.0784</span> over n&nbsp;=&nbsp;81, against a detection floor of
-  <span class="mono">0.0774</span> — it clears by 1.3%. HAC t +3.06 (SE 0.0256), bootstrap
-  t +3.46. Raw p <span class="mono">0.0099</span>; corrected for the 20 tests in one run,
-  p <span class="mono">0.198</span>. It is the only cell in this project above its own floor.
+  IC <span class="mono">+0.0781</span> over n&nbsp;=&nbsp;81, against a detection floor of
+  <span class="mono">0.0880</span> — it now MISSES by 0.0100. HAC t +2.68 (SE 0.0291),
+  bootstrap t +2.97. Raw p <span class="mono">0.0201</span>; corrected for the 20 tests in
+  one run, p <span class="mono">0.402</span>. No cell in this project is above its own floor.
   <br><br>
   The t is referred to <strong>12 degrees of freedom, not 80</strong>. On overlapping windows
   consecutive observations share five sixths of their span, so the independent count is 81/6,
@@ -478,7 +482,7 @@ stated it without the qualifier, which generalised a 1-month result across all f
   <tr><th>Window</th><th class="num">Top 20 by score</th><th class="num">Equal-weight all 100</th>
       <th class="num">Nifty index</th><th class="num">Gap</th></tr>
   <tr><td>Whole pre-holdout<br><span style="font-size:8pt;color:#64748b">86 months each</span></td>
-      <td class="num">19.41%</td><td class="num">23.29%</td><td class="num">12.05%</td>
+      <td class="num">22.52%</td><td class="num">23.29%</td><td class="num">12.05%</td>
       <td class="num"><strong>−3.89pp</strong></td></tr>
   <tr><td>In sample<br><span style="font-size:8pt;color:#64748b">75 months each</span></td>
       <td class="num">17.28%</td><td class="num">23.77%</td><td class="num">13.31%</td>

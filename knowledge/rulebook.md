@@ -154,7 +154,7 @@ cached price file).
 
 **The null, and an honest account of what it can and cannot rule out.** On the
 **pre-holdout window** — the data we are permitted to measure — the composite at
-1 month scores **IC −0.0060, HAC t −0.29, n = 86, p 1.000** after Bonferroni
+1 month scores **IC −0.0033, HAC t −0.16, n = 86, p 1.000** after Bonferroni
 across the 20 tests in the family.
 
 **This section previously called that a "powered null, not an absence of
@@ -176,9 +176,10 @@ So the supportable statement is narrower than what was here before:
   enough to exclude an IC in the 0.02–0.05 band, which is where a genuine effect
   would most likely live.
 - **The portfolio evidence is separate and does not depend on power.** Ranking
-  by this score returned 19.41% against 23.29% for equal-weighting the same
-  names over the same months. That is a measured shortfall, not a failure to
-  detect.
+  by this score returned 22.52% against 23.29% for equal-weighting the same
+  names over the same months — a gap of −0.78pp, 95% CI −7.68 to +5.00. It has
+  never beaten equal-weighting on any window measured, though the gap now sits
+  well inside its own interval.
 
 The engine is not shown to work, and it is not shown that nothing could. What is
 shown is that this construction underperformed the naive alternative.
@@ -224,10 +225,10 @@ destroyed it. On the pre-holdout window the composite reads:
 
 | Horizon (pre-holdout window) | IC | n | i.i.d. t | HAC t | bootstrap t | p (corrected) |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 month | −0.0060 | 86 | −0.29 | −0.29 | −0.30 | 1.000 |
-| 3 months | +0.0157 | 84 | +0.89 | +0.85 | +0.94 | 1.000 |
-| 6 months | +0.0459 | 81 | +2.72 | +2.14 | +2.26 | 1.000 |
-| 12 months | +0.0443 | 75 | +2.22 | +1.91 | +2.00 | 1.000 |
+| 1 month | −0.0033 | 86 | −0.16 | −0.16 | −0.16 | 1.000 |
+| 3 months | +0.0183 | 84 | +1.07 | +0.95 | +1.02 | 1.000 |
+| 6 months | +0.0504 | 81 | +3.06 | +2.15 | +2.24 | 1.000 |
+| 12 months | +0.0434 | 75 | +2.31 | +1.81 | +1.91 | 1.000 |
 
 More observations with a correct standard error bought *less* significance, not
 more, because the all-windows point estimate is the smaller one. Nothing clears
@@ -321,7 +322,7 @@ detection floor. Pre-holdout window, HAC:
 | --- | --- | --- | --- |
 | Trend (40) | +0.0032 | +0.14 | 0.062 |
 | Momentum (30) | −0.0277 | −1.67 | 0.047 |
-| Relative strength (20) | +0.0218 | +1.08 | 0.057 |
+| Relative strength (20) | +0.0300 | +1.56 | 0.055 |
 | Volume (10) | −0.0231 | −1.66 | 0.040 |
 
 **The stated block weights have never been the realised ones.** `TECHNICAL_BLOCK_MAX`
@@ -355,19 +356,30 @@ that is not there — which is what makes `technical_weight_pct = 40` unearned
 rather than merely unvalidated. That is a 1-month conclusion and it does not
 extend, because at six months one cell does clear its floor.
 
-### The one cell above its own floor
+### The cell that used to clear its floor, and no longer does
 
-Relative strength at 6 months is the only cell in this project whose IC exceeds
-its own detection floor. It is recorded here because omitting it while
-publishing "four flat blocks" is how an affirmative negative becomes an
-overclaim. It is not a finding.
+**As of 2026-09-14 no cell in this project clears its own detection floor at any
+horizon — zero of twenty.** Relative strength at 6 months was the last one, and
+it cleared by 1.3%. Adopting the sourced skip-month window (CFA
+`rf-v2016-n4-1#71`) changed what relative strength measures, and the cell now
+reads IC **+0.0781** against a floor of **0.0880** — it misses by 0.0100.
+
+**The removal came from a citation, not from a measurement chosen to remove it.**
+That direction matters: the change was adopted because a book states the
+construction, and the cell fell below its floor as a consequence. Had the
+sequence run the other way — adopt because the cell improved — it would have
+been fitting.
+
+The section is kept because omitting a cell while publishing "four flat blocks"
+is how an affirmative negative becomes an overclaim, and because the pre-change
+figures are part of the record.
 
 | Relative strength | IC | n | df | HAC t | boot t | floor | p (Bonferroni/20) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 month — pre-holdout, overlapping | +0.0218 | 86 | 85 | +1.08 | +1.09 | 0.0574 | 1.000 |
-| 3 months — pre-holdout, overlapping | +0.0486 | 84 | 27 | +2.34 | +2.61 | 0.0601 | 0.535 |
-| **6 months — pre-holdout, overlapping** | **+0.0784** | 81 | 12 | **+3.06** | **+3.46** | 0.0774 | **0.198** |
-| 12 months — pre-holdout, overlapping | +0.0672 | 75 | 5 | +2.77 | +3.06 | 0.0828 | 0.790 |
+| 1 month — pre-holdout, overlapping | +0.0300 | 86 | 85 | +1.56 | +1.56 | 0.0547 | 1.000 |
+| 3 months — pre-holdout, overlapping | +0.0471 | 84 | 27 | +2.12 | +2.21 | 0.0641 | 0.861 |
+| **6 months — pre-holdout, overlapping** | **+0.0781** | 81 | 12 | **+2.68** | **+2.97** | **0.0880** | **0.402** |
+| 12 months — pre-holdout, overlapping | +0.0525 | 75 | 5 | +2.08 | +2.41 | 0.0859 | 1.000 |
 
 **The df column is the correction that moved these numbers.** Until 2026-09-14
 the HAC t was referred to df = n−1, which is the df of an i.i.d. mean. On
@@ -380,16 +392,15 @@ textbook fix: fixed-b asymptotics (Kiefer & Vogelsang 2005) give a nonstandard
 limiting distribution with fatter tails than Student's t at any df, so the
 honest p sits above even this one.
 
-The 6-month bootstrap interval is +0.032 to +0.120 and excludes zero; HAC SE is
-0.0256 at lag 5; raw p is 0.0099. It clears its floor by 1.3%, not the 8% that
-the wrong df implied.
+The 6-month bootstrap interval is +0.024 to +0.126 and still excludes zero; HAC
+SE is 0.0291 at lag 5; raw p is 0.0201. It no longer clears its floor at all.
 
 **Why this is more likely noise.** It does not clear correction. Under the null
 the chance that *some* cell out of twenty looks at least this strong is about
-**18%**. Twenty understates the search: this same window has been measured with
-the shipped score, with the RSI sign flipped, and with two further variants —
-roughly **80 cells against one dataset**, at which the figure is **55%**. The
-sibling horizons do not clear their own floors, and 12 months misses by 0.0156.
+**33%**. Twenty understates the search: this same window has been measured with
+the shipped score, with the RSI sign flipped, and with four ladder rungs —
+roughly **100 cells against one dataset**, at which the figure is **80%**. No
+sibling horizon clears its floor either; 12 months misses by 0.0334.
 Nothing here has been tested on data that was not already used to find it.
 
 **And the standard error itself understates.** Every estimator in this study is
@@ -407,7 +418,7 @@ explanations. The one clean test belongs to whichever variant survives Tier 1.
 **These twenty tests are not twenty independent looks, and that fact cuts both
 ways.** The blocks share constituents and the horizons overlap, so the tests are
 positively dependent. One consequence is that Bonferroni is conservative as a
-divisor, and a dependence-aware correction would land below 0.198. The other,
+divisor, and a dependence-aware correction would land below 0.402. The other,
 and the one that matters here, is that relative strength at 6 months is not a
 lone survivor among twenty independent looks: it is one face of a correlated
 cluster that also holds the same block at 3 months (+2.34) and at 12 months
@@ -425,11 +436,14 @@ either now is choosing the test after seeing the answer.
 **Two arguments against it that do not depend on the divisor at all.**
 
 - *It is the cell with the largest inflation in the run.* Its i.i.d. t at 6
-  months is +4.67 and HAC deflates it to +3.06 — a drop of 1.61, the largest
-  anywhere in the study; the next largest is 1.08. What remains is what survived
-  the biggest discount, not a figure that never needed one.
-- *It dilutes when the reserved years are added.* Pre-holdout +0.0784; over the
-  full 2015–2026 span, +0.0485. But this is **not** a relative-strength
+  months is +4.21 and HAC deflates it to +2.68 — a drop of 1.54, the largest
+  anywhere in the study. What remains is what survived the biggest discount, not
+  a figure that never needed one.
+- *It diluted when the reserved years were added.* **These two figures are from
+  the superseded pre-skip-month engine and cannot be recomputed like for like**,
+  because the full-span artefact would have to be regenerated and that spends the
+  reserved window. As measured then: pre-holdout +0.0784; over the full
+  2015–2026 span, +0.0485. But this was **not** a relative-strength
   signature: 12 of the 16 block-horizon cells are larger pre-holdout than on the
   full span. The pre-holdout window is simply the friendlier half for this score
   generally, which is what one expects if these estimates are period-specific
@@ -448,9 +462,9 @@ block that works; it is the block with the largest inflation.
 
 On the **pre-holdout window**, with every column covering the months the
 strategy actually traded, top 20 against equal-weighting the same 100 names is
-**19.41% versus 23.29%** over the whole span — a gap of **−3.89pp** — and
-**17.28% versus 23.77%** in sample, a gap of **−6.49pp**. It beat equal weight
-in **2 of 8 calendar years**. Turnover **733%**.
+**22.52% versus 23.29%** over the whole span — a gap of **−0.78pp**, 95% CI
+−7.68 to +5.00, p 0.794. Turnover **689%**. It has never beaten equal-weighting
+on any window measured, and the gap is now well inside its own interval.
 
 The gap's interval straddles zero on the whole pre-holdout span (95% CI −11.47
 to +2.32, p 0.217) and excludes it in-sample only by five hundredths of a point
@@ -1048,11 +1062,13 @@ this repository states it; it is arithmetic. A CAGR is a function of its
 period, so differencing two CAGRs computed over different periods measures the
 periods as much as the strategies.
 
-The cost was not small and it ran in the flattering direction. Held to one
-window — the pre-holdout span, so the comparison is like for like — the
-unaligned figures gave 19.41% against 20.17%, a gap of **−0.76pp**. Aligned,
-the same window gives 19.41% against 23.29%, a gap of **−3.89pp**: about five
-times wider. The strategy looked better than it was because its benchmark was
+The cost was not small and it ran in the flattering direction. **The figures
+below are the superseded pre-skip-month engine's and are kept as the record of
+what the alignment fix changed; restating them on the current engine would
+falsify the comparison they exist to document.** Held to one window — the
+pre-holdout span, so the comparison was like for like — the unaligned figures
+gave 19.41% against 20.17%, a gap of **−0.76pp**. Aligned, the same window gave
+19.41% against 23.29%, a gap of **−3.89pp**: about five times wider. The strategy looked better than it was because its benchmark was
 credited with months the strategy could not trade.
 
 The first draft of this paragraph took the −0.76pp from the full span and the
