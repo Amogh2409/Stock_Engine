@@ -83,8 +83,22 @@ RETIRED = {
     # Superseded 2026-09-14: the Rs 1.25 lakh exemption was not modelled, which
     # taxed equal weight's long-term gains from the first rupee and inflated the
     # gap. At a retail Rs 10 lakh it is +4.37pp, not +5.26pp.
-    "+5.26pp": ("reversal gap with the exemption unmodelled", "+4.37pp at Rs 10 lakh"),
-    "5.26pp": ("reversal gap with the exemption unmodelled", "+4.37pp at Rs 10 lakh"),
+    "+5.26pp": ("reversal gap, exemption off AND benchmark unaligned", "+1.90pp"),
+    "5.26pp": ("reversal gap, exemption off AND benchmark unaligned", "+1.90pp"),
+    # Superseded 2026-09-14 again: the whole bounding table was computed against a
+    # 95-month equal-weight book while the strategy ran 86. Every row moved.
+    "+4.37pp": ("reversal gap with an unaligned benchmark", "+1.90pp"),
+    "4.37pp": ("reversal gap with an unaligned benchmark", "+1.90pp"),
+    "+5.04pp": ("bounding table, Rs 50 lakh, unaligned", "+2.59pp"),
+    "+5.15pp": ("bounding table, Rs 1 crore, unaligned", "+2.70pp"),
+    "+5.24pp": ("bounding table, Rs 10 crore, unaligned", "+2.81pp"),
+    "+6.38pp": ("buffered reversal gap, unaligned", "+3.02pp"),
+    "+5.49pp": ("buffered reversal gap, exemption on but unaligned", "+3.02pp"),
+    "17.70%": ("equal weight after tax, 95-month basis", "20.17%"),
+    "17.03%": ("equal weight after tax, 95-month basis", "19.48%"),
+    "16.92%": ("equal weight after tax, 95-month basis", "19.36%"),
+    "16.82%": ("equal weight after tax, 95-month basis", "19.26%"),
+    "3.23pp": ("incremental tax cost on the unaligned basis", "3.48pp"),
     # Superseded 2026-09-14 when the skip-month window changed what relative
     # strength measures. The cell no longer clears its floor.
     "0.0774": ("relStrength 6m floor, pre-skip-month engine", "0.0880"),

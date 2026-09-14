@@ -825,18 +825,21 @@ paragraphs away.
 It needs a portfolio size, because ₹1.25 lakh is absolute. Bounded across sizes,
 reversal against equal weight, both after 20% STCG:
 
-| capital | equal weight after tax | gap |
-| --- | --- | --- |
-| exemption not modelled — the superseded basis | 16.81% | +5.26pp |
-| **₹10 lakh (the headline assumes this)** | **17.70%** | **+4.37pp** |
-| ₹50 lakh | 17.03% | +5.04pp |
-| ₹1 crore | 16.92% | +5.15pp |
-| ₹10 crore | 16.82% | +5.24pp |
+| capital | equal weight after tax | gap | gap, buffered |
+| --- | --- | --- | --- |
+| exemption not modelled | 19.25% | +2.82pp | +3.95pp |
+| **₹10 lakh (the headline assumes this)** | **20.17%** | **+1.90pp** | +3.02pp |
+| ₹50 lakh | 19.48% | +2.59pp | +3.71pp |
+| ₹1 crore | 19.36% | +2.70pp | +3.83pp |
+| ₹10 crore | 19.26% | +2.81pp | +3.93pp |
 
 **The headline assumes ₹10 lakh**, the retail case, which is also the least
-favourable to the strategy. The bias was worth **0.89pp** there and under 0.1pp
-at ₹1 crore. It survives — the conclusion is not materially different — but the
-superseded figure was +5.26pp and the current one is **+4.37pp**.
+favourable to the strategy. The exemption is worth **0.92pp** of the gap there
+and under 0.1pp at ₹10 crore.
+
+**An earlier version of this whole table was computed against a 95-month
+equal-weight book while the strategy ran 86 months**, and every row of it was
+wrong: it read +5.26 / +4.37 / +5.04 / +5.15 / +5.24pp. See below.
 
 ### Rank buffering: not a trade-off on this window
 
@@ -880,15 +883,19 @@ runs against the strategy, not for it.
 
 At the live 20% rate, on the pre-holdout window:
 
+Over the **same 86 months**, at ₹10 lakh:
+
 | | gross | after tax | drag |
 | --- | --- | --- | --- |
 | a ~950%-turnover monthly strategy | 28.67% | 22.07% | **6.60pp** |
-| equal weight | 20.18% | 16.81% | **3.37pp** |
+| equal weight | 23.29% | 20.17% | **3.12pp** |
 
-**The incremental tax cost of trading monthly at that turnover is 3.23pp a year.**
-That is the hurdle. A monthly strategy is not arithmetically dead — the figure
-people reach for, that high turnover is simply fatal after Indian STCG, is wrong
-by roughly a factor of two at these rates.
+**The incremental tax cost of trading monthly at that turnover is 3.48pp a year.**
+That is the hurdle, and it eats most of the edge: the gross gap is 5.38pp, so
+after tax **1.90pp** survives. A monthly strategy is not arithmetically dead —
+the figure people reach for, that high turnover is simply fatal after Indian
+STCG, is wrong — but at this turnover tax takes about two thirds of the gross
+advantage.
 
 ### Acting on the pre-registered reversal, specifically
 
@@ -901,9 +908,9 @@ momentum names, rebalanced monthly, on rung C scoring:
 | reversal, no buffer | 964% | 28.67% | 22.07% | 23.69% | 18.82% |
 | reversal, buffer 2N | 710% | 29.97% | 23.19% | 24.85% | 19.89% |
 
-Against **after-tax** equal weight at ₹10 lakh, with the s.112A exemption
-applied to both sides, that is **+4.37pp** unbuffered at the live rate — and it
-stays positive at 30%. Reproduce it with:
+Against **after-tax** equal weight at ₹10 lakh — same 86 months, s.112A
+exemption applied to both sides — that is **+1.90pp** unbuffered at the live
+rate, and **+3.02pp** buffered. Reproduce it with:
 
 ```
 python/backtest.py --prices <file> --out-dir data-store/reports/tier2_reversal \
@@ -922,16 +929,47 @@ resampled jointly: **+5.38pp, 95% CI [−0.01, +11.94], p 0.051** unbuffered;
 ### The answer
 
 **Would acting on the momentum reversal be profitable after tax at the turnover
-it requires? On this window, yes — tax does not kill it, by +4.37pp a year at a
-retail ₹10 lakh with the exemption applied to both sides. But the edge it would
-be trading is not distinguishable from noise, so "profitable after tax" is a
-statement about an effect that has not been established.**
+it requires? On this window, yes, but barely — +1.90pp a year at a retail ₹10
+lakh with the exemption applied to both sides and the benchmark measured over the
+same 86 months. Tax takes 3.48 of the 5.38pp gross edge. And that gross edge is
+not distinguishable from noise — 95% CI [−0.01, +11.94], p 0.051 — so
+"profitable after tax" remains a statement about an effect that has not been
+established.**
+
+### The benchmark-alignment defect, reintroduced and caught
+
+The figures above replace a set computed against a **95-month** equal-weight book
+while the strategy ran **86 months** — a 7.17-year CAGR differenced against a
+7.92-year one. That is exactly the defect `c96780d` fixed for the performance
+table, reintroduced in `_after_tax_block`, which built equal weight from the full
+rebalance calendar and so never went through `align_to()`.
+
+It moved the headline by a factor of 2.3: the superseded **+4.37pp** becomes
+**+1.90pp**.
+
+`test_every_column_of_the_performance_table_covers_the_same_months` could not see
+it, because it covers the performance block only. **Truncating the output would
+not have fixed it either**: equal weight would still have acquired lots in the
+nine dropped months, so its realised short/long split and its exemption
+consumption would have been wrong in a new way. It has to *start* where the
+strategy starts, which is why equal weight is now built from the strategy's own
+periods.
+
+Two guards now stand, and both were verified red against the reintroduced defect:
+`test_the_after_tax_gap_agrees_with_its_own_parts` checks equal months, equal
+spans, each side's CAGR recomputed from its own final value, and the gap against
+its parts; and `test_every_strategy_benchmark_pair_covers_the_same_months` walks
+the **whole** result and checks every dict printing a strategy against an
+equal_weight. A third instance has to add such a pair, and adding one is what the
+second guard catches.
 
 The tax objection is therefore **closed, and closed against the expectation**:
 the structural tension is real — the only horizon with a signal is the only
 horizon that can never reach LTCG — but the arithmetic does not resolve it. A
-3.23pp hurdle is clearable. What is not clearable on this data is the 8.49pp
-gross edge's confidence interval.
+3.48pp hurdle is clearable. What is not clearable on this data is the 5.38pp
+gross edge's confidence interval, which runs [−0.01, +11.94] at p 0.051.
+(An earlier draft put the hurdle at 3.23pp and the gross edge at 8.49pp; both
+were computed against a 95-month equal-weight book and are superseded.)
 
 The lower-turnover check was run rather than assumed: quarterly rebalancing with
 buffering cuts turnover to 134% and *improves* after-tax return to 24.33%. But

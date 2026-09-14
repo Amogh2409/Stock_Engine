@@ -277,18 +277,27 @@ scoring:
 
 | | turnover | gross | after 20% | vs after-tax equal weight |
 | --- | --- | --- | --- | --- |
-| no buffer | 964% | 28.67% | 22.07% | **+4.37pp** |
-| buffer 2N | 710% | 29.97% | 23.19% | +5.49pp |
+| no buffer | 964% | 28.67% | 22.07% | **+1.90pp** |
+| buffer 2N | 710% | 29.97% | 23.19% | +3.02pp |
 
-At a retail ₹10 lakh with the s.112A exemption applied to **both** sides. An
-earlier version of this row read +5.26pp, computed with the exemption switched
-off — which taxes long-term gains from the first rupee and so penalises equal
-weight, at 97.1% long-term, while the reversal at 100% short-term consumes none
-of it. That inflated the gap by 0.89pp.
+At a retail ₹10 lakh, s.112A exemption applied to **both** sides, equal weight
+measured over the **same 86 months**.
 
-The incremental tax cost of trading monthly at that turnover is **3.23pp a
-year** — the hurdle is real and it is clearable. **Tax does not make this
-untradeable.**
+Two superseded versions of this row, both corrected on 2026-09-14 and both
+wrong in the strategy's favour. The first read **+5.26pp**, computed with the
+exemption off — which taxes long-term gains from the first rupee and so
+penalises equal weight at 97.1% long-term while the reversal at 100% short-term
+consumes none of it. The second read **+4.37pp**, computed against a 95-month
+equal-weight book while the strategy ran 86 — a 7.92-year CAGR differenced
+against a 7.17-year one, which is the benchmark-alignment defect `c96780d`
+fixed for the performance table and which returned in a code path that bypassed
+`align_to()`.
+
+The incremental tax cost of trading monthly at that turnover is **3.48pp a
+year** against a gross edge of 5.38pp — the hurdle is real, it is clearable, and
+it takes about two thirds of the advantage. **Tax does not make this
+untradeable, but it leaves little.** (An earlier draft put the hurdle at 3.23pp,
+computed against a 95-month equal-weight book; superseded.)
 
 **What does not clear is the edge itself.** Paired bootstrap on the CAGR
 difference: +5.38pp, 95% CI **[−0.01, +11.94]**, p 0.051 unbuffered; +6.68pp, CI

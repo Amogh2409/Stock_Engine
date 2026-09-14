@@ -2055,27 +2055,32 @@ def format_report(results):
     return "\n".join(out) + "\n"
 
 
-def _after_tax_block(book, periods, equal_periods, calendar, rebalances,
-                     cost_bps_per_side, stcg_rate, capital):
+def _after_tax_block(book, periods, cost_bps_per_side, stcg_rate, capital):
     """After-tax figures for the strategy and for equal weight, side by side.
 
-    Equal weight needs holdings and dates to pass through the tax simulator;
-    run_equal_weight records only the return, so they are rebuilt here from the
-    same universe and calendar it used.
+    EQUAL WEIGHT IS BUILT ON THE STRATEGY'S OWN PERIODS, which is the whole of
+    what makes this a comparison. The first version of this function walked the
+    full rebalance calendar and so taxed a 95-month equal-weight book against an
+    86-month strategy, differencing a 7.17-year CAGR against a 7.92-year one.
+    That is the benchmark-alignment defect c96780d fixed for the performance
+    table, reintroduced here because this code path never went through
+    align_to().
+
+    Truncating the OUTPUT would not have fixed it. Equal weight would still have
+    acquired lots in the nine dropped months, so its realised short/long split
+    and its exemption consumption would have been wrong in a new way. It has to
+    START where the strategy starts, which is what using the strategy's periods
+    guarantees: same months, same entry and exit dates, same lot history window.
     """
-    everything = book.tickers()
-    equal_with_holdings = []
-    for index in range(len(rebalances) - 1):
-        entry = next_session(calendar, rebalances[index])
-        exit_date = next_session(calendar, rebalances[index + 1])
-        if entry is None or exit_date is None:
-            break
-        equal_with_holdings.append({
-            "signal_date": rebalances[index], "entry_date": entry,
-            "exit_date": exit_date, "holdings": list(everything),
-        })
-    if not periods or not equal_with_holdings:
+    if not periods:
         return {}
+    everything = book.tickers()
+    equal_with_holdings = [{
+        "signal_date": period["signal_date"],
+        "entry_date": period["entry_date"],
+        "exit_date": period["exit_date"],
+        "holdings": list(everything),
+    } for period in periods]
     strategy = after_tax_performance(book, periods, stcg_rate=stcg_rate,
                                      cost_bps_per_side=cost_bps_per_side, capital=capital)
     benchmark = after_tax_performance(book, equal_with_holdings, stcg_rate=stcg_rate,
@@ -2205,8 +2210,8 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
         # re-derives rather than living in a commit message. The equal-weight
         # book is run through the same simulator: taxing one side is not a
         # comparison.
-        "after_tax": _after_tax_block(book, periods, equal, calendar, rebalances,
-                                      cost_bps_per_side, stcg_rate, capital),
+        "after_tax": _after_tax_block(book, periods, cost_bps_per_side,
+                                      stcg_rate, capital),
         "quality": {
             "total_fills": total_fills,
             "fallbacks": sum(p["open_fallbacks"] for p in periods),
@@ -2999,6 +3004,78 @@ class BacktestTests(unittest.TestCase):
         # shorter than the equal-weight one in every real run.
         offset = cagr_difference_ci(periods(base[:60]), periods(base, start=30))
         self.assertEqual(offset["months"], 30)
+
+    def test_every_strategy_benchmark_pair_covers_the_same_months(self):
+        # The GENERAL guard. test_every_column_of_the_performance_table... covers
+        # the performance block only, which is exactly why it could not see the
+        # after-tax block comparing 86 strategy months against 95 equal-weight
+        # ones -- the same benchmark-alignment defect c96780d fixed, reintroduced
+        # in a code path that never went through align_to().
+        #
+        # This walks the WHOLE result and checks every dict that prints a
+        # strategy against an equal_weight. A third instance has to add such a
+        # pair to be a defect, and adding one is what this catches.
+        dates = self._business_days(700, start="2018-01-01")
+        history = {}
+        for k in range(6):
+            history["T%d" % k] = self._series(
+                dates, [100.0 + math.sin(i / (7.0 + k)) * 8.0 + i * (0.05 if k % 2 else -0.03)
+                        for i in range(len(dates))])
+        history[E.BENCHMARK_SYMBOL] = self._series(
+            dates, [1000.0 + i * 0.05 for i in range(len(dates))])
+        results = backtest(history, top_n=3, capital=1000000.0)
+
+        pairs = []
+
+        def walk(node, path):
+            if isinstance(node, dict):
+                if isinstance(node.get("strategy"), dict) and \
+                        isinstance(node.get("equal_weight"), dict):
+                    pairs.append((path, node["strategy"], node["equal_weight"]))
+                for key, value in node.items():
+                    walk(value, "%s.%s" % (path, key))
+
+        walk(results, "results")
+        # Guard: if the walker finds nothing, every assertion below is vacuous.
+        self.assertGreaterEqual(len(pairs), 2,
+                                "walker found no strategy/equal_weight pairs to check")
+        for path, strategy, benchmark in pairs:
+            if not strategy or not benchmark:
+                continue
+            self.assertEqual(strategy.get("months"), benchmark.get("months"),
+                             "%s compares different month counts" % path)
+            if "years" in strategy and "years" in benchmark:
+                self.assertAlmostEqual(strategy["years"], benchmark["years"], places=12,
+                                       msg="%s compares different spans" % path)
+
+    def test_the_after_tax_gap_agrees_with_its_own_parts(self):
+        # Equal month counts are necessary and not sufficient: two wrong-but-equal
+        # counts would pass. This also recomputes each side's CAGR from its own
+        # final value and span, so the reported gap has to agree with figures
+        # derived a different way.
+        dates = self._business_days(700, start="2018-01-01")
+        history = {}
+        for k in range(6):
+            history["T%d" % k] = self._series(
+                dates, [100.0 + math.cos(i / (6.0 + k)) * 7.0 + i * (0.04 if k % 2 else -0.02)
+                        for i in range(len(dates))])
+        history[E.BENCHMARK_SYMBOL] = self._series(
+            dates, [1000.0 + i * 0.04 for i in range(len(dates))])
+        results = backtest(history, top_n=3, capital=1000000.0)
+        block = results["after_tax"]
+        self.assertTrue(block, "no after-tax block was produced")
+        strategy, benchmark = block["strategy"], block["equal_weight"]
+        self.assertEqual(strategy["months"], benchmark["months"])
+        self.assertAlmostEqual(strategy["years"], benchmark["years"], places=12)
+        for side in (strategy, benchmark):
+            recomputed = side["final_value"] ** (1.0 / side["years"]) - 1.0
+            self.assertAlmostEqual(side["cagr"], recomputed, places=12)
+        self.assertAlmostEqual(block["gap"], strategy["cagr"] - benchmark["cagr"],
+                               places=12)
+        # And the equal-weight book must start where the strategy starts, or its
+        # lot history -- and so its short/long split -- describes a different
+        # window from the one being compared.
+        self.assertEqual(strategy["months"], len(results["periods"]))
 
     def test_every_column_of_the_performance_table_covers_the_same_months(self):
         # The strategy cannot trade until enough companies clear the minimum
