@@ -4,6 +4,10 @@ A deterministic Indian-equity screening engine. `python/engine.py` is the source
 of truth; `src/utils/screenerEngine.ts` mirrors it bit-for-bit and a parity suite
 pins them together.
 
+**`docs/HANDBOOK.md` is the complete technical reference** — every formula, every
+threshold, every command, every measured result, and every known limit. Read its
+§1 before quoting any figure from this repository.
+
 ## There is a searchable book corpus, and it is almost never used
 
 `Books_TO_study/` holds **319 documents** with a built knowledge graph —

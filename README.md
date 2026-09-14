@@ -12,6 +12,9 @@ agreement by test:
 **Research signals only.** Nothing here places orders, and none of it is
 investment advice.
 
+**Full technical reference: [`docs/HANDBOOK.md`](docs/HANDBOOK.md)** — formulas,
+commands, the statistical machinery, and the honest state of the evidence.
+
 ---
 
 ## Quick start
