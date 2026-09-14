@@ -806,10 +806,37 @@ references so a reader can check them rather than trust them:
 | s.112A long-term, listed equity | **12.5%**, above a ₹1.25 lakh annual exemption |
 | Holding period to qualify as long-term | **12 months** |
 
-The exemption is **not modelled** — it is an absolute rupee figure and the
-backtest is normalised to a capital of 1.0. Ignoring it overstates long-term tax,
-the conservative direction, and it is nearly irrelevant here: the realised gains
-are 73–100% short-term in every strategy configuration.
+**The exemption IS modelled, and an earlier version of this section had its
+direction backwards.** It called ignoring the exemption "the conservative
+direction" because it overstates long-term tax. That is true and it is not
+conservative, because the conclusion is a *comparison*.
+
+Ignoring the exemption taxes long-term gains from the first rupee. The side that
+bears that is **equal weight**, which realises **97.1%** of its gains long-term;
+the reversal, at **100%** short-term, consumes none of the exemption at all. So
+the omission understated equal weight's after-tax return and **inflated the gap
+in the strategy's favour** — anti-conservative with respect to the headline.
+
+The old justification carried the same error: "nearly irrelevant here, the
+realised gains are 73–100% short-term" is the *strategy's* split, cited to excuse
+an omission borne entirely by the other side, whose split is printed two
+paragraphs away.
+
+It needs a portfolio size, because ₹1.25 lakh is absolute. Bounded across sizes,
+reversal against equal weight, both after 20% STCG:
+
+| capital | equal weight after tax | gap |
+| --- | --- | --- |
+| exemption not modelled — the superseded basis | 16.81% | +5.26pp |
+| **₹10 lakh (the headline assumes this)** | **17.70%** | **+4.37pp** |
+| ₹50 lakh | 17.03% | +5.04pp |
+| ₹1 crore | 16.92% | +5.15pp |
+| ₹10 crore | 16.82% | +5.24pp |
+
+**The headline assumes ₹10 lakh**, the retail case, which is also the least
+favourable to the strategy. The bias was worth **0.89pp** there and under 0.1pp
+at ₹1 crore. It survives — the conclusion is not materially different — but the
+superseded figure was +5.26pp and the current one is **+4.37pp**.
 
 ### Rank buffering: not a trade-off on this window
 
@@ -874,8 +901,18 @@ momentum names, rebalanced monthly, on rung C scoring:
 | reversal, no buffer | 964% | 28.67% | 22.07% | 23.69% | 18.82% |
 | reversal, buffer 2N | 710% | 29.97% | 23.19% | 24.85% | 19.89% |
 
-Against **after-tax** equal weight that is **+5.26pp** and **+6.38pp** at the
-live rate, and still positive at 30%.
+Against **after-tax** equal weight at ₹10 lakh, with the s.112A exemption
+applied to both sides, that is **+4.37pp** unbuffered at the live rate — and it
+stays positive at 30%. Reproduce it with:
+
+```
+python/backtest.py --prices <file> --out-dir data-store/reports/tier2_reversal \
+  --continuous --neutral --portfolio-block momentum --invert --capital 1000000
+```
+
+The figures are in that artefact's `after_tax` block and are checked by
+`npm run check:docs`. Until 2026-09-14 they existed only in a commit message,
+which made this the one conclusion here that could not be re-derived.
 
 **And it straddles zero.** Paired bootstrap on the CAGR difference, months
 resampled jointly: **+5.38pp, 95% CI [−0.01, +11.94], p 0.051** unbuffered;
@@ -885,7 +922,8 @@ resampled jointly: **+5.38pp, 95% CI [−0.01, +11.94], p 0.051** unbuffered;
 ### The answer
 
 **Would acting on the momentum reversal be profitable after tax at the turnover
-it requires? On this window, yes — tax does not kill it. But the edge it would
+it requires? On this window, yes — tax does not kill it, by +4.37pp a year at a
+retail ₹10 lakh with the exemption applied to both sides. But the edge it would
 be trading is not distinguishable from noise, so "profitable after tax" is a
 statement about an effect that has not been established.**
 

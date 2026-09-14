@@ -277,8 +277,14 @@ scoring:
 
 | | turnover | gross | after 20% | vs after-tax equal weight |
 | --- | --- | --- | --- | --- |
-| no buffer | 964% | 28.67% | 22.07% | **+5.26pp** |
-| buffer 2N | 710% | 29.97% | 23.19% | **+6.38pp** |
+| no buffer | 964% | 28.67% | 22.07% | **+4.37pp** |
+| buffer 2N | 710% | 29.97% | 23.19% | +5.49pp |
+
+At a retail ₹10 lakh with the s.112A exemption applied to **both** sides. An
+earlier version of this row read +5.26pp, computed with the exemption switched
+off — which taxes long-term gains from the first rupee and so penalises equal
+weight, at 97.1% long-term, while the reversal at 100% short-term consumes none
+of it. That inflated the gap by 0.89pp.
 
 The incremental tax cost of trading monthly at that turnover is **3.23pp a
 year** — the hurdle is real and it is clearable. **Tax does not make this

@@ -789,15 +789,36 @@ def hold_return(book, tickers, entry_date, exit_date):
 #           annual exemption
 #   holding period to qualify as long-term: 12 months
 #
-# The exemption is NOT modelled. It is an absolute rupee figure and the backtest
-# is normalised to a capital of 1.0, so applying it would require assuming a
-# portfolio size. Ignoring it OVERSTATES the long-term tax, which is the
-# conservative direction and is very nearly irrelevant here: see the realised
-# short/long split, which this function reports precisely so the assumption can
-# be checked rather than trusted.
+# THE EXEMPTION IS MODELLED, and an earlier version of this comment got its
+# direction exactly backwards. It said ignoring the exemption was "the
+# conservative direction" because it overstates long-term tax. That is true and
+# it is not conservative, because the conclusion this function feeds is a
+# COMPARISON.
+#
+# Ignoring the exemption taxes long-term gains from the first rupee. The side
+# that bears almost all of that is EQUAL WEIGHT, which realises 97.1% of its
+# gains long-term; the strategy, at 90-100% short-term, barely feels it. So the
+# omission understates equal weight's after-tax return and INFLATES the gap in
+# the strategy's favour. It is anti-conservative with respect to the headline.
+#
+# The old justification carried the same error: "nearly irrelevant here, the
+# realised gains are 73-100% short-term" is the STRATEGY's split, cited to excuse
+# an omission borne by the other side.
+#
+# It needs a portfolio size, because Rs 1.25 lakh is an absolute figure against a
+# backtest normalised to 1.0. `capital` supplies one. With capital=None the
+# exemption is off and the bias above is live -- kept only so the old figures can
+# be reproduced, never as a default for a published comparison.
 STCG_RATE = 0.20
 LTCG_RATE = 0.125
 LONG_TERM_MONTHS = 12
+LTCG_EXEMPTION_RUPEES = 125000.0
+
+
+def _financial_year(date):
+    """The Indian financial year a date falls in, labelled by its April."""
+    parsed = datetime.date.fromisoformat(date)
+    return parsed.year if parsed.month >= 4 else parsed.year - 1
 
 
 def _months_held(since, until):
@@ -810,7 +831,7 @@ def _months_held(since, until):
 
 def after_tax_performance(book, periods, stcg_rate=STCG_RATE, ltcg_rate=LTCG_RATE,
                           cost_bps_per_side=DEFAULT_COST_BPS_PER_SIDE,
-                          long_term_months=LONG_TERM_MONTHS):
+                          long_term_months=LONG_TERM_MONTHS, capital=None):
     """Compound the portfolio with lots tracked, and tax every realised gain.
 
     Why a lot-tracking simulation rather than a turnover approximation: the
@@ -837,6 +858,12 @@ def after_tax_performance(book, periods, stcg_rate=STCG_RATE, ltcg_rate=LTCG_RAT
     rate = cost_bps_per_side / 10000.0
     positions = {}          # ticker -> [units, cost basis, acquisition date]
     cash = 1.0
+    # The exemption in NORMALISED units: a fixed rupee amount against a book that
+    # starts at `capital`, so its relative weight shrinks as the portfolio grows,
+    # which is the real behaviour.
+    exemption_unit = (LTCG_EXEMPTION_RUPEES / capital) if capital else 0.0
+    exempt_left = {}
+    exempt_used = 0.0
     taxed = {"short": 0.0, "long": 0.0}
     tax_paid = 0.0
     costs_paid = 0.0
@@ -872,7 +899,19 @@ def after_tax_performance(book, periods, stcg_rate=STCG_RATE, ltcg_rate=LTCG_RAT
             gain = proceeds - basis * share
             bucket = "long" if _months_held(since, entry) >= long_term_months else "short"
             taxed[bucket] += gain
-            tax = gain * (ltcg_rate if bucket == "long" else stcg_rate)
+            taxable = gain
+            if bucket == "long" and exemption_unit > 0 and gain > 0:
+                # s.112A exempts the first Rs 1.25 lakh of long-term gain in a
+                # financial year, in aggregate. Consuming it first-come-first-
+                # served within the year is equivalent to applying it to the
+                # total, and a loss must not consume it.
+                year = _financial_year(entry)
+                left = exempt_left.setdefault(year, exemption_unit)
+                used = min(gain, left)
+                exempt_left[year] = left - used
+                exempt_used += used
+                taxable = gain - used
+            tax = taxable * (ltcg_rate if bucket == "long" else stcg_rate)
             # A loss offsets at the same rate: real relief needs other gains to
             # set against, and at this turnover there are always plenty.
             tax_paid += tax
@@ -926,6 +965,8 @@ def after_tax_performance(book, periods, stcg_rate=STCG_RATE, ltcg_rate=LTCG_RAT
         "realised_short": taxed["short"],
         "realised_long": taxed["long"],
         "short_share": (taxed["short"] / realised) if realised else float("nan"),
+        "capital": capital,
+        "exempt_used": exempt_used,
         "stcg_rate": stcg_rate,
         "ltcg_rate": ltcg_rate,
     }
@@ -958,7 +999,7 @@ def buffered_selection(ranked, held, top_n, buffer_multiple):
 
 def run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per_side,
                   rsi_flip=False, continuous=False, neutral=False, no_skip_month=False,
-                  sectors=None, buffer_multiple=1):
+                  sectors=None, buffer_multiple=1, portfolio_block=None, invert=False):
     """Monthly top-N by technical score, equal weighted, costs charged on turnover.
 
     Returns a list of per-period records. The period return is measured from the
@@ -974,9 +1015,15 @@ def run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per
         exit_date = next_session(calendar, exit_signal)
         if entry_date is None or exit_date is None:
             break
-        ranked = rank_on(book, signal_date, bench_by_date, rsi_flip=rsi_flip,
-                         continuous=continuous, neutral=neutral,
+        ranked = rank_on(book, signal_date, bench_by_date, block=portfolio_block,
+                         rsi_flip=rsi_flip, continuous=continuous, neutral=neutral,
                          no_skip_month=no_skip_month, sectors=sectors)
+        # invert holds the WORST-ranked names. It exists so the pre-registered
+        # momentum reversal can be traded and measured rather than described:
+        # the hypothesis is that low momentum outperforms, and a top-N portfolio
+        # cannot express that.
+        if invert:
+            ranked = list(reversed(ranked))
         selected = buffered_selection(ranked, held, top_n, buffer_multiple)
         if not selected:
             continue
@@ -2008,10 +2055,48 @@ def format_report(results):
     return "\n".join(out) + "\n"
 
 
+def _after_tax_block(book, periods, equal_periods, calendar, rebalances,
+                     cost_bps_per_side, stcg_rate, capital):
+    """After-tax figures for the strategy and for equal weight, side by side.
+
+    Equal weight needs holdings and dates to pass through the tax simulator;
+    run_equal_weight records only the return, so they are rebuilt here from the
+    same universe and calendar it used.
+    """
+    everything = book.tickers()
+    equal_with_holdings = []
+    for index in range(len(rebalances) - 1):
+        entry = next_session(calendar, rebalances[index])
+        exit_date = next_session(calendar, rebalances[index + 1])
+        if entry is None or exit_date is None:
+            break
+        equal_with_holdings.append({
+            "signal_date": rebalances[index], "entry_date": entry,
+            "exit_date": exit_date, "holdings": list(everything),
+        })
+    if not periods or not equal_with_holdings:
+        return {}
+    strategy = after_tax_performance(book, periods, stcg_rate=stcg_rate,
+                                     cost_bps_per_side=cost_bps_per_side, capital=capital)
+    benchmark = after_tax_performance(book, equal_with_holdings, stcg_rate=stcg_rate,
+                                      cost_bps_per_side=cost_bps_per_side, capital=capital)
+    gap = (strategy.get("cagr", float("nan")) - benchmark.get("cagr", float("nan")))
+    return {
+        "strategy": strategy,
+        "equal_weight": benchmark,
+        "gap": gap,
+        "stcg_rate": stcg_rate,
+        "ltcg_rate": LTCG_RATE,
+        "capital": capital,
+        "exemption_modelled": bool(capital),
+    }
+
+
 # --- Orchestration ---------------------------------------------------------
 def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PER_SIDE,
              variants_tried=1, variants_note="", rsi_flip=False, respect_holdout=True,
-             continuous=False, neutral=False, no_skip_month=False):
+             continuous=False, neutral=False, no_skip_month=False, buffer_multiple=1,
+             stcg_rate=STCG_RATE, capital=None, portfolio_block=None, invert=False):
     book = PriceBook(history)
     calendar = market_calendar(history)
     rebalances = month_end_sessions(calendar, respect_holdout=respect_holdout)
@@ -2028,7 +2113,9 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
             "no-op wearing the name of a treatment." % SECTOR_SOURCE)
     periods = run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per_side,
                             rsi_flip=rsi_flip, continuous=continuous, neutral=neutral,
-                            no_skip_month=no_skip_month, sectors=sectors)
+                            no_skip_month=no_skip_month, sectors=sectors,
+                            buffer_multiple=buffer_multiple,
+                            portfolio_block=portfolio_block, invert=invert)
     equal = run_equal_weight(book, calendar, rebalances)
     index = run_benchmark_index(book, calendar, rebalances)
     # The composite, then each block on its own. backtest.py's own LIMITATIONS
@@ -2111,6 +2198,15 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
             "index": yearly_returns(align_to(index, periods)),
         },
         "turnover": (sum(turnovers) / len(turnovers) * MONTHS_PER_YEAR) if turnovers else 0.0,
+        "buffer_multiple": buffer_multiple,
+        "portfolio_block": portfolio_block,
+        "inverted": invert,
+        # After tax, BOTH SIDES, written to the artefact so the headline
+        # re-derives rather than living in a commit message. The equal-weight
+        # book is run through the same simulator: taxing one side is not a
+        # comparison.
+        "after_tax": _after_tax_block(book, periods, equal, calendar, rebalances,
+                                      cost_bps_per_side, stcg_rate, capital),
         "quality": {
             "total_fills": total_fills,
             "fallbacks": sum(p["open_fallbacks"] for p in periods),
@@ -2986,6 +3082,25 @@ def main(argv=None):
     parser.add_argument("--variants-tried", type=int, default=1,
                         help="how many parameter variants were run in total, reported verbatim")
     parser.add_argument("--variants-note", default="No parameter was fitted to the data.")
+    parser.add_argument("--portfolio-block", default=None, metavar="NAME",
+                        help="rank the PORTFOLIO on one block rather than the composite.")
+    parser.add_argument("--invert", action="store_true",
+                        help="hold the WORST-ranked names. With --portfolio-block momentum "
+                             "this trades the pre-registered reversal hypothesis.")
+    parser.add_argument("--buffer", type=int, default=1, metavar="N",
+                        help="exit a holding only when it leaves the top N*top_n rather "
+                             "than the top top_n. 2 is the usual rank buffer; 1 is off.")
+    parser.add_argument("--tax-stcg", type=float, default=STCG_RATE, metavar="RATE",
+                        help="short-term capital gains rate as a fraction (default %.2f, "
+                             "the s.111A rate since 23 July 2024). Long-term is fixed at "
+                             "%.3f per s.112A." % (STCG_RATE, LTCG_RATE))
+    parser.add_argument("--capital", type=float, default=None, metavar="RUPEES",
+                        help="portfolio size in rupees, used to apply the Rs 1.25 lakh "
+                             "s.112A annual exemption. WITHOUT it the exemption is off, "
+                             "which taxes long-term gains from the first rupee and so "
+                             "penalises the long-term-heavy side -- equal weight. That "
+                             "INFLATES the strategy's gap; supply a size for any published "
+                             "comparison.")
     parser.add_argument("--neutral", action="store_true",
                         help="residualise the score on sector dummies and log trailing "
                              "median turnover before ranking. Sector comes from the NSE "
@@ -3025,6 +3140,17 @@ def main(argv=None):
         parser.error("--prices is required unless --self-test is given")
     history, skipped = E.parse_price_history_csv(Path(args.prices).read_text(encoding="utf-8"))
     print("Loaded %d tickers (%d rows skipped)." % (len(history), skipped))
+    if args.buffer > 1:
+        print("RANK BUFFER %dx: a holding is sold only once it leaves the top %d."
+              % (args.buffer, args.buffer * args.top_n))
+    if args.capital:
+        print("TAX: STCG %.1f%%, LTCG %.1f%% with the Rs 1.25 lakh annual exemption "
+              "applied against a capital of Rs %.0f." % (args.tax_stcg * 100,
+                                                          LTCG_RATE * 100, args.capital))
+    else:
+        print("TAX: STCG %.1f%%, LTCG %.1f%%, exemption NOT applied -- which penalises "
+              "the long-term-heavy side and inflates the strategy's gap. Pass --capital "
+              "for a published comparison." % (args.tax_stcg * 100, LTCG_RATE * 100))
     if args.continuous:
         print("CONTINUOUS SCORING: the twelve features are scored on magnitude "
               "(winsorised z-scores at tail %.3f) rather than on threshold tests. "
@@ -3045,7 +3171,10 @@ def main(argv=None):
     results = backtest(history, args.top_n, args.cost_bps,
                        args.variants_tried, args.variants_note, rsi_flip=args.rsi_flip,
                        respect_holdout=respect_holdout, continuous=args.continuous,
-                       neutral=args.neutral, no_skip_month=args.no_skip_month)
+                       neutral=args.neutral, no_skip_month=args.no_skip_month,
+                       buffer_multiple=args.buffer, stcg_rate=args.tax_stcg,
+                       capital=args.capital, portfolio_block=args.portfolio_block,
+                       invert=args.invert)
     report = format_report(results)
     print(report)
     if args.out_dir:

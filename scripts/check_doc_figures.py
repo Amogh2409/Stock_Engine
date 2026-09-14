@@ -14,7 +14,17 @@ number on purpose.
 Two passes, and the second is the one that was missing:
 
   CURRENT  every figure in KEY_FIGURES is recomputed from the artefact and must
-           appear in the document that claims it.
+           appear SOMEWHERE in the documents.
+
+           KNOW WHAT THIS DOES AND DOES NOT CATCH. It catches a figure that has
+           vanished from every document -- the usual symptom of an artefact being
+           regenerated and the prose not following. It does NOT catch one
+           occurrence being wrong while another is right, because presence
+           anywhere satisfies it. Verified: changing a single '+4.37pp' to
+           '+9.99pp' does not trip it, while removing every 4.37 does. For a
+           figure quoted in several places, the RETIRED pass is the one doing the
+           work, and that is why superseding a value means adding the old one to
+           RETIRED rather than relying on CURRENT to notice.
   RETIRED  every superseded value in RETIRED must appear NOWHERE, in a table or
            a sentence, except on a line that explicitly retracts it.
 
@@ -34,6 +44,9 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ARTEFACT = ROOT / "data-store/reports/backtest_preholdout/results.json"
+# Tier 2. Its headline lived only in a commit message until 2026-09-14, which is
+# the one conclusion here that could not be re-derived from a file.
+TIER2 = ROOT / "data-store/reports/tier2_reversal/results.json"
 DOCS = ("knowledge/rulebook.md", "knowledge/project-guide.html",
         "knowledge/preregistration.md")
 
@@ -67,6 +80,11 @@ RETIRED = {
     "0.0688": ("relStrength 12m detection floor", "0.0828"),
     "0.706": ("composite 6m Bonferroni p", "1.000"),
     "5.9%": ("family-wise chance at 20 tests", "18%"),
+    # Superseded 2026-09-14: the Rs 1.25 lakh exemption was not modelled, which
+    # taxed equal weight's long-term gains from the first rupee and inflated the
+    # gap. At a retail Rs 10 lakh it is +4.37pp, not +5.26pp.
+    "+5.26pp": ("reversal gap with the exemption unmodelled", "+4.37pp at Rs 10 lakh"),
+    "5.26pp": ("reversal gap with the exemption unmodelled", "+4.37pp at Rs 10 lakh"),
     # Superseded 2026-09-14 when the skip-month window changed what relative
     # strength measures. The cell no longer clears its floor.
     "0.0774": ("relStrength 6m floor, pre-skip-month engine", "0.0880"),
@@ -87,6 +105,14 @@ def key_figures(results):
         block = results["deciles"][horizon]["overlapping"]
         out["composite %sm floor" % horizon] = round(block["detectable_ic_80pct"], 3)
         out["composite %sm p*" % horizon] = round(block["hac_p_bonferroni"], 3)
+    if TIER2.exists():
+        tier2 = json.loads(TIER2.read_text())
+        block = tier2.get("after_tax") or {}
+        if block:
+            out["tier2 reversal after tax"] = round(block["strategy"]["cagr"] * 100, 2)
+            out["tier2 equal weight after tax"] = round(block["equal_weight"]["cagr"] * 100, 2)
+            out["tier2 gap pp"] = round(block["gap"] * 100, 2)
+            out["tier2 turnover pct"] = int(round(tier2["turnover"] * 100))
     rel = results["block_deciles"]["relStrength"]
     for horizon in ("1", "3", "6", "12"):
         block = rel[horizon]["overlapping"]
