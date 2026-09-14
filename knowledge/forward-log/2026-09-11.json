@@ -1,0 +1,228 @@
+{
+  "applies_from": "the session after 2026-09-11",
+  "content_sha256": "3c4955707b86b849f54383ff4cc682cedc2d0ff62b64612de0d626071ec432b6",
+  "engine": {
+    "git_commit": "0148c81cedb5a4c265b81712e9694ee0656ce6eb",
+    "git_describes": "Align the after-tax benchmark, which moves the headline by a factor of 2.3",
+    "hash_covers": [
+      "compute_technical_indicators",
+      "calculate_technical_score",
+      "106 module constants"
+    ],
+    "relative_strength_skip_sessions": 21,
+    "scoring_hash": "8ed6a95febeac1326c2fb8b6b70d7eeb7bb9eef9f9191ced23e1dee083b0e98f"
+  },
+  "note": "No returns are computed at write time, deliberately. Scoring this entry is a separate act at a later date.",
+  "returns": null,
+  "reversal_selection": [
+    {
+      "momentum_score": -16.94999759683509,
+      "rank": 1,
+      "ticker": "ADANIENSOL"
+    },
+    {
+      "momentum_score": -16.201386572170914,
+      "rank": 2,
+      "ticker": "MAZDOCK"
+    },
+    {
+      "momentum_score": -15.610061936532821,
+      "rank": 3,
+      "ticker": "LODHA"
+    },
+    {
+      "momentum_score": -13.625417653191997,
+      "rank": 4,
+      "ticker": "TMCV"
+    },
+    {
+      "momentum_score": -12.350422809397879,
+      "rank": 5,
+      "ticker": "SUNPHARMA"
+    },
+    {
+      "momentum_score": -12.101688128339743,
+      "rank": 6,
+      "ticker": "CIPLA"
+    },
+    {
+      "momentum_score": -11.921869003472578,
+      "rank": 7,
+      "ticker": "UNITDSPR"
+    },
+    {
+      "momentum_score": -10.772448683830397,
+      "rank": 8,
+      "ticker": "BPCL"
+    },
+    {
+      "momentum_score": -10.063410203175637,
+      "rank": 9,
+      "ticker": "ASIANPAINT"
+    },
+    {
+      "momentum_score": -9.659926114499388,
+      "rank": 10,
+      "ticker": "M&M"
+    },
+    {
+      "momentum_score": -9.554337844063548,
+      "rank": 11,
+      "ticker": "MARUTI"
+    },
+    {
+      "momentum_score": -9.034962474326477,
+      "rank": 12,
+      "ticker": "HDFCAMC"
+    },
+    {
+      "momentum_score": -9.02965480732105,
+      "rank": 13,
+      "ticker": "RELIANCE"
+    },
+    {
+      "momentum_score": -8.71982619511259,
+      "rank": 14,
+      "ticker": "PIDILITIND"
+    },
+    {
+      "momentum_score": -8.193061211553482,
+      "rank": 15,
+      "ticker": "SHRIRAMFIN"
+    },
+    {
+      "momentum_score": -7.872863763891095,
+      "rank": 16,
+      "ticker": "MUTHOOTFIN"
+    },
+    {
+      "momentum_score": -7.589069088972662,
+      "rank": 17,
+      "ticker": "IRFC"
+    },
+    {
+      "momentum_score": -7.2183778737589535,
+      "rank": 18,
+      "ticker": "DMART"
+    },
+    {
+      "momentum_score": -7.004556039861723,
+      "rank": 19,
+      "ticker": "HINDALCO"
+    },
+    {
+      "momentum_score": -6.878047351326173,
+      "rank": 20,
+      "ticker": "DLF"
+    }
+  ],
+  "shipped_top_n": [
+    {
+      "rank": 1,
+      "score": 100.0,
+      "ticker": "SOLARINDS"
+    },
+    {
+      "rank": 2,
+      "score": 86.0,
+      "ticker": "ADANIENT"
+    },
+    {
+      "rank": 3,
+      "score": 86.0,
+      "ticker": "ADANIPORTS"
+    },
+    {
+      "rank": 4,
+      "score": 86.0,
+      "ticker": "APOLLOHOSP"
+    },
+    {
+      "rank": 5,
+      "score": 86.0,
+      "ticker": "CGPOWER"
+    },
+    {
+      "rank": 6,
+      "score": 85.0,
+      "ticker": "DIVISLAB"
+    },
+    {
+      "rank": 7,
+      "score": 80.0,
+      "ticker": "MOTHERSON"
+    },
+    {
+      "rank": 8,
+      "score": 80.0,
+      "ticker": "TITAN"
+    },
+    {
+      "rank": 9,
+      "score": 76.0,
+      "ticker": "GRASIM"
+    },
+    {
+      "rank": 10,
+      "score": 76.0,
+      "ticker": "HAL"
+    },
+    {
+      "rank": 11,
+      "score": 76.0,
+      "ticker": "SIEMENS"
+    },
+    {
+      "rank": 12,
+      "score": 76.0,
+      "ticker": "TORNTPHARM"
+    },
+    {
+      "rank": 13,
+      "score": 75.0,
+      "ticker": "BOSCHLTD"
+    },
+    {
+      "rank": 14,
+      "score": 72.0,
+      "ticker": "COALINDIA"
+    },
+    {
+      "rank": 15,
+      "score": 72.0,
+      "ticker": "KOTAKBANK"
+    },
+    {
+      "rank": 16,
+      "score": 71.0,
+      "ticker": "ETERNAL"
+    },
+    {
+      "rank": 17,
+      "score": 71.0,
+      "ticker": "PNB"
+    },
+    {
+      "rank": 18,
+      "score": 70.0,
+      "ticker": "ADANIPOWER"
+    },
+    {
+      "rank": 19,
+      "score": 65.0,
+      "ticker": "UNIONBANK"
+    },
+    {
+      "rank": 20,
+      "score": 62.0,
+      "ticker": "BAJAJFINSV"
+    }
+  ],
+  "signal_date": "2026-09-11",
+  "universe": {
+    "rows_skipped": 0,
+    "scoreable": 100,
+    "tickers_priced": 100
+  },
+  "written_at": "2026-09-14T02:34:34+00:00"
+}
