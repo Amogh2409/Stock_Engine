@@ -788,6 +788,119 @@ source for the replacement numbers — KST's proportional weights are not a set 
 three integers we could lift — so swapping an unsourced hump for an unsourced
 ramp buys nothing but motion.
 
+## Tier 2 — turnover, tax, and whether a monthly signal can pay for itself
+
+**Status: Convention, and a measurement rather than a rule.** Every figure is
+EXPLORATORY: the pre-holdout window has now been measured with the shipped
+score, the RSI flip, four ladder rungs and this matrix — **125+ cells, a lower
+bound**, because design choices are degrees of freedom too.
+
+### The rates, stated from knowledge and not from a feed
+
+This repository holds no tax data. These are given with their statutory
+references so a reader can check them rather than trust them:
+
+| | |
+| --- | --- |
+| s.111A short-term, listed equity | **20%** since 23 July 2024 |
+| s.112A long-term, listed equity | **12.5%**, above a ₹1.25 lakh annual exemption |
+| Holding period to qualify as long-term | **12 months** |
+
+The exemption is **not modelled** — it is an absolute rupee figure and the
+backtest is normalised to a capital of 1.0. Ignoring it overstates long-term tax,
+the conservative direction, and it is nearly irrelevant here: the realised gains
+are 73–100% short-term in every strategy configuration.
+
+### Rank buffering: not a trade-off on this window
+
+Exiting a holding only when it leaves the top 2N rather than the top N:
+
+| configuration | turnover | gross CAGR | after 20% |
+| --- | --- | --- | --- |
+| A points, monthly | 689% | 22.51% | 17.85% |
+| A points, monthly, **buffer 2N** | **314%** | **25.28%** | **20.70%** |
+| C neutralised, monthly | 583% | 20.31% | 16.73% |
+| C neutralised, monthly, **buffer 2N** | **256%** | **24.76%** | **20.98%** |
+| C neutralised, quarterly, buffer 2N | 134% | 27.18% | 24.33% |
+| equal weight, monthly rebalance | — | 20.18% | 16.81% |
+
+**Turnover roughly halves and the gross return goes UP.** That is not the
+trade-off the brief anticipated and it should be treated with suspicion rather
+than pleasure: it is one window, it is exploratory, and a result that improves
+two things at once is exactly the shape a selection artefact takes. What it is
+not is a reason to believe buffering costs signal here.
+
+Note what buffering does and does not touch: it changes **which names are held**,
+not the ranking. The score's IC is unchanged by it *by construction*, and
+reporting "IC at each buffer level" would be printing one number three times and
+calling it a trade-off. The rebalance interval is what changes the IC, because it
+changes the horizon.
+
+### Both sides taxed, because taxing one is not a comparison
+
+Equal weight turns over too — a monthly-rebalanced equal-weight book trims
+winners — but it defers almost everything into the lower rate: its realised gains
+are **2.9%** short-term against **90–100%** for the strategy.
+
+The lot-dating simplification (an add keeps the original acquisition date rather
+than opening a FIFO lot) flatters whichever side holds longest, which is equal
+weight. Bounded by re-running both sides with **every** gain forced short-term:
+equal weight's after-tax CAGR falls 16.81% → 16.02%, and the rung C buffered gap
+moves from **+4.17pp to +4.47pp**. The assumption is worth under a point and it
+runs against the strategy, not for it.
+
+### The hurdle, which is the number that answers the question
+
+At the live 20% rate, on the pre-holdout window:
+
+| | gross | after tax | drag |
+| --- | --- | --- | --- |
+| a ~950%-turnover monthly strategy | 28.67% | 22.07% | **6.60pp** |
+| equal weight | 20.18% | 16.81% | **3.37pp** |
+
+**The incremental tax cost of trading monthly at that turnover is 3.23pp a year.**
+That is the hurdle. A monthly strategy is not arithmetically dead — the figure
+people reach for, that high turnover is simply fatal after Indian STCG, is wrong
+by roughly a factor of two at these rates.
+
+### Acting on the pre-registered reversal, specifically
+
+The hypothesis in `knowledge/preregistration.md` is that momentum is
+anti-predictive at one month. Acting on it means holding the 20 **lowest**
+momentum names, rebalanced monthly, on rung C scoring:
+
+| | turnover | gross | after 20% | after 15% | after 30% |
+| --- | --- | --- | --- | --- | --- |
+| reversal, no buffer | 964% | 28.67% | 22.07% | 23.69% | 18.82% |
+| reversal, buffer 2N | 710% | 29.97% | 23.19% | 24.85% | 19.89% |
+
+Against **after-tax** equal weight that is **+5.26pp** and **+6.38pp** at the
+live rate, and still positive at 30%.
+
+**And it straddles zero.** Paired bootstrap on the CAGR difference, months
+resampled jointly: **+5.38pp, 95% CI [−0.01, +11.94], p 0.051** unbuffered;
+**+6.68pp, CI [−0.12, +13.64], p 0.053** buffered. Unadjusted, at the edge of
+5%. Adjusted for a 125-cell search, nowhere near.
+
+### The answer
+
+**Would acting on the momentum reversal be profitable after tax at the turnover
+it requires? On this window, yes — tax does not kill it. But the edge it would
+be trading is not distinguishable from noise, so "profitable after tax" is a
+statement about an effect that has not been established.**
+
+The tax objection is therefore **closed, and closed against the expectation**:
+the structural tension is real — the only horizon with a signal is the only
+horizon that can never reach LTCG — but the arithmetic does not resolve it. A
+3.23pp hurdle is clearable. What is not clearable on this data is the 8.49pp
+gross edge's confidence interval.
+
+The lower-turnover check was run rather than assumed: quarterly rebalancing with
+buffering cuts turnover to 134% and *improves* after-tax return to 24.33%. But
+the momentum IC at 3 months is **−0.0308 against a floor of 0.0314** — it does
+not clear. So the low-turnover variant that survives tax best is the one whose
+signal is gone, which is the tension restated rather than escaped.
+
 ### The skip month — **Sourced** for the 12-month leg, adopted 2026-09-14
 
 **The engine now measures relative strength from t−h to t−2, not t−h to t−1.**

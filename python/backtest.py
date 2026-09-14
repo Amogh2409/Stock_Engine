@@ -779,9 +779,186 @@ def hold_return(book, tickers, entry_date, exit_date):
     return sum(returns) / len(returns), fallbacks, dropped
 
 
+# --- After tax -------------------------------------------------------------
+# Indian capital-gains tax on listed equity, as it stands for this measurement.
+# NOT sourced from a feed: the repository holds no tax data, and these are stated
+# from knowledge with their statutory references so a reader can check them.
+#
+#   s.111A  short-term gains on listed equity: 20%, since 23 July 2024
+#   s.112A  long-term gains on listed equity: 12.5%, above a Rs 1.25 lakh
+#           annual exemption
+#   holding period to qualify as long-term: 12 months
+#
+# The exemption is NOT modelled. It is an absolute rupee figure and the backtest
+# is normalised to a capital of 1.0, so applying it would require assuming a
+# portfolio size. Ignoring it OVERSTATES the long-term tax, which is the
+# conservative direction and is very nearly irrelevant here: see the realised
+# short/long split, which this function reports precisely so the assumption can
+# be checked rather than trusted.
+STCG_RATE = 0.20
+LTCG_RATE = 0.125
+LONG_TERM_MONTHS = 12
+
+
+def _months_held(since, until):
+    """Whole months between two ISO dates, the s.2(42A) holding-period test."""
+    start = datetime.date.fromisoformat(since)
+    end = datetime.date.fromisoformat(until)
+    months = (end.year - start.year) * 12 + (end.month - start.month)
+    return months - (1 if end.day < start.day else 0)
+
+
+def after_tax_performance(book, periods, stcg_rate=STCG_RATE, ltcg_rate=LTCG_RATE,
+                          cost_bps_per_side=DEFAULT_COST_BPS_PER_SIDE,
+                          long_term_months=LONG_TERM_MONTHS):
+    """Compound the portfolio with lots tracked, and tax every realised gain.
+
+    Why a lot-tracking simulation rather than a turnover approximation: the
+    question is whether a 1-month signal survives tax, and that turns entirely on
+    WHEN each position is sold relative to the 12-month line. A turnover-based
+    estimate cannot see the line at all.
+
+    Two simplifications, both stated because both flatter the strategy slightly:
+
+    1. Tax is charged at realisation, not at the financial-year end. That removes
+       the within-year deferral benefit and so OVERSTATES the drag a little --
+       the conservative direction.
+    2. Adding to an existing position keeps the original acquisition date rather
+       than opening a FIFO lot. That makes long-term treatment slightly MORE
+       likely than the statute allows, which flatters the strategy. The realised
+       short/long split is reported so the size of the error is visible; when the
+       split is overwhelmingly short, both simplifications are immaterial.
+
+    Costs are charged on traded value at the same rate the pre-tax backtest uses,
+    so the two are comparable.
+    """
+    if not periods:
+        return {}
+    rate = cost_bps_per_side / 10000.0
+    positions = {}          # ticker -> [units, cost basis, acquisition date]
+    cash = 1.0
+    taxed = {"short": 0.0, "long": 0.0}
+    tax_paid = 0.0
+    costs_paid = 0.0
+
+    def prices_at(date, names):
+        out = {}
+        for ticker in names:
+            price, _fallback = book.execution_price(ticker, date)
+            if price and price > 0:
+                out[ticker] = price
+        return out
+
+    for period in periods:
+        entry = period["entry_date"]
+        names = [t for t in period["holdings"]]
+        price = prices_at(entry, set(list(positions) + names))
+        held_value = sum(units * price[t] for t, (units, _c, _s) in positions.items()
+                         if t in price)
+        total = cash + held_value
+        target = total / len(names) if names else 0.0
+
+        # Sell down or out first, so the tax is known before anything is bought.
+        for ticker in list(positions):
+            if ticker not in price:
+                continue
+            units, basis, since = positions[ticker]
+            wanted = (target / price[ticker]) if ticker in names else 0.0
+            if wanted >= units:
+                continue
+            sold = units - wanted
+            share = sold / units
+            proceeds = sold * price[ticker]
+            gain = proceeds - basis * share
+            bucket = "long" if _months_held(since, entry) >= long_term_months else "short"
+            taxed[bucket] += gain
+            tax = gain * (ltcg_rate if bucket == "long" else stcg_rate)
+            # A loss offsets at the same rate: real relief needs other gains to
+            # set against, and at this turnover there are always plenty.
+            tax_paid += tax
+            cost = proceeds * rate
+            costs_paid += cost
+            cash += proceeds - cost - tax
+            basis -= basis * share
+            if wanted <= 0:
+                del positions[ticker]
+            else:
+                positions[ticker] = [wanted, basis, since]
+
+        # Then buy toward the target with whatever is left.
+        for ticker in names:
+            if ticker not in price:
+                continue
+            units, basis, since = positions.get(ticker, [0.0, 0.0, entry])
+            wanted = target / price[ticker]
+            if wanted <= units:
+                continue
+            spend = (wanted - units) * price[ticker]
+            cost = spend * rate
+            costs_paid += cost
+            cash -= spend + cost
+            positions[ticker] = [wanted, basis + spend, since]
+
+    # Mark to market at the last exit, WITHOUT taxing the unrealised gain: the
+    # comparison is between strategies that both end holding something, and
+    # taxing one terminal book and not the other would be the same one-sided
+    # error as comparing after-tax to pre-tax.
+    final = periods[-1]["exit_date"]
+    price = prices_at(final, list(positions))
+    value = cash + sum(units * price[t] for t, (units, _c, _s) in positions.items()
+                       if t in price)
+    # Years from the ACTUAL dates, not from len(periods)/12. The period count is
+    # only a month count when the rebalance interval is monthly; on a quarterly
+    # schedule len(periods)/12 understates the span threefold and reported a
+    # 95% CAGR where the truth is nearer 24%. The absurd figure was the tell.
+    span_days = ((datetime.date.fromisoformat(periods[-1]["exit_date"])
+                  - datetime.date.fromisoformat(periods[0]["entry_date"])).days)
+    years = span_days / 365.25
+    cagr = value ** (1.0 / years) - 1.0 if years > 0 and value > 0 else float("nan")
+    realised = taxed["short"] + taxed["long"]
+    return {
+        "final_value": value,
+        "cagr": cagr,
+        "months": len(periods),
+        "years": years,
+        "tax_paid": tax_paid,
+        "costs_paid": costs_paid,
+        "realised_short": taxed["short"],
+        "realised_long": taxed["long"],
+        "short_share": (taxed["short"] / realised) if realised else float("nan"),
+        "stcg_rate": stcg_rate,
+        "ltcg_rate": ltcg_rate,
+    }
+
+
+def buffered_selection(ranked, held, top_n, buffer_multiple):
+    """Top-N, but a held name is only sold once it leaves the top N*multiple.
+
+    Rank buffering is the standard turnover brake: a name sitting at rank 21 of 20
+    is not meaningfully worse than one at rank 20, and swapping them every month
+    pays two spreads and a tax bill for noise. With multiple=2 a holding survives
+    until it falls out of the top 40.
+
+    Survivors keep their rank order and fill the book first; the remaining slots
+    go to the best-ranked names not already held. Both halves are ordered by the
+    ranking, so the result is deterministic.
+    """
+    if buffer_multiple <= 1:
+        return [ticker for ticker, _score in ranked[:top_n]]
+    order = {ticker: index for index, (ticker, _score) in enumerate(ranked)}
+    window = {ticker for ticker, _score in ranked[:top_n * buffer_multiple]}
+    selected = sorted((t for t in held if t in window), key=lambda t: order[t])[:top_n]
+    for ticker, _score in ranked:
+        if len(selected) >= top_n:
+            break
+        if ticker not in selected:
+            selected.append(ticker)
+    return selected
+
+
 def run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per_side,
                   rsi_flip=False, continuous=False, neutral=False, no_skip_month=False,
-                  sectors=None):
+                  sectors=None, buffer_multiple=1):
     """Monthly top-N by technical score, equal weighted, costs charged on turnover.
 
     Returns a list of per-period records. The period return is measured from the
@@ -800,7 +977,7 @@ def run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per
         ranked = rank_on(book, signal_date, bench_by_date, rsi_flip=rsi_flip,
                          continuous=continuous, neutral=neutral,
                          no_skip_month=no_skip_month, sectors=sectors)
-        selected = [ticker for ticker, _score in ranked[:top_n]]
+        selected = buffered_selection(ranked, held, top_n, buffer_multiple)
         if not selected:
             continue
         gross, fallbacks, dropped = hold_return(book, selected, entry_date, exit_date)
@@ -815,6 +992,8 @@ def run_portfolio(book, calendar, rebalances, bench_by_date, top_n, cost_bps_per
             "exit_date": exit_date,
             "holdings": selected,
             "gross_return": gross,
+            "entered": [t for t in selected if t not in held],
+            "exited": [t for t in held if t not in selected],
             "cost": cost,
             "net_return": gross - cost,
             "turnover": turnover,
@@ -2553,6 +2732,73 @@ class BacktestTests(unittest.TestCase):
         se2, _, _ = _stationary_bootstrap_se(series, 4, seed=BOOTSTRAP_SEED + 1)
         self.assertNotEqual(se, se2)
         self.assertLess(abs(se - se2) / se, 0.25)
+
+    def test_months_held_matches_the_holding_period_test(self):
+        # s.2(42A): twelve months. The day-of-month comparison decides the
+        # boundary, and the boundary is the whole question for a monthly system.
+        self.assertEqual(_months_held("2020-01-15", "2021-01-15"), 12)
+        self.assertEqual(_months_held("2020-01-15", "2021-01-14"), 11)  # one day short
+        self.assertEqual(_months_held("2020-01-15", "2021-01-16"), 12)
+        self.assertEqual(_months_held("2020-01-31", "2020-12-31"), 11)
+        self.assertEqual(_months_held("2020-01-01", "2020-01-31"), 0)
+
+    def test_buffering_cuts_turnover_and_keeps_names(self):
+        # A held name must survive until it leaves the top N*multiple, and the
+        # book must still be exactly N names.
+        # SIXTY ranked names, because with only 40 the top-2N window is the whole
+        # list and nothing can fall outside it -- the first version of this
+        # fixture made that mistake and the test caught it.
+        ranked = [("T%02d" % i, 100.0 - i) for i in range(60)]
+        held = ["T25", "T45", "T05"]   # rank 25 inside the top 40, 45 outside, 5 inside
+        selected = buffered_selection(ranked, held, top_n=20, buffer_multiple=2)
+        self.assertEqual(len(selected), 20)
+        self.assertIn("T25", selected, "a name inside the top 2N was sold")
+        self.assertIn("T05", selected)
+        self.assertNotIn("T45", selected, "a name outside the top 2N was kept")
+        # Without buffering it is simply the top 20, and T25 is gone.
+        plain = buffered_selection(ranked, held, top_n=20, buffer_multiple=1)
+        self.assertEqual(plain, ["T%02d" % i for i in range(20)])
+        self.assertNotIn("T25", plain)
+        # Guard: the two rules must actually differ on this fixture.
+        self.assertNotEqual(selected, plain)
+
+    def test_after_tax_on_cases_with_known_answers(self):
+        # A portfolio that never sells pays NO tax, however much it gains. If this
+        # ever fails, the simulator is taxing unrealised gains.
+        dates = self._business_days(400, start="2018-01-01")
+        rising = [100.0 * (1.01 ** i) for i in range(len(dates))]
+        history = {"AAA": self._series(dates, rising),
+                   "BBB": self._series(dates, rising),
+                   E.BENCHMARK_SYMBOL: self._series(dates, [1000.0] * len(dates))}
+        book = PriceBook(history)
+        never_sells = [{"entry_date": dates[i], "exit_date": dates[i + 20],
+                        "holdings": ["AAA", "BBB"]} for i in range(0, 300, 20)]
+        out = after_tax_performance(book, never_sells, cost_bps_per_side=0.0)
+        self.assertAlmostEqual(out["tax_paid"], 0.0, places=12)
+        self.assertGreater(out["final_value"], 1.0)
+
+        # Now a portfolio that swaps its whole book every period, inside twelve
+        # months, so every realised gain is SHORT term and taxed at 20%.
+        churn = []
+        for index, i in enumerate(range(0, 300, 20)):
+            churn.append({"entry_date": dates[i], "exit_date": dates[i + 20],
+                          "holdings": ["AAA"] if index % 2 == 0 else ["BBB"]})
+        taxed = after_tax_performance(book, churn, cost_bps_per_side=0.0)
+        self.assertGreater(taxed["tax_paid"], 0.0)
+        self.assertAlmostEqual(taxed["short_share"], 1.0, places=9,
+                               msg="a sub-12-month churn produced long-term gains")
+        # And it must end up behind the buy-and-hold version on the same prices.
+        self.assertLess(taxed["final_value"], out["final_value"])
+
+        # A LONG-term sale is taxed at the lower rate. One holding, sold after
+        # more than twelve months.
+        long_hold = [{"entry_date": dates[0], "exit_date": dates[330],
+                      "holdings": ["AAA"]},
+                     {"entry_date": dates[330], "exit_date": dates[360],
+                      "holdings": ["BBB"]}]
+        slow = after_tax_performance(book, long_hold, cost_bps_per_side=0.0)
+        self.assertAlmostEqual(slow["short_share"], 0.0, places=9)
+        self.assertGreater(slow["realised_long"], 0.0)
 
     def test_percentile_index_is_nearest_rank(self):
         # The qth percentile of n sorted values sits at ceil(q*n) - 1, not

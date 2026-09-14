@@ -264,3 +264,41 @@ and whether the CI lies entirely below zero. The corrected interval still lies
 entirely below zero, and the t did not move.
 
 The holdout test remains **NOT RUN**.
+
+### 2026-09-14 — Tier 2 answers the question §7 deferred
+
+§7 deferred the spend decision to the after-tax arithmetic, and said plainly that
+if acting on a confirmed reversal were unprofitable at 583–733% turnover, the
+correct action was to **not run this test at all**.
+
+**That branch is now closed, and closed against the expectation.** Measured on
+the pre-holdout window, holding the 20 lowest-momentum names monthly on rung C
+scoring:
+
+| | turnover | gross | after 20% | vs after-tax equal weight |
+| --- | --- | --- | --- | --- |
+| no buffer | 964% | 28.67% | 22.07% | **+5.26pp** |
+| buffer 2N | 710% | 29.97% | 23.19% | **+6.38pp** |
+
+The incremental tax cost of trading monthly at that turnover is **3.23pp a
+year** — the hurdle is real and it is clearable. **Tax does not make this
+untradeable.**
+
+**What does not clear is the edge itself.** Paired bootstrap on the CAGR
+difference: +5.38pp, 95% CI **[−0.01, +11.94]**, p 0.051 unbuffered; +6.68pp, CI
+[−0.12, +13.64], p 0.053 buffered. It straddles zero unadjusted, and the search
+is now 125+ cells.
+
+**So the decision is NOT made here, because the ground for making it changed.**
+The "do not spend, it is untradeable" argument is withdrawn — it was the cheapest
+available reason to skip the test and it turned out to be false. What remains is
+the argument in §7 that was always the real one: the test has **56% power**, and
+the effect it looks for sits below its own detection floor.
+
+Three options stand, unchanged in substance and now unchanged by tax:
+
+1. **Spend now** at 56% power.
+2. **Wait** — 80% power at n = 76, about 2.7 years, against the regime risk in §7.
+3. **Do not spend**, on power grounds alone rather than on tax grounds.
+
+The holdout test remains **NOT RUN**, and nothing in §§1–7 is altered.
