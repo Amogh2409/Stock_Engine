@@ -207,3 +207,92 @@ it could not learn anything about outcomes.
 Neither candidate is registered. Passing the screen makes a candidate
 *eligible* for registration under conditions 2, 4 and the rest — it does not
 register it, and the budget is a maximum rather than a quota.
+
+---
+
+## Amihud input-readiness audit — 2026-09-16
+
+Inputs only. **No forward returns, no ICs, no research budget consumed.**
+Reproducible: `scripts/venv-python.sh scripts/amihud_readiness.py`.
+
+| check | result |
+|---|---|
+| Volume unit (whole shares) | **PASS** — median 1,907,573, 100% integral |
+| Corporate-action invariance | **PASS** |
+| **Price basis for traded value** | **FAIL** |
+| Missing-volume contract | **PASS** — 29 blank, 0 zero, both skipped |
+| Cross-sectional coverage | **PASS** — 100% of windows meet the minimum |
+| Extreme-value inspection | **PASS** — diagnosed, never clamped |
+
+## READINESS: FAIL
+
+### Splits are fine — that trap was checked and is not present
+
+Median traded value after ÷ before a split:
+
+| ticker | split | ratio | a raw-volume panel would show |
+|---|--:|--:|--:|
+| BAJFINANCE 2016-09-08 | 1:5 | 0.640 | 5.0 |
+| RELIANCE 2017-09-07 | 1:2 | 1.066 | 2.0 |
+| ITC 2016-07-01 | 1:1.5 | 0.888 | 1.5 |
+
+The provider restates volume into post-split units alongside the price, so
+`close × volume` is internally consistent across a split. Verified directly:
+an `auto_adjust=False` download returns **byte-identical volume**, and neither
+series shows a 5× discontinuity at the BAJFINANCE split.
+
+### Dividends are not fine, and that is the failure
+
+The panel stores `auto_adjust=True` closes, adjusted for splits **and
+dividends**. The dividend adjustment deflates each stock's historical prices by
+**its own** dividend history, so the deflation differs across the cross-section
+— and Amihud ranks cross-sectionally.
+
+Cumulative adjusted/raw factor at 2016-06-30:
+
+| ticker | factor |
+|---|--:|
+| VEDL | **0.332** |
+| COALINDIA | 0.452 |
+| ITC | 0.697 |
+| INFY | 0.756 |
+| TATASTEEL | 0.756 |
+| TCS | 0.784 |
+| HDFCBANK | **0.912** |
+
+**A 2.75× spread.** Vedanta's 2016 traded value is understated by 67%, HDFC
+Bank's by 9%. Since Amihud is `|return| / traded value`, a deflated denominator
+*inflates* the illiquidity score: **high-dividend stocks are made to look
+systematically more illiquid, and increasingly so the further back the sample
+goes** (the spread narrows to 1.17× by 2024).
+
+A uniform deflation would have been harmless — it cancels in a ranking. Only
+the dispersion matters, and the dispersion is large.
+
+Note the numerator is fine: dividend-adjusted returns are the correct total
+return. The defect is confined to the denominator.
+
+### What a fix would require
+
+The panel would need a **split-adjusted, dividend-unadjusted close** column for
+traded value, keeping the existing adjusted close for returns. Concretely:
+`auto_adjust=False` supplies exactly that basis, so the download gains a
+column, `price_history_to_csv` and its parser gain a field, and the panel is
+rebuilt and re-verified against the calendar invariants.
+
+That is a data change, not a signal change, and it would happen **before** any
+Amihud return is computed — so it is not post-hoc repair. But it is a schema
+change to the one dataset every other study also reads, and it is the user's
+call whether Amihud is worth it.
+
+### Status
+
+**Amihud is NOT registered.** Budget remains **1 of 3**: the audit consulted no
+forward outcomes, so it spent nothing.
+
+| candidate | status |
+|---|---|
+| Reversal | spent + frozen |
+| MAX | screened distinct, **parked** — ~0.53 with total volatility, entangled with a failed family |
+| Amihud | screened distinct, **input audit FAILED** on price basis |
+| BAB | quarantined |
