@@ -1,25 +1,25 @@
 old_symbol,new_symbol,event_type,effective_date,stitch_allowed,evidence,verified
-ABIRLANUVO,,MERGER_DEMERGER,2017,no,"Aditya Birla Nuvo demerged/merged into GRASIM; the constituent ceased to exist as a separate security",UNVERIFIED
-ADANITRANS,ADANIENSOL,RENAME_CANDIDATE,2023,no,"Adani Transmission renamed Adani Energy Solutions; same listed entity claimed, not yet verified against a primary source",UNVERIFIED
-CADILAHC,ZYDUSLIFE,RENAME_CANDIDATE,2022,no,"Cadila Healthcare renamed Zydus Lifesciences; ZYDUSLIFE.NS carries history back to 2015",UNVERIFIED
-CAIRN,,MERGER,2017,no,"Cairn India merged into Vedanta; different economic security before and after",UNVERIFIED
-CROMPGREAV,,MERGER_DEMERGER,2016,no,"Crompton Greaves demerged; consumer business listed separately as CROMPTON",UNVERIFIED
-GSKCONS,,MERGER,2020,no,"GlaxoSmithKline Consumer Healthcare merged into Hindustan Unilever",UNVERIFIED
+ABIRLANUVO,,MERGER_DEMERGER,2017,no,Aditya Birla Nuvo demerged/merged into GRASIM; the constituent ceased to exist as a separate security,UNVERIFIED
+ADANITRANS,ADANIENSOL,RENAME_VERIFIED,24-AUG-2023,yes,"NSE official symbol-change register (archives.nseindia.com/content/equities/symbolchange.csv); symbol change effective 24-AUG-2023, strictly AFTER the constituent window ends, so the listing is the same security on every date it was an index member",VERIFIED_NSE_REGISTER
+CADILAHC,ZYDUSLIFE,RENAME_VERIFIED,07-MAR-2022,yes,"NSE official symbol-change register (archives.nseindia.com/content/equities/symbolchange.csv); symbol change effective 07-MAR-2022, strictly AFTER the constituent window ends, so the listing is the same security on every date it was an index member",VERIFIED_NSE_REGISTER
+CAIRN,,MERGER,2017,no,Cairn India merged into Vedanta; different economic security before and after,UNVERIFIED
+CROMPGREAV,CGPOWER,RENAME_VERIFIED,08-MAR-2017,yes,"NSE official symbol-change register (archives.nseindia.com/content/equities/symbolchange.csv); symbol change effective 08-MAR-2017, strictly AFTER the constituent window ends, so the listing is the same security on every date it was an index member",VERIFIED_NSE_REGISTER
+GSKCONS,,MERGER,2020,no,GlaxoSmithKline Consumer Healthcare merged into Hindustan Unilever,UNVERIFIED
 HDFC,,MERGER,2023-07,no,"Housing Development Finance Corporation merged INTO HDFC Bank. HDFCBANK.NS history before July 2023 is HDFC BANK's, NOT HDFC Ltd's. Assigning it would fabricate continuity. NEVER STITCH.",VERIFIED_DO_NOT_STITCH
-IBULHSGFIN,SAMMAANCAP,RENAME_CANDIDATE,2024,no,"Indiabulls Housing Finance renamed Sammaan Capital",UNVERIFIED
-IDFC,,MERGER_DEMERGER,2015+,no,"IDFC demerged banking business (IDFCFIRSTB); parent later merged",UNVERIFIED
-INFRATEL,INDUSTOWER,RENAME_CANDIDATE,2020-11,no,"Bharti Infratel was the surviving entity in the Indus Towers combination and was renamed; survivorship of the LISTING is plausible but the economics changed materially",UNVERIFIED
-INGVYSYABK,,MERGER,2015,no,"ING Vysya Bank merged into Kotak Mahindra Bank",UNVERIFIED
-L&TFH,LTF,RENAME_CANDIDATE,2024,no,"L&T Finance Holdings renamed L&T Finance",UNVERIFIED
-LTI,LTIM,MERGER,2022-11,no,"Larsen & Toubro Infotech merged with MindTree to form LTIMindtree; a combination, not a rename",UNVERIFIED
-MCDOWELL-N,UNITDSPR,RENAME_CANDIDATE,,no,"United Spirits ticker change; UNITDSPR.NS carries history back to 2015",UNVERIFIED
+IBULHSGFIN,SAMMAANCAP,RENAME_VERIFIED,26-JUL-2024,yes,"NSE official symbol-change register (archives.nseindia.com/content/equities/symbolchange.csv); symbol change effective 26-JUL-2024, strictly AFTER the constituent window ends, so the listing is the same security on every date it was an index member",VERIFIED_NSE_REGISTER
+IDFC,,MERGER_DEMERGER,2015+,no,IDFC demerged banking business (IDFCFIRSTB); parent later merged,UNVERIFIED
+INFRATEL,INDUSTOWER,RENAME_VERIFIED,18-DEC-2020,yes,"NSE official symbol-change register (archives.nseindia.com/content/equities/symbolchange.csv); symbol change effective 18-DEC-2020, strictly AFTER the constituent window ends, so the listing is the same security on every date it was an index member",VERIFIED_NSE_REGISTER
+INGVYSYABK,,MERGER,2015,no,ING Vysya Bank merged into Kotak Mahindra Bank,UNVERIFIED
+L&TFH,LTF,RENAME_VERIFIED,23-APR-2024,yes,"NSE official symbol-change register (archives.nseindia.com/content/equities/symbolchange.csv); symbol change effective 23-APR-2024, strictly AFTER the constituent window ends, so the listing is the same security on every date it was an index member",VERIFIED_NSE_REGISTER
+LTI,LTIM,MERGER,05-DEC-2022,no,in NSE symbol-change register but successor has no usable history,UNRESOLVED
+MCDOWELL-N,UNITDSPR,RENAME_VERIFIED,07-JUN-2024,yes,"NSE official symbol-change register (archives.nseindia.com/content/equities/symbolchange.csv); symbol change effective 07-JUN-2024, strictly AFTER the constituent window ends, so the listing is the same security on every date it was an index member",VERIFIED_NSE_REGISTER
 MINDTREE,LTIM,MERGER,2022-11,no,"MindTree merged with LTI to form LTIMindtree; a combination, not a rename",UNVERIFIED
-MOTHERSUMI,MOTHERSON,DEMERGER,2021,no,"Motherson Sumi Systems DEMERGED into Samvardhana Motherson International (MOTHERSON) and MSUMI. A demerger is not a rename: the post-event security is not the pre-event one.",UNVERIFIED
+MOTHERSUMI,MOTHERSON,RENAME_VERIFIED,09-JUN-2022,yes,"NSE official symbol-change register (archives.nseindia.com/content/equities/symbolchange.csv); symbol change effective 09-JUN-2022, strictly AFTER the constituent window ends, so the listing is the same security on every date it was an index member",VERIFIED_NSE_REGISTER
 PEL,,AMBIGUOUS,,no,"Piramal Enterprises; probe returned no data under PEL.NS, which may be a transient provider failure rather than a delisting. Re-probe before concluding.",UNRESOLVED
 RELCAPITAL,,AMBIGUOUS,,no,"Reliance Capital; insolvency proceedings, listing status over the period needs verification",UNRESOLVED
-SRTRANSFIN,SHRIRAMFIN,MERGER,2022,no,"Shriram Transport Finance combined with Shriram City Union and was renamed Shriram Finance; a combination, not a pure rename",UNVERIFIED
-SSLT,VEDL,RENAME_CANDIDATE,2015,no,"Sesa Sterlite renamed Vedanta Ltd",UNVERIFIED
-TATAGLOBAL,TATACONSUM,RENAME_CANDIDATE,2020,no,"Tata Global Beverages renamed Tata Consumer Products",UNVERIFIED
-TATAMOTORS,,DEMERGER,2025,no,"Tata Motors demerged into commercial and passenger vehicle entities (TMCV/TMPV). The pre-demerger security is not either post-demerger security.",UNVERIFIED
+SRTRANSFIN,SHRIRAMFIN,RENAME_VERIFIED,20-DEC-2022,yes,"NSE official symbol-change register (archives.nseindia.com/content/equities/symbolchange.csv); symbol change effective 20-DEC-2022, strictly AFTER the constituent window ends, so the listing is the same security on every date it was an index member",VERIFIED_NSE_REGISTER
+SSLT,VEDL,RENAME_VERIFIED,07-MAY-2015,yes,"NSE official symbol-change register (archives.nseindia.com/content/equities/symbolchange.csv); symbol change effective 07-MAY-2015, strictly AFTER the constituent window ends, so the listing is the same security on every date it was an index member",VERIFIED_NSE_REGISTER
+TATAGLOBAL,TATACONSUM,RENAME_VERIFIED,27-FEB-2020,yes,"NSE official symbol-change register (archives.nseindia.com/content/equities/symbolchange.csv); symbol change effective 27-FEB-2020, strictly AFTER the constituent window ends, so the listing is the same security on every date it was an index member",VERIFIED_NSE_REGISTER
+TATAMOTORS,TMPV,RENAME_VERIFIED,24-OCT-2025,yes,"NSE official symbol-change register (archives.nseindia.com/content/equities/symbolchange.csv); symbol change effective 24-OCT-2025, strictly AFTER the constituent window ends, so the listing is the same security on every date it was an index member",VERIFIED_NSE_REGISTER
 TATAMTRDVR,,SECURITY_RETIRED,2024,no,"Tata Motors DVR class converted/cancelled. A dual-class security, never present in Nifty 50 or Next 50.",UNVERIFIED
-ZOMATO,ETERNAL,RENAME_CANDIDATE,2025,no,"Zomato Ltd renamed Eternal Ltd",UNVERIFIED
+ZOMATO,ETERNAL,RENAME_VERIFIED,09-APR-2025,yes,"NSE official symbol-change register (archives.nseindia.com/content/equities/symbolchange.csv); symbol change effective 09-APR-2025, strictly AFTER the constituent window ends, so the listing is the same security on every date it was an index member",VERIFIED_NSE_REGISTER

@@ -19,11 +19,109 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "python"))
-PIT = ROOT / "data-store" / "universe" / "pit_nifty100.csv"
-PANEL = ROOT / "data-store" / "market_data" / "pit-union" / "price_history_union.csv"
+PIT = ROOT / "data-store" / "universe" / "pit_nifty100_extended.csv"
+PANEL = ROOT / "data-store" / "market_data" / "pit-union" / "price_history_union_v2.csv"
 TODAY = ROOT / "data" / "nifty100_source.csv"
 TRANSITIONS = ROOT / "data" / "symbol_transitions.csv"
 MANIFEST = ROOT / "data-store" / "universe" / "manifest.jsonl"
+
+
+def weight_and_bias():
+    """Coverage by INDEX WEIGHT, and whether what is missing is systematic.
+
+    Count coverage and weight coverage answer different questions: missing ten
+    tail constituents is not the same failure as missing ten that carry a
+    quarter of the index. Both are reported; neither excuses the other.
+
+    The bias check uses ONLY information available in the official reports at
+    the time -- weight, index market cap, industry, year. No forward return is
+    read, because the question is whether the missing group is systematically
+    different, not whether it performed differently.
+    """
+    rows = list(csv.DictReader(PIT.open(encoding="utf-8")))
+    panel = {r["Ticker"] for r in csv.DictReader(PANEL.open(encoding="utf-8"))}
+    by_date = collections.defaultdict(list)
+    for row in rows:
+        by_date[row["report_date"]].append(row)
+
+    out = ["", "-" * 68, "COUNT vs INDEX-WEIGHT COVERAGE", "-" * 68]
+    counts, weights = [], []
+    per_year = collections.defaultdict(lambda: ([], []))
+    for date in sorted(by_date):
+        members = by_date[date]
+        total_w = sum(float(r["weight_pct"] or 0) for r in members)
+        have_w = sum(float(r["weight_pct"] or 0) for r in members if r["symbol"] in panel)
+        c = sum(1 for r in members if r["symbol"] in panel) / len(members)
+        w = (have_w / total_w) if total_w else float("nan")
+        counts.append(c); weights.append(w)
+        per_year[date[:4]][0].append(c); per_year[date[:4]][1].append(w)
+
+    def pct(v):
+        return 100 * v
+
+    def quantile(values, q):
+        ordered = sorted(values)
+        return ordered[min(len(ordered) - 1, int(q * len(ordered)))]
+
+    out.append("  mean constituent-count coverage   %.1f%%" % pct(sum(counts) / len(counts)))
+    out.append("  mean INDEX-WEIGHT coverage        %.1f%%" % pct(sum(weights) / len(weights)))
+    out.append("  median count / weight             %.1f%% / %.1f%%"
+               % (pct(quantile(counts, 0.5)), pct(quantile(weights, 0.5))))
+    out.append("  p5 count / weight                 %.1f%% / %.1f%%"
+               % (pct(quantile(counts, 0.05)), pct(quantile(weights, 0.05))))
+    out.append("  minimum count / weight            %.1f%% / %.1f%%"
+               % (pct(min(counts)), pct(min(weights))))
+    out.append("")
+    for label, threshold in (("100%", 1.0), (">=99%", 0.99), (">=98%", 0.98),
+                             (">=95%", 0.95), (">=90%", 0.90)):
+        out.append("  months with %-6s count / weight : %3d / %3d"
+                   % (label, sum(1 for c in counts if c >= threshold - 1e-9),
+                      sum(1 for w in weights if w >= threshold - 1e-9)))
+    out.append("")
+    out.append("  %-6s %-10s %-10s" % ("year", "count cov", "weight cov"))
+    for year in sorted(per_year):
+        c, w = per_year[year]
+        out.append("  %-6s %-10.1f %-10.1f" % (year, 100 * sum(c) / len(c), 100 * sum(w) / len(w)))
+
+    out += ["", "-" * 68, "MISSINGNESS BIAS  (PIT information only)", "-" * 68]
+    seen_w, seen_m, seen_i, seen_y = {}, {}, {}, {}
+    for row in rows:
+        symbol = row["symbol"]
+        seen_w.setdefault(symbol, []).append(float(row["weight_pct"] or 0))
+        seen_m.setdefault(symbol, []).append(float(row["index_mcap_cr"] or 0))
+        seen_i.setdefault(symbol, row["industry"])
+        seen_y.setdefault(symbol, []).append(row["report_date"][:4])
+    have = [s for s in seen_w if s in panel]
+    lack = [s for s in seen_w if s not in panel]
+
+    def mean(xs):
+        return sum(xs) / len(xs) if xs else float("nan")
+
+    out.append("  securities covered / missing      %d / %d" % (len(have), len(lack)))
+    out.append("  mean index weight   covered %.3f%%   missing %.3f%%"
+               % (mean([mean(seen_w[s]) for s in have]),
+                  mean([mean(seen_w[s]) for s in lack])))
+    out.append("  median index weight covered %.3f%%   missing %.3f%%"
+               % (quantile([mean(seen_w[s]) for s in have], 0.5),
+                  quantile([mean(seen_w[s]) for s in lack], 0.5)))
+    out.append("  mean index mcap Cr  covered %,.0f   missing %,.0f"
+               .replace(",", "") % (mean([mean(seen_m[s]) for s in have]),
+                                    mean([mean(seen_m[s]) for s in lack])))
+    out.append("  mean months in index covered %.1f   missing %.1f"
+               % (mean([len(seen_w[s]) for s in have]),
+                  mean([len(seen_w[s]) for s in lack])))
+    out.append("  last year present   covered %s   missing %s"
+               % (collections.Counter(max(seen_y[s]) for s in have).most_common(1)[0][0],
+                  collections.Counter(max(seen_y[s]) for s in lack).most_common(1)[0][0]))
+    out.append("")
+    out.append("  missing securities by last year in the index:")
+    for year, n in sorted(collections.Counter(max(seen_y[s]) for s in lack).items()):
+        out.append("     %s  %d" % (year, n))
+    out.append("")
+    out.append("  missing securities by industry:")
+    for industry, n in collections.Counter(seen_i[s] for s in lack).most_common(8):
+        out.append("     %-34s %d" % (industry[:34], n))
+    return "\n".join(out)
 
 
 def main():
@@ -127,6 +225,7 @@ def main():
     add("  The official index contained %d distinct securities." % len(union))
     add("  %d of them (%.0f%%) were invisible to every study run so far."
         % (len(union - today), 100 * len(union - today) / len(union)))
+    out.append(weight_and_bias())
     report = "\n".join(out)
     (ROOT / "data-store" / "universe" / "survivorship_audit.txt").write_text(
         report + "\n", encoding="utf-8")

@@ -1,0 +1,19 @@
+====================================================================
+UNION IDENTITY VALIDATION  --  NIFTY 50 + NIFTY Next 50 vs NIFTY 100
+====================================================================
+
+months compared                      87
+exact SECURITY-level matches         54
+exact COMPANY-level matches          87
+months with security differences     33
+months with company differences      0
+
+Securities in NIFTY 100 but NOT in the union:
+   TATAMTRDVR     in 33 month(s)
+
+Securities in the union but NOT in NIFTY 100:
+   (none)
+
+UNEXPLAINED COMPANY-LEVEL MISMATCHES: 0
+
+POST-2022 UNION RECONSTRUCTION: VALID WITH DOCUMENTED SECURITY-CLASS RULE

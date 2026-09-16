@@ -4690,10 +4690,19 @@ class BacktestTests(unittest.TestCase):
         self.assertIn("HDFC", register)
         self.assertEqual(register["HDFC"]["stitch_allowed"], "no")
         self.assertEqual(register["HDFC"]["new_symbol"], "")
-        # Nothing at all may be stitched without explicit, verified approval.
+        # Stitching is permitted ONLY with authoritative evidence. Every entry
+        # that allows it must cite the NSE symbol-change register, and no
+        # merger or demerger may ever qualify -- those change the security,
+        # not just its ticker.
         for symbol, row in register.items():
-            self.assertEqual(row["stitch_allowed"], "no",
-                             "%s claims stitching is allowed" % symbol)
+            if row["stitch_allowed"] != "yes":
+                continue
+            self.assertEqual(row["verified"], "VERIFIED_NSE_REGISTER",
+                             "%s stitches without register evidence" % symbol)
+            self.assertEqual(row["event_type"], "RENAME_VERIFIED",
+                             "%s stitches on a non-rename event" % symbol)
+            self.assertTrue(row["new_symbol"],
+                            "%s stitches to nothing" % symbol)
 
     def test_amihud_treats_absent_volume_as_MISSING_not_as_zero_liquidity(self):
         """The contract that matters more than the formula.
