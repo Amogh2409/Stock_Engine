@@ -153,3 +153,57 @@ of 3 is a stronger research decision than running two more studies because the
 allowance exists. Nothing obliges the third slot to be used, or the second.
 
 **Not applied retroactively.** Reversal stays spent.
+
+---
+
+## Distinctness screen — run 2026-09-16
+
+Signal-only, 87 rebalance dates, **no forward returns computed**. Full table in
+`data-store/reports/distinctness/distinctness.json`.
+
+| candidate | closest already-tested primitive | |mean| / |median| | verdict |
+|---|---|--:|---|
+| **MAX** | `totalVol` | 0.521 / **0.535** | potentially distinct |
+| **Amihud illiquidity** | `idioVol` | 0.321 / 0.316 | potentially distinct |
+
+**Neither is a reparameterisation.** Both clear the 0.70 gate, and the second
+clears it comfortably. That was not the expected outcome — the reversal result
+suggested the price-only candidate space might be largely redundant, and on
+this evidence it is not.
+
+For reference, the gate catches what it was built to catch: reversal, screened
+retrospectively, sits at −0.856 against `priceOverSma50`.
+
+### What the screen does not say
+
+Passing means **not a duplicate**. It does not mean unrelated, and the
+distinction matters for MAX.
+
+**MAX correlates +0.52 / +0.54 with total volatility**, stably (P25 +0.45,
+P75 +0.59). About half its cross-sectional variation is shared with a family
+that has already been tested and **failed**. The mechanical gate passes it, and
+a judgement under condition 3 should still weigh that a MAX study would be
+partly re-testing a null already measured. Its next-closest neighbours —
+`idioVol` +0.50, `reversal` −0.39 — tell the same story: MAX is a tail
+representation of volatility, related to two failed families at once.
+
+**Amihud is the cleaner candidate on distinctness.** Its largest association is
++0.32 with idiosyncratic volatility, which is the expected and economically
+sensible one — illiquid stocks are more volatile — and everything else sits
+below 0.21. Nothing in the frozen family comes near it.
+
+But Amihud carries the data dependency MAX does not: it divides by traded
+value, so it inherits the volume history that was only repaired on 2026-09-16.
+The contract is pinned by test — absent volume is skipped as MISSING, never
+read as zero, which would divide into infinity and put the least-*measured*
+stock at the illiquid extreme — and 29 sessions currently carry a blank volume.
+That is small, and it is a dependency a registration must state.
+
+### Budget
+
+Still **1 of 3**. The screen spent nothing: it computed no forward returns, so
+it could not learn anything about outcomes.
+
+Neither candidate is registered. Passing the screen makes a candidate
+*eligible* for registration under conditions 2, 4 and the rest — it does not
+register it, and the budget is a maximum rather than a quota.

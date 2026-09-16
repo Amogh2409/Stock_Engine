@@ -4525,7 +4525,10 @@ def main(argv=None):
             print("no benchmark in the price file", file=sys.stderr)
             return 1
         bench_by_date = dict(zip(bench["dates"], bench["closes"]))
-        rebalances = month_end_sessions(calendar, respect_holdout=respect_holdout)
+        # Read from args directly: the shared local is assigned further down
+        # in main(), after this early exit has already returned.
+        rebalances = month_end_sessions(
+            calendar, respect_holdout=not args.no_respect_holdout)
         scan = distinctness_scan(book, calendar, rebalances, bench_by_date)
         print(format_distinctness(scan))
         if args.out_dir:
