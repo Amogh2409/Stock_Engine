@@ -390,3 +390,16 @@ advance.
 
 The cell registered at the top of this file is untouched. This run changes no
 score; `--components` is a measurement flag.
+
+### 2026-09-16 — a second family is registered, and not yet run
+
+The technical family reached its FAIL branch and was re-frozen on a corrected
+panel. The first hypothesis from a genuinely different family is registered in
+[preregistration-idiosyncratic-volatility.md](preregistration-idiosyncratic-volatility.md):
+lower idiosyncratic volatility predicts better cross-sectional performance.
+
+Registered ALONE. Reversal, betting-against-beta, MAX and illiquidity are not
+registered and must not be measured in the same run.
+
+**Not run.** The file is committed before any result exists, and its hash is
+recorded in the commit that follows it.
