@@ -143,6 +143,127 @@ def market_calendar(history):
 HOLDOUT_START = "2023-01-01"
 
 
+# --- Point-in-time Nifty 100 membership ---------------------------------------
+# WHY. Every study in this file has ranked TODAY's Nifty 100 applied to history.
+# Companies that left the index are absent, and they are disproportionately the
+# ones that did badly, so every figure produced so far is an upper bound rather
+# than an estimate. This resolver replaces that static list with what NSE
+# Indices actually published at each historical date.
+#
+# The store is built by scripts/nse_index_history.py from the index provider's
+# own monthly reports. See data-store/universe/.
+ROOT_DIR = Path(__file__).resolve().parent.parent
+PIT_UNIVERSE_CSV = (Path(__file__).resolve().parent.parent
+                    / "data-store" / "universe" / "pit_nifty100.csv")
+
+
+class MembershipUnavailable(LookupError):
+    """No official membership covers the requested date.
+
+    A distinct exception because the ONLY safe response is to refuse. Falling
+    back to the current Nifty 100 would reintroduce exactly the bias the
+    resolver exists to remove, and would do it silently on the dates where the
+    data is weakest.
+    """
+
+
+class PitUniverse:
+    """Official Nifty 100 membership by date, from monthly month-end reports.
+
+    EFFECTIVE-DATE CONVENTION, established from the reports rather than
+    assumed: each report is titled with a single date that is the last trading
+    day of its month, and the close prices it carries are that day's. It is a
+    MONTH-END SNAPSHOT of membership, not a statement about a range.
+
+    So membership applicable to a date D is the report with the latest
+    report_date <= D. A report dated after D is never consulted, because doing
+    so would leak membership an investor could not have known.
+
+    That rule is deliberately conservative at one edge: if a month-end
+    rebalance falls on, say, 27 February because the 28th was a holiday, the
+    February report (dated the 28th) is NOT used and January's stands. The
+    alternative leaks two days of hindsight, and being one month stale is the
+    error that cannot manufacture a result.
+    """
+
+    def __init__(self, rows):
+        by_date = {}
+        self.records = {}
+        for row in rows:
+            date = row["report_date"]
+            by_date.setdefault(date, set()).add(row["symbol"])
+            self.records.setdefault(date, {})[row["symbol"]] = row
+        self.by_date = {d: frozenset(v) for d, v in by_date.items()}
+        self.dates = sorted(self.by_date)
+
+    @classmethod
+    def load(cls, path=None):
+        path = Path(path or PIT_UNIVERSE_CSV)
+        if not path.exists():
+            raise MembershipUnavailable(
+                "no point-in-time universe store at %s -- run "
+                "scripts/nse_index_history.py --download" % path)
+        with path.open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        if not rows:
+            raise MembershipUnavailable("point-in-time universe store is empty")
+        return cls(rows)
+
+    def report_for(self, date):
+        """The report date whose membership applies to `date`."""
+        position = bisect.bisect_right(self.dates, date) - 1
+        if position < 0:
+            raise MembershipUnavailable(
+                "no official Nifty 100 membership on or before %s; the store "
+                "starts at %s" % (date, self.dates[0]))
+        return self.dates[position]
+
+    def members(self, date):
+        """frozenset of symbols that were index members as at `date`."""
+        return self.by_date[self.report_for(date)]
+
+    def detail(self, date):
+        """Full records -- name, industry, index mcap, weight -- as at `date`."""
+        return self.records[self.report_for(date)]
+
+    def union(self):
+        """Every symbol that was ever a member across the whole store."""
+        out = set()
+        for members in self.by_date.values():
+            out |= members
+        return out
+
+    def coverage(self, date, available):
+        """How much of that date's official index the price panel can price."""
+        members = self.members(date)
+        present = {s for s in members if s in available}
+        return {
+            "report_date": self.report_for(date),
+            "official": len(members),
+            "priced": len(present),
+            "missing": sorted(members - present),
+            "share": (len(present) / len(members)) if members else float("nan"),
+        }
+
+
+def get_nifty100_universe(date, store=None, available=None):
+    """Official Nifty 100 constituents applicable to `date`.
+
+    NEVER falls back to the current index. If the store does not cover the
+    date, MembershipUnavailable is raised and the caller must decide -- which
+    is the point: a silent fallback is indistinguishable from the bug.
+
+    `available` optionally intersects with the tickers the price panel can
+    actually price; the intersection is returned, and the caller is expected to
+    read `PitUniverse.coverage` rather than assume it was complete.
+    """
+    universe = store if store is not None else PitUniverse.load()
+    members = universe.members(date)
+    if available is None:
+        return sorted(members)
+    return sorted(s for s in members if s in available)
+
+
 def month_end_sessions(calendar, respect_holdout=True):
     """The last session of each month, which is when the screen is re-run.
 
@@ -4459,6 +4580,120 @@ class BacktestTests(unittest.TestCase):
         # Traded value is 100,000 on both sides of the split by construction,
         # so the two Amihud readings must agree closely.
         self.assertAlmostEqual(before, after, delta=abs(after) * 0.05)
+
+    @staticmethod
+    def _pit_rows(spec):
+        """[(report_date, [symbols])] -> store rows, as the CSV would hold them."""
+        rows = []
+        for date, symbols in spec:
+            for symbol in symbols:
+                rows.append({"report_date": date, "index": "NIFTY 100",
+                             "symbol": symbol, "security_name": symbol + " Ltd.",
+                             "industry": "TEST", "close_price": "100",
+                             "index_mcap_cr": "1000", "weight_pct": "1.0",
+                             "source_report": "test.pdf", "source_sha256": "x",
+                             "parser_version": "test", "retrieved_at": "test"})
+        return rows
+
+    def test_an_addition_is_absent_before_it_joins_the_index(self):
+        store = PitUniverse(self._pit_rows([
+            ("2019-12-31", ["AAA", "BBB"]),
+            ("2020-06-30", ["AAA", "BBB", "NEWCO"]),
+        ]))
+        self.assertNotIn("NEWCO", store.members("2020-01-15"))
+        self.assertIn("NEWCO", store.members("2020-07-15"))
+
+    def test_a_removal_disappears_once_it_leaves_the_index(self):
+        store = PitUniverse(self._pit_rows([
+            ("2020-12-31", ["AAA", "GONECO"]),
+            ("2021-06-30", ["AAA"]),
+        ]))
+        self.assertIn("GONECO", store.members("2021-01-10"))
+        self.assertNotIn("GONECO", store.members("2021-07-10"))
+
+    def test_the_effective_date_boundary_never_leaks_membership_backwards(self):
+        """A report dated T applies from T, never before it.
+
+        The convention is a month-end SNAPSHOT: the report is dated the last
+        trading day of its month and carries that day's closes. So the day
+        before T must still see the previous report -- using T's membership on
+        T-1 would hand the backtest one day of hindsight about an index change.
+        """
+        store = PitUniverse(self._pit_rows([
+            ("2020-01-31", ["OLD"]),
+            ("2020-02-29", ["NEW"]),
+        ]))
+        self.assertEqual(store.members("2020-02-28"), frozenset({"OLD"}))
+        self.assertEqual(store.members("2020-02-29"), frozenset({"NEW"}))
+        self.assertEqual(store.members("2020-03-01"), frozenset({"NEW"}))
+
+    def test_a_date_before_the_store_refuses_rather_than_guessing(self):
+        store = PitUniverse(self._pit_rows([("2020-01-31", ["AAA"])]))
+        with self.assertRaises(MembershipUnavailable):
+            store.members("2019-12-31")
+
+    def test_missing_membership_never_falls_back_to_the_current_index(self):
+        """The failure this whole resolver exists to prevent.
+
+        Falling back to today's Nifty 100 on an uncovered date would
+        reintroduce survivorship bias precisely where the data is weakest, and
+        would do it silently.
+        """
+        store = PitUniverse(self._pit_rows([("2021-01-29", ["AAA", "BBB"])]))
+        today = ["ZZZ", "YYY"]          # nothing in common with the store
+        with self.assertRaises(MembershipUnavailable):
+            get_nifty100_universe("2015-06-30", store=store, available=today)
+        # And when it CAN resolve, it returns the official set -- not today's.
+        resolved = get_nifty100_universe("2021-06-30", store=store)
+        self.assertEqual(resolved, ["AAA", "BBB"])
+        self.assertNotIn("ZZZ", resolved)
+
+    def test_an_unknown_symbol_is_never_substituted_by_another_ticker(self):
+        store = PitUniverse(self._pit_rows([("2021-01-29", ["AAA", "DELISTED"])]))
+        # The panel can price only AAA. DELISTED must simply be absent, and the
+        # coverage must SAY so rather than quietly returning a full-looking set.
+        resolved = get_nifty100_universe("2021-02-15", store=store, available={"AAA", "OTHER"})
+        self.assertEqual(resolved, ["AAA"])
+        report = store.coverage("2021-02-15", {"AAA", "OTHER"})
+        self.assertEqual(report["official"], 2)
+        self.assertEqual(report["priced"], 1)
+        self.assertEqual(report["missing"], ["DELISTED"])
+        self.assertAlmostEqual(report["share"], 0.5)
+
+    def test_the_pit_universe_differs_from_the_static_current_universe(self):
+        """The whole point, on a fixture where the two provably disagree."""
+        store = PitUniverse(self._pit_rows([
+            ("2017-02-28", ["KEEPER", "LEAVER"]),
+            ("2022-03-31", ["KEEPER", "JOINER"]),
+        ]))
+        static_today = {"KEEPER", "JOINER"}       # what a current list holds
+        historical = set(get_nifty100_universe("2017-03-15", store=store))
+        self.assertEqual(historical, {"KEEPER", "LEAVER"})
+        self.assertNotEqual(historical, static_today)
+        # LEAVER is exactly the survivorship case: in the index then, gone now.
+        self.assertIn("LEAVER", historical)
+        self.assertNotIn("LEAVER", static_today)
+
+    def test_the_union_spans_every_report_not_just_the_latest(self):
+        store = PitUniverse(self._pit_rows([
+            ("2017-02-28", ["A", "B"]), ("2022-03-31", ["A", "C"])]))
+        self.assertEqual(store.union(), {"A", "B", "C"})
+
+    def test_a_merger_is_not_treated_as_a_rename(self):
+        """HDFC merged INTO HDFCBANK, so HDFCBANK's earlier prices are not
+        HDFC's. The transition register must forbid stitching that pair."""
+        path = ROOT_DIR / "data" / "symbol_transitions.csv"
+        if not path.exists():
+            self.skipTest("no transition register")
+        with path.open(newline="", encoding="utf-8") as handle:
+            register = {r["old_symbol"]: r for r in csv.DictReader(handle)}
+        self.assertIn("HDFC", register)
+        self.assertEqual(register["HDFC"]["stitch_allowed"], "no")
+        self.assertEqual(register["HDFC"]["new_symbol"], "")
+        # Nothing at all may be stitched without explicit, verified approval.
+        for symbol, row in register.items():
+            self.assertEqual(row["stitch_allowed"], "no",
+                             "%s claims stitching is allowed" % symbol)
 
     def test_amihud_treats_absent_volume_as_MISSING_not_as_zero_liquidity(self):
         """The contract that matters more than the formula.
