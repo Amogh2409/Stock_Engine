@@ -47,10 +47,14 @@ A new factor may be tested only if all eight hold:
 > **At most 2–3 further independent factor families, then price-only alpha
 > research PAUSES** — regardless of outcome.
 
-Spent so far: **1 of 3.** Short-term reversal, registered at `356a1ac` and run
-once, FAILED — and it counts, despite turning out to be largely a
-re-measurement of two frozen primitives, because refunding a family after
-seeing its result is the accounting this cap exists to prevent.
+Spent so far: **2 of 3.**
+
+- **Short-term reversal** (`356a1ac`) — FAILED. Counts despite turning out to
+  be largely a re-measurement of two frozen primitives; refunding a family
+  after seeing its result is the accounting this cap exists to prevent.
+- **Amihud illiquidity** (`b20e86c`) — FAILED at the 1-month primary horizon by
+  0.0011 IC against its detection floor, with the other four conditions met.
+  A narrow miss is a miss: the floor was fixed before the number existed.
 
 The cap is the part that actually binds. Conditions 1–8 police each study's
 internal honesty; only a cap polices the *number* of studies, and the number is
@@ -294,7 +298,7 @@ forward outcomes, so it spent nothing.
 |---|---|
 | Reversal | spent + frozen |
 | MAX | screened distinct, **parked** — ~0.53 with total volatility, entangled with a failed family |
-| Amihud | screened distinct, **input audit FAILED** on price basis |
+| ~~Amihud~~ | input audit passed after the dual-close repair; **registered, run, FAILED**, frozen. Diagnostic 3/6/12M horizons all cleared their floors — which §9 forbids from rescuing the primary, and §15 forbids from becoming a horizon change |
 | BAB | quarantined |
 
 ---

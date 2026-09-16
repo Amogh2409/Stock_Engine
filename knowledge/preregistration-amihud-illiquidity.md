@@ -258,3 +258,97 @@ Known-truth tests must establish, at minimum:
 - dividend adjustments do not enter the traded-value denominator.
 
 **No forward outcome may be inspected until the implementation commit exists.**
+
+---
+
+# Result — 2026-09-16
+
+Executed once against the registration at `b20e86c`, implementation `55266e7`,
+on the schema-v2 panel. 87 rebalance dates, 7,621 stock-date observations,
+63/45 formation, family 4. Outputs: `data-store/reports/amihud/`.
+
+**Slot 2 of 3 is now spent.**
+
+## Verdict: FAIL
+
+| h | mean IC | floor | HAC t | p (Bonf) | IC>0 | illiquid − liquid |
+|---|--:|--:|--:|--:|--:|--:|
+| **1 (primary)** | **+0.0435** | **0.0446** | 2.78 | 0.027 | 64% | +2.90pp |
+| 3 (diagnostic) | +0.0823 | 0.052 | 4.59 | 0.000 | 76% | +9.79pp |
+| 6 (diagnostic) | +0.1183 | 0.069 | 5.15 | 0.001 | 83% | +22.06pp |
+| 12 (diagnostic) | +0.1562 | 0.115 | 4.64 | 0.023 | 97% | +53.31pp |
+
+Against §13, at the 1-month primary horizon:
+
+| condition | result |
+|---|---|
+| 1. Mean IC positive | **PASS** (+0.0435) |
+| 2. Clears the 80%-power detection floor | **FAIL** — 0.0435 against 0.0446 |
+| 3. Bonferroni significance at family 4 | **PASS** (p 0.027) |
+| 4. Positive in both pre-holdout halves | **PASS** (+0.0204, +0.0636) |
+| 5. Illiquid-minus-liquid spread positive | **PASS** (+2.90pp) |
+
+**Four of five conditions hold. Condition 2 fails by 0.0011 IC** — the effect
+is about 97.5% of the size this sample could detect at 80% power.
+
+Net spread after the registered cost model was **+2.88pp** (round trip 0.02pp
+on 6.0% turnover), so the study would have been implementable had it been
+predictive. It was not, under the registered rule.
+
+### This is a FAIL, and the margin does not change that
+
+A detection floor is not a target to be approached. It states the effect size
+this sample could distinguish from noise at 80% power, and 0.0435 is below it.
+The registration fixed that bar before the number existed precisely so that a
+narrow miss could not be argued into a pass afterwards. It is being recorded as
+a FAIL with the margin stated, not as a near-pass.
+
+## The diagnostic horizons, and what may not be done with them
+
+3, 6 and 12 months each clear **both** their floor and Bonferroni
+significance, with the IC rising monotonically (0.0435 → 0.0823 → 0.1183 →
+0.1562) and the positive-IC share rising from 64% to **97%**. The most-illiquid
+decile compounded +2,795.8% against +181.8% for the most liquid, with a
+*shallower* drawdown (−25.9% against −34.2%).
+
+**§9 forbids these from rescuing the primary result, and they do not.** The
+registered hypothesis was about the 1-month horizon and it failed there.
+
+The pattern is consistent with a longer-horizon effect. That observation is a
+**hypothesis formed by reading these results**, and §15 explicitly prohibits
+"switching the primary horizon from 1M to 3M/6M/12M". It may become a new
+registration in a later independent research round, under a new slot, with the
+provenance of the idea stated — it must not be launched as a follow-up now.
+
+## FAIL branch, now in force
+
+> **The Amihud / illiquidity family is frozen.**
+
+Prohibited as immediate follow-ups, exactly as listed in §15: 63 → 21/126/252
+sessions; mean → median, geometric or harmonic; raw → log Amihud; winsorising
+after seeing the tails; dropping extreme observations; minimum-liquidity, size,
+sector, beta or volatility filters and neutralisations; moving the primary
+horizon; changing missing-volume handling or the traded-value basis;
+alternative denominators; compositing with turnover or volume.
+
+## Disclosures carried from the registration
+
+**The cost model understates this factor specifically.** §12 registered this in
+advance: a strategy that deliberately selects less-liquid securities is exactly
+where a flat 15 bps per side is least believable. Turnover was low (6.0%), so
+the modelled cost was trivial — but the modelled cost is not the real one, and
+this disclosure stands regardless of the verdict.
+
+**Size exposure: NOT MEASURED.** Point-in-time market capitalisation does not
+exist for these dates. Not passed, not failed, not controlled. Given the
+illiquid decile is likely to be the small-cap decile, this is a real and
+unresolved confound, and it is the strongest single reason not to read the
+diagnostic horizons as an illiquidity premium.
+
+**Bootstrap CI at 1 month:** [+0.0134, +0.0739], excludes zero — which is
+condition 3 agreeing with itself, not a fourth independent check.
+
+## Budget
+
+**2 of 3 spent.** Reversal (frozen), Amihud (frozen). MAX remains parked and
+BAB quarantined; neither is registered.
