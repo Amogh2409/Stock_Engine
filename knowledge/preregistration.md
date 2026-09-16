@@ -403,3 +403,19 @@ registered and must not be measured in the same run.
 
 **Not run.** The file is committed before any result exists, and its hash is
 recorded in the commit that follows it.
+
+### 2026-09-16 — low volatility FAILED; a research budget is imposed
+
+The idiosyncratic-volatility family failed its registered rule: 0 of 4 horizons
+positive where 3 were needed, none detected, every decile spread negative, and
+the idio-versus-total mechanism check indistinguishable. Frozen.
+
+Two negative results in a row make the next danger a search rather than a test,
+so `knowledge/research-policy.md` now caps price-only alpha research at **2-3
+further families** and sets eight conditions a new family must meet. BAB is
+QUARANTINED: the volatility study's beta diagnostic made it attractive, which
+is precisely what disqualifies it from this cycle.
+
+Short-term reversal is registered in
+[preregistration-short-term-reversal.md](preregistration-short-term-reversal.md)
+and spends 1 of 3. **Not run.**

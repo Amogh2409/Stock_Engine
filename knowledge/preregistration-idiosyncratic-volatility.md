@@ -179,7 +179,13 @@ best-of, and identical in form to the rule the frozen family failed:
 1. **Detection.** `mean IC ≥ detectable_ic_80pct` for that cell.
 2. **Significance after the family.** `hac_p_bonferroni < 0.05` at family 8.
 3. **Economic separation.** Decile spread (Q1−Q10) **positive** and above the
-   round trip it implies — **0.60pp** at 15 bps per side, both legs.
+   round trip it implies — ~~0.60pp~~ **0.30pp** at 15 bps per side, both legs.
+   *(Arithmetic error in the original registration, corrected 2026-09-16 after
+   the run: 15 bps per side round-trips to 0.30pp, not 0.60pp. The struck
+   figure is left visible rather than overwritten. The implementation used
+   0.30pp — the EASIER bar — and the verdict is unchanged, because all four
+   decile spreads are negative and fail any positive threshold. Disclosed in
+   full below.)*
 4. **Horizon consistency.** Same IC sign at **≥3 of 4** horizons, and
    conditions 1–2 met at **≥2** of them.
 
@@ -320,7 +326,10 @@ Per-date Spearman, summarised:
 | −idio-vol | mean −0.371 (P25 −0.475, P75 −0.261) | mean +0.183 |
 | −total-vol | mean **−0.646** (P25 −0.721, P75 −0.583) | mean +0.043 |
 
-Size: **UNAVAILABLE**, per the pre-run amendment.
+Size: **UNAVAILABLE** — not measured, and therefore neither passed nor failed.
+Point-in-time market capitalisation does not exist for these dates; see the
+pre-run amendment. This is an absence of data, not a negative result, and must
+not be read as "size was checked and was fine".
 
 The beta correlations are the most informative numbers in the run and they
 explain the mechanism result. Total volatility is −0.65 correlated with beta,
