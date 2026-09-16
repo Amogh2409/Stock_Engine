@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.tradebot.pit-collect</string>
+
+  <!-- venv-python.sh resolves the interpreter, so the job does not depend on
+       whatever python happens to be first on a login shell's PATH. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/amoghsaxena/PersonalResearch/TradeBot/scripts/venv-python.sh</string>
+    <string>/Users/amoghsaxena/PersonalResearch/TradeBot/scripts/collect_pit.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/amoghsaxena/PersonalResearch/TradeBot</string>
+
+  <!-- The 1st of each month at 09:00. The job is idempotent per month, so a
+       machine that was asleep and fires late still collects exactly one
+       vintage, and a machine that fires twice collects none extra. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Day</key><integer>1</integer>
+    <key>Hour</key><integer>9</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+
+  <!-- A laptop is asleep at 09:00 more often than not, and launchd does not
+       replay a calendar interval it slept through. Running at load catches
+       that up: the job is idempotent PER MONTH, so a login on the 4th
+       collects the month that was missed, and every later login that month
+       does nothing. A missing month cannot be collected afterwards -- Yahoo
+       serves no past vintage -- so the cost of an extra no-op run is nil
+       against the cost of a hole in the panel. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/amoghsaxena/PersonalResearch/TradeBot/data-store/logs/pit-collect.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/amoghsaxena/PersonalResearch/TradeBot/data-store/logs/pit-collect.err</string>
+</dict>
+</plist>
