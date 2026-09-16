@@ -1175,6 +1175,165 @@ def yearly_returns(periods, key="net_return"):
     return {year: value - 1.0 for year, value in sorted(by_year.items())}
 
 
+
+# --- Component attribution: does any single primitive rank returns? ---------
+def _percentiles(values):
+    """(mean, median, p25, p75) of a list, or NaNs. Plain arithmetic, no numpy."""
+    clean = sorted(v for v in values if v == v)
+    if not clean:
+        nan = float("nan")
+        return nan, nan, nan, nan
+    def at(q):
+        return clean[max(0, min(len(clean) - 1, int(q * (len(clean) - 1) + 0.5)))]
+    return sum(clean) / len(clean), at(0.5), at(0.25), at(0.75)
+
+
+def component_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORIZONS):
+    """Every primitive measured on its own, plus correlations and leave-one-out.
+
+    WHY THIS EXISTS. The composite technical score measures a powered null, and
+    every block does too. A sum can hide an offsetting pair, so a flat total is
+    equally consistent with "every ingredient is noise" and with "one ingredient
+    works and the others cancel it". Blocks are themselves sums of two to five
+    primitives, so the same objection applies one level down. This is the level
+    where it stops: CONTINUOUS_FEATURES holds the twelve raw quantities the
+    score is actually built from, and each is ranked on alone.
+
+    Three outputs, all on the same eligible universe at each date:
+
+      components   one IC series per primitive per horizon, plus deciles
+      correlations Spearman between primitives, and between blocks, computed
+                   PER DATE and then summarised -- a single pooled matrix
+                   cannot show whether redundancy persists through time
+      leave_one_out the shipped points composite with one block removed, which
+                   asks whether a block is destroying information the others
+                   carry rather than merely failing to add any
+
+    Nothing here changes a score. Every number is a measurement of what the
+    engine already computes.
+    """
+    names = [name for _block, name, _extract, _weight in CONTINUOUS_FEATURES]
+    blocks = sorted(E.TECHNICAL_BLOCK_MAX)
+    # family: every primitive, every block, every leave-one-out, at every horizon
+    family = len(horizons) * (len(names) + len(blocks) + len(blocks))
+
+    series = {k: {h: [] for h in horizons} for k in names + blocks + ["loo:" + b for b in blocks]}
+    buckets = {k: {h: {d: [] for d in range(10)} for h in horizons} for k in names}
+    pair_corr = {}       # (a, b) -> [per-date spearman]
+    block_corr = {}
+    dates_used = 0
+
+    for index, signal_date in enumerate(rebalances):
+        entry_date = next_session(calendar, signal_date)
+        if entry_date is None:
+            continue
+        # The gate is the engine's own refusal, exactly as rank_on does it.
+        entries, points_blocks = [], {}
+        for ticker in book.tickers():
+            tech = technicals_on(book, ticker, signal_date, bench_by_date)
+            if tech is None:
+                continue
+            gate = E.calculate_technical_score(tech, True)
+            total = gate[0] if isinstance(gate, tuple) else gate
+            if total is None:
+                continue
+            entries.append((ticker, tech))
+            points_blocks[ticker] = gate[3] if isinstance(gate, tuple) and len(gate) > 3 else None
+        if len(entries) < 10:
+            continue
+        dates_used += 1
+
+        # Raw primitive values, and the points-model block subtotals.
+        values = {}
+        for block, name, extract, _weight in CONTINUOUS_FEATURES:
+            values[name] = {t: extract(tech) for t, tech in entries}
+        for b in blocks:
+            values[b] = {t: (points_blocks[t] or {}).get(b) for t, _tech in entries}
+        for b in blocks:
+            others = [x for x in blocks if x != b]
+            values["loo:" + b] = {
+                t: (None if points_blocks[t] is None
+                    else sum((points_blocks[t] or {}).get(o) or 0.0 for o in others))
+                for t, _tech in entries}
+
+        # Cross-sectional correlations for this date, primitives and blocks.
+        for i, a in enumerate(names):
+            for b2 in names[i + 1:]:
+                pairs = [(values[a][t], values[b2][t]) for t, _ in entries
+                         if values[a][t] is not None and values[b2][t] is not None]
+                c = spearman(pairs) if len(pairs) >= 10 else None
+                if c is not None:
+                    pair_corr.setdefault((a, b2), []).append(c)
+        for i, a in enumerate(blocks):
+            for b2 in blocks[i + 1:]:
+                pairs = [(values[a][t], values[b2][t]) for t, _ in entries
+                         if values[a][t] is not None and values[b2][t] is not None]
+                c = spearman(pairs) if len(pairs) >= 10 else None
+                if c is not None:
+                    block_corr.setdefault((a, b2), []).append(c)
+
+        for horizon in horizons:
+            future = index + horizon
+            if future >= len(rebalances):
+                continue
+            exit_date = next_session(calendar, rebalances[future])
+            if exit_date is None:
+                continue
+            forward = {}
+            for ticker, _tech in entries:
+                start, _ = book.execution_price(ticker, entry_date)
+                end, _ = book.execution_price(ticker, exit_date)
+                if start is not None and end is not None:
+                    forward[ticker] = end / start - 1.0
+            if len(forward) < 10:
+                continue
+            for key in series:
+                pairs = [(values[key][t], forward[t]) for t in forward
+                         if values[key].get(t) is not None]
+                if len(pairs) < 10:
+                    continue
+                ic = spearman(pairs)
+                if ic is not None:
+                    series[key][horizon].append(ic)
+                if key in buckets:
+                    ordered = sorted(pairs, key=lambda p: -p[0])
+                    count = len(ordered)
+                    for position, (_v, ret) in enumerate(ordered):
+                        buckets[key][horizon][min(9, position * 10 // count)].append(ret)
+
+    out = {"dates": dates_used, "family_size": family, "horizons": list(horizons),
+           "components": {}, "blocks": {}, "leave_one_out": {},
+           "correlations": {"primitives": {}, "blocks": {}}}
+    for key in series:
+        target = (out["components"] if key in names
+                  else out["leave_one_out"] if key.startswith("loo:") else out["blocks"])
+        label = key[4:] if key.startswith("loo:") else key
+        target[label] = {}
+        for horizon in horizons:
+            stats = _ic_statistics(series[key][horizon], family, hac_lag=horizon - 1)
+            stats["positive_ic_share"] = (
+                sum(1 for v in series[key][horizon] if v > 0) / len(series[key][horizon])
+                if series[key][horizon] else float("nan"))
+            if key in buckets:
+                rows = buckets[key][horizon]
+                top = rows[0]
+                bottom = rows[9]
+                stats["decile_top_mean"] = sum(top) / len(top) if top else float("nan")
+                stats["decile_bottom_mean"] = sum(bottom) / len(bottom) if bottom else float("nan")
+                stats["decile_spread"] = stats["decile_top_mean"] - stats["decile_bottom_mean"]
+                stats["deciles"] = {d: (sum(v) / len(v) if v else float("nan"))
+                                    for d, v in rows.items()}
+            target[label][horizon] = stats
+    for (a, b), vals in sorted(pair_corr.items()):
+        mean, med, p25, p75 = _percentiles(vals)
+        out["correlations"]["primitives"]["%s|%s" % (a, b)] = {
+            "mean": mean, "median": med, "p25": p25, "p75": p75, "dates": len(vals)}
+    for (a, b), vals in sorted(block_corr.items()):
+        mean, med, p25, p75 = _percentiles(vals)
+        out["correlations"]["blocks"]["%s|%s" % (a, b)] = {
+            "mean": mean, "median": med, "p25": p25, "p75": p75, "dates": len(vals)}
+    return out
+
 # --- Does the score rank anything? -----------------------------------------
 def _betacf(a, b, x):
     """Continued fraction for the incomplete beta function, by Lentz's method."""
@@ -1919,6 +2078,97 @@ def pct(value):
     return "n/a" if value is None or value != value else "%.2f%%" % (value * 100.0)
 
 
+def _component_section(components):
+    """Render the component attribution.
+
+    Deliberately prints the floor beside every IC. A mean IC with no floor next
+    to it invites the reader to treat 0.06 as a result; the floor is what says
+    whether this run could have seen 0.06 at all.
+    """
+    out = ["## Every primitive on its own", ""]
+    out.append("Measured over %d rebalance dates. Bonferroni family: %d -- twelve "
+               "primitives, four blocks and four leave-one-out composites, each at "
+               "%s months." % (components["dates"], components["family_size"],
+                               "/".join(str(h) for h in components["horizons"])))
+    out.append("")
+    out.append("`floor` is the IC this run could detect at 80% power. `sig` marks a "
+               "cell clearing BOTH the floor and the family-corrected p, which is the "
+               "standard fixed in knowledge/component-stop-condition.md before these "
+               "numbers were read.")
+    out.append("")
+    def cell_for(section, name, horizon):
+        # Live results carry int horizons; a results.json read back carries
+        # strings. Rendering used to use str() alone, which silently produced a
+        # table of headers and no rows when handed the live dict.
+        by_horizon = section[name]
+        if horizon in by_horizon:
+            return by_horizon[horizon]
+        return by_horizon.get(str(horizon))
+
+    header = ("| primitive | h | IC | floor | HAC t | p (Bonf) | IC>0 | Q1-Q10 |  |")
+    out.append(header)
+    out.append("|---|--:|--:|--:|--:|--:|--:|--:|:--|")
+    for name in sorted(components["components"]):
+        for horizon in components["horizons"]:
+            cell = cell_for(components["components"], name, horizon)
+            if cell is None:
+                continue
+            spread = cell.get("decile_spread")
+            detected = abs(cell["mean_ic"]) >= cell["detectable_ic_80pct"]
+            significant = cell["hac_p_bonferroni"] < 0.05
+            out.append("| %s | %d | %+.4f | %.3f | %+.2f | %.3f | %.0f%% | %s | %s |"
+                       % (name, horizon, cell["mean_ic"], cell["detectable_ic_80pct"],
+                          cell["hac_t_stat"], cell["hac_p_bonferroni"],
+                          100 * cell["positive_ic_share"],
+                          ("%+.2fpp" % (100 * spread)) if spread is not None else "--",
+                          "**sig**" if detected and significant else ""))
+    out.append("")
+    for title, key, note in (
+            ("Blocks", "blocks", "Each block scored alone, on the engine's own points."),
+            ("Leave one block out", "leave_one_out",
+             "The shipped composite with that block removed. A number ABOVE the "
+             "composite's own IC means the block was subtracting.")):
+        out.append("### %s" % title)
+        out.append("")
+        out.append(note)
+        out.append("")
+        out.append("| block | h | IC | floor | HAC t | p (Bonf) |")
+        out.append("|---|--:|--:|--:|--:|--:|")
+        for name in sorted(components[key]):
+            for horizon in components["horizons"]:
+                cell = cell_for(components[key], name, horizon)
+                if cell is None:
+                    continue
+                out.append("| %s | %d | %+.4f | %.3f | %+.2f | %.3f |"
+                           % (name, horizon, cell["mean_ic"],
+                              cell["detectable_ic_80pct"], cell["hac_t_stat"],
+                              cell["hac_p_bonferroni"]))
+        out.append("")
+    out.append("### How much of this is twelve different measurements")
+    out.append("")
+    out.append("Spearman computed within each rebalance date and then summarised, "
+               "because a single pooled matrix cannot show whether redundancy "
+               "persists through time. Pairs above |0.5| mean:")
+    out.append("")
+    out.append("| pair | mean | median | P25 | P75 |")
+    out.append("|---|--:|--:|--:|--:|")
+    pairs = components["correlations"]["primitives"]
+    strong = sorted(pairs.items(), key=lambda kv: -abs(kv[1]["mean"]))
+    for label, stats in strong:
+        if abs(stats["mean"]) < 0.5:
+            continue
+        out.append("| %s | %+.2f | %+.2f | %+.2f | %+.2f |"
+                   % (label, stats["mean"], stats["median"], stats["p25"], stats["p75"]))
+    out.append("")
+    out.append("| block pair | mean | median | P25 | P75 |")
+    out.append("|---|--:|--:|--:|--:|")
+    for label, stats in sorted(components["correlations"]["blocks"].items()):
+        out.append("| %s | %+.2f | %+.2f | %+.2f | %+.2f |"
+                   % (label, stats["mean"], stats["median"], stats["p25"], stats["p75"]))
+    out.append("")
+    return out
+
+
 def format_report(results):
     out = []
     out.append("# Technical-score backtest")
@@ -2041,6 +2291,9 @@ def format_report(results):
             for horizon, block in sorted(results["block_deciles"][name].items()):
                 out.append("- **%d-month**: %s" % (horizon, _ic_sentence(block)))
             out.append("")
+    components = results.get("components")
+    if components:
+        out.extend(_component_section(components))
     out.append("## Execution quality")
     out.append("")
     quality = results["quality"]
@@ -2101,7 +2354,7 @@ def _after_tax_block(book, periods, cost_bps_per_side, stcg_rate, capital):
 def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PER_SIDE,
              variants_tried=1, variants_note="", rsi_flip=False, respect_holdout=True,
              continuous=False, neutral=False, no_skip_month=False, buffer_multiple=1,
-             stcg_rate=STCG_RATE, capital=None, portfolio_block=None, invert=False):
+             stcg_rate=STCG_RATE, capital=None, portfolio_block=None, invert=False, components=False):
     book = PriceBook(history)
     calendar = market_calendar(history)
     rebalances = month_end_sessions(calendar, respect_holdout=respect_holdout)
@@ -2212,6 +2465,10 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
         # comparison.
         "after_tax": _after_tax_block(book, periods, cost_bps_per_side,
                                       stcg_rate, capital),
+        # Component attribution, only when asked: it re-scores every rebalance
+        # date twelve more ways and roughly doubles the run.
+        "components": (component_study(book, calendar, rebalances, bench_by_date)
+                       if components else None),
         "quality": {
             "total_fills": total_fills,
             "fallbacks": sum(p["open_fallbacks"] for p in periods),
@@ -3140,6 +3397,61 @@ class BacktestTests(unittest.TestCase):
         # And the default is the protective one.
         self.assertEqual(month_end_sessions(calendar), reserved)
 
+    def test_component_study_recovers_a_primitive_it_was_given(self):
+        """A known-truth check on the sign convention, which everything rests on.
+
+        The whole volumeRatio20D reading -- that the engine pays for a quantity
+        which predicts LOWER returns -- is a statement about a sign. If IC were
+        computed against the wrong end of the ranking, that conclusion would
+        invert and nothing else in the run would look any different. So build a
+        universe where volume ratio is known to rank returns POSITIVELY, and
+        require the study to come back positive.
+        """
+        dates = self._business_days(340)
+        ends = set(month_end_sessions(dates, respect_holdout=False))
+        history, bench_closes = {}, [1000.0] * len(dates)
+        tickers = ["T%02d" % i for i in range(10)]
+        for rank, ticker in enumerate(tickers):
+            # Price compounds faster for higher rank, so forward return rises
+            # with rank at every horizon.
+            drift = 1.0 + 0.0005 * (rank + 1)
+            closes, volumes = [], []
+            price = 100.0
+            for date in dates:
+                closes.append(price)
+                price *= drift
+                # Volume is flat except on signal dates, where it is lifted in
+                # proportion to rank. That makes latest/20-day-average rise with
+                # rank without changing the average much.
+                volumes.append(1000.0 * (1.0 + 0.5 * rank) if date in ends else 1000.0)
+            series = self._series(dates, closes)
+            series["volumes"] = volumes
+            history[ticker] = series
+        history[E.BENCHMARK_SYMBOL] = self._series(dates, bench_closes)
+
+        book = PriceBook(history)
+        bench_by_date = dict(zip(dates, bench_closes))
+        # Only dates the engine can actually score: it needs 252 sessions for
+        # the 52-week high, and a rebalance before that scores nothing at all.
+        rebalances = [d for d in sorted(ends) if dates.index(d) >= 252][:-1]
+        self.assertGreater(len(rebalances), 3, "fixture must span several rebalances")
+
+        study = component_study(book, dates, rebalances, bench_by_date, horizons=(1,))
+        volume = study["components"]["volumeRatio20D"][1]
+        self.assertGreater(volume["mean_ic"], 0.9,
+                           "a primitive built to rank must come back ranking, "
+                           "and come back POSITIVE")
+        self.assertGreater(volume["decile_spread"], 0.0,
+                           "top decile is the high end of the primitive, so a "
+                           "positive IC must carry a positive spread")
+        # The family is the whole grid, not the one cell that was looked at.
+        self.assertEqual(study["family_size"],
+                         1 * (len(CONTINUOUS_FEATURES) + 2 * len(E.TECHNICAL_BLOCK_MAX)))
+        # Correlations are per-date summaries, so every pair carries a spread.
+        for stats in study["correlations"]["primitives"].values():
+            self.assertLessEqual(stats["p25"], stats["median"])
+            self.assertLessEqual(stats["median"], stats["p75"])
+
     def test_bonferroni_scales_and_caps(self):
         self.assertAlmostEqual(bonferroni(0.0175, 8), 0.14, places=6)
         self.assertEqual(bonferroni(0.5, 8), 1.0)
@@ -3206,6 +3518,9 @@ def main(argv=None):
                              "it. Exists for the single final test described in "
                              "knowledge/holdout.md, and for nothing else."
                              % HOLDOUT_START)
+    parser.add_argument("--components", action="store_true",
+                        help="measure every primitive on its own, plus cross-correlations "
+                             "and leave-one-block-out. A diagnostic: changes no score.")
     parser.add_argument("--self-test", action="store_true", help="run the offline checks and exit")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
@@ -3251,7 +3566,7 @@ def main(argv=None):
                        neutral=args.neutral, no_skip_month=args.no_skip_month,
                        buffer_multiple=args.buffer, stcg_rate=args.tax_stcg,
                        capital=args.capital, portfolio_block=args.portfolio_block,
-                       invert=args.invert)
+                       invert=args.invert, components=args.components)
     report = format_report(results)
     print(report)
     if args.out_dir:

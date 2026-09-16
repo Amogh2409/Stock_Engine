@@ -7,9 +7,18 @@ the only reason a predeclared rule is worth anything.
 ## Why a component run at all
 
 The composite technical score measures a powered null: zero of twenty cells
-clear their own detection floor, the 1-month IC is −0.0033, and the top decile
-*underperforms* the bottom by 4.5pp at 6 months and 6.0pp at 12. Each of the
-four blocks was then measured separately and none carried the composite.
+clear their own detection floor, and the 1-month IC is −0.0033 (HAC t −0.16,
+n 86) in the figures the repo ships. Each of the four blocks was then measured
+separately and none carried the composite.
+
+"Not detected" is not the same as "backwards", and this run is the first to put
+the composite's own deciles on the record. They separate in the *right*
+direction at the longer horizons — top minus bottom +4.45pp at 6 months and
++5.98pp at 12 — but the separation is not monotone (7 falling steps of 9 at 6
+months, 4 of 9 at 12), it is −0.05pp at 1 month, and the IC behind it still
+sits far below its own floor (+0.0512 against 0.121 at 6 months). A spread that
+size with an IC that far under the floor is what noise looks like when ten
+buckets are drawn from ~89 names.
 
 A sum can hide an offsetting pair. A flat total is equally consistent with
 "every ingredient is noise" and with "one ingredient works and the rest cancel
@@ -91,3 +100,83 @@ fixed in advance, before the holdout is spent on it.
   share three quarters of their content.
 - The universe is the current Nifty 100. Survivorship is not corrected here and
   biases every cell in the same optimistic direction.
+
+---
+
+# Result — 2026-09-16
+
+Run: 87 rebalance dates, 48 primitive cells, 16 block cells, 16 leave-one-out
+cells, family 80. Report at `data-store/reports/components/report.md`.
+
+Priced from `price_history_20260916`, which is newer than the file behind the
+shipped figures, so the composite baseline here is IC −0.0034 at 1 month rather
+than the −0.0033 quoted elsewhere. Every comparison below is against this run's
+own baseline, never across the two files.
+
+## Against the rule: FAIL
+
+**No primitive clears all four conditions. None clears even the first two.**
+
+One cell out of forty-eight meets both detection and family-corrected
+significance — `volumeRatio20D` at 6 months, IC **−0.0639** against a floor of
+0.041, HAC t −4.74, Bonferroni p 0.039. Its IC is negative, so under "Sign is
+not free" it does not pass. It is a refutation, not a survivor.
+
+Three other cells clear the detection floor and nothing else:
+`relativeStrength3M` at 6m (+0.0675) and 12m (+0.0647), `obvPressure20D` at 12m
+(+0.0474). All three fail Bonferroni by a wide margin (p 0.24, 0.95, 1.00). At
+12 months the HAC degrees of freedom are **5**; that column is close to
+powerless and should not be leaned on.
+
+**The FAIL branch is now in force.** No reweighting, no thirteenth indicator, no
+threshold retuning inside the technical factor family.
+
+## The one thing this run did detect points the wrong way
+
+`volumeRatio20D` is negative at every horizon — IC −0.029, −0.043, −0.064,
+−0.068 — with the positive-IC share falling from 41% to 31%, and a top-minus-
+bottom decile spread of −1.0, −3.2, −8.1, −12.0pp. It is the most consistent
+signal in the run, and it runs opposite to how the engine uses it:
+`engine.py:2387` awards **+5 points** when `volumeRatio20D > 1.0`.
+
+Leave-one-out agrees. Dropping the volume block raises the composite IC at
+every horizon — 1m −0.0034 to +0.0012, 3m +0.0183 to +0.0254, 6m +0.0512 to
++0.0596, 12m +0.0425 to +0.0511. Dropping `relStrength` lowers it at every
+horizon. Volume is subtracting; relative strength is carrying what little there
+is. Note that **no leave-one-out variant clears its own floor either**, so that
+ordering is a consistent point estimate and not a detected effect.
+
+### Why this is not yet a licence to delete the rule
+
+The decile pattern is not a clean inverse. Q10 — the *lowest* volume ratio — is
+the best bucket at every horizon (21.5% at 6m against 13.4% for the highest),
+but the middle eight buckets are flat and monotonicity is 6 rising steps of 9.
+The effect sits almost entirely in one tail. The obvious confound is that the
+quietest names are the least liquid, where the flat 15 bps cost assumption is
+most likely to be wrong — the measured edge could be an execution cost the
+backtest does not charge.
+
+So: acting on this is a **new hypothesis**, formed by looking at these results,
+and this file already says such a hypothesis cannot be validated on them. It
+goes to the holdout ladder with its direction and horizon fixed in advance, or
+it does not get acted on.
+
+## The twelve primitives are not twelve measurements
+
+Per-date Spearman, summarised rather than pooled. Stable, tight quartiles:
+
+| pair | mean rho |
+|---|--:|
+| smaCross / relativeStrength6M | +0.91 |
+| priceOverSma50 / rsi14 | +0.89 |
+| priceOverSma200 / smaCross | +0.87 |
+| priceOverSma200 / distFrom52WHighPct | +0.78 |
+| priceOverSma200 / relativeStrength6M | +0.77 |
+| smaCross / relativeStrength12M | +0.75 |
+
+At the block level `relStrength / trend` is +0.56. The score is not twelve
+independent opinions; it is roughly three, counted repeatedly, with the
+trend and relative-strength blocks substantially the same bet. That is a
+structural finding about the score's design, independent of whether any of it
+predicts anything — and it explains why block-level results looked so much like
+the composite.

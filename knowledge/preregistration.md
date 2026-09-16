@@ -317,3 +317,76 @@ Three options stand, unchanged in substance and now unchanged by tax:
 3. **Do not spend**, on power grounds alone rather than on tax grounds.
 
 The holdout test remains **NOT RUN**, and nothing in §§1–7 is altered.
+
+### 2026-09-16 — two fundamental-side fixes; the cell is unchanged
+
+An external code review of the engine's design produced three claims of material
+bugs. All three were checked by running the code and **all three were wrong**:
+the bank model is a 100-point five-bucket model, not a 50-point one (a perfect
+bank and a perfect non-financial return identical totals from equivalent
+inputs); negative P/E already scores zero rather than full marks; and portfolio
+volatility is already correlation-aware, being the standard deviation of the
+portfolio's own return series.
+
+Two of the review's smaller points were correct and are now fixed:
+
+- `hard_red_flags` no longer infers negative net worth from a negative
+  debt-to-equity ratio. The inference only holds for GROSS-debt providers; a
+  NET-debt provider gives a negative ratio to a company with more cash than
+  debt. Equity is tested directly when present, price-to-book otherwise.
+- `grossNpa` moved from `BANK_REQUIRED_FIELDS` to `BANK_OPTIONAL_FIELDS`. It
+  carries no points, so requiring it blocked lenders over a field never read.
+
+**THE PRE-REGISTERED CELL IS UNAFFECTED, AND THIS WAS VERIFIED, NOT ASSUMED.**
+`python/backtest.py` holds zero references to fundamentals, red flags or bank
+fields, so neither change can reach the measurement. Rung C was regenerated on
+the changed engine and the cell came back bit-identical:
+
+| | before | after |
+| --- | --- | --- |
+| `mean_ic` | −0.040666455273968276 | **identical** |
+| `hac_t_stat` | −3.047529524137167 | **identical** |
+| `bootstrap_ci_lo` / `hi` | −0.06747798313532546 / −0.015490827037360294 | **identical** |
+| `detectable_ic_80pct` | 0.037983442542370106 | **identical** |
+
+`SCORING_HASH` moved (`8ed6a95f…` → `e2cebaa9…`) because `BANK_REQUIRED_FIELDS`
+is a module constant the guard hashes. It is re-recorded in this same change, as
+the guard's own failure message requires.
+
+**Nothing in §§1–7 changes**: not the cell, not the prediction, not the decision
+rule, not the power analysis. The holdout test remains **NOT RUN**.
+
+One change the review asked for was deliberately NOT made. Replacing the
+one-year operating-cash-flow rejection with a multi-year test changes which
+companies are admitted, which makes it a hypothesis rather than a correctness
+fix. It is registered here as an experiment to be benchmarked against the
+current rule, and must not be adopted on plausibility alone.
+
+### 2026-09-16 — the technical family is measured out to its primitives, and stops
+
+The composite measured a powered null; so did all four blocks. A sum can hide an
+offsetting pair, so the objection survived down to `CONTINUOUS_FEATURES` — the
+twelve raw quantities the score is built from. Each was ranked on alone, at
+1/3/6/12 months, with two per-date correlation matrices and four
+leave-one-block-out composites. Family size 80.
+
+The decision rule was written and committed **before** the results were opened;
+`git log` orders the two commits. It lives in
+[component-stop-condition.md](component-stop-condition.md), which also holds the
+outcome.
+
+**Outcome: FAIL.** No primitive clears detection and family-corrected
+significance together. The one cell that clears both — `volumeRatio20D` at 6
+months, IC −0.0639 — is negative, and the engine pays +5 points for the quantity
+it says to avoid. Leave-one-out agrees that the volume block subtracts at every
+horizon, though no leave-one-out variant clears its own floor.
+
+Per the FAIL branch, now in force: **no reweighting, no new indicator, no
+threshold retuning inside the technical factor family.** Acting on the volume
+result is a new hypothesis formed by looking at these results and needs its own
+cell on the holdout ladder — with the liquidity confound (the effect sits in the
+lowest-volume decile, where the flat 15 bps cost is least believable) stated in
+advance.
+
+The cell registered at the top of this file is untouched. This run changes no
+score; `--components` is a measurement flag.

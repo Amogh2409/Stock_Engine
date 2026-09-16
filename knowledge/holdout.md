@@ -41,6 +41,24 @@ showed the change buys +0.0053 IC at 6 months, far inside the detection floor,
 and the rulebook records that the data shows the change costs nothing rather
 than serving as the reason for it.
 
+**A second change landed on 2026-09-16, and it touches admission rather than
+scoring.** `hard_red_flags` no longer infers negative net worth from a negative
+debt-to-equity ratio. That inference only holds when the provider reports GROSS
+debt; a provider reporting NET debt gives a negative ratio to a company holding
+more cash than it owes, so the rule was rejecting some of the strongest balance
+sheets in the universe as insolvent. Equity is now tested directly where an
+export carries it, with the price-to-book sign as the fallback. In the same
+change `grossNpa` moved from required to reported-only, because it carries no
+points and was blocking lenders over a field the model never reads.
+
+Both came from an external code review of the engine's design — **not from the
+reserved window**, which has not been read since 2026-09-13. Neither is a
+measurement-driven adjustment, and neither can be: `python/backtest.py` contains
+zero references to fundamentals, red flags or bank fields, so nothing here can
+reach the measurement at all. That was verified rather than assumed by
+regenerating rung C on the changed engine — the pre-registered momentum cell
+came back bit-identical on all five stored figures.
+
 **So it is not feedback, and p. 917 is still satisfied.** A parameter changed
 because a book states the construction is not a parameter changed because the
 reserved window said so. The argument is weaker than "nothing has changed at
@@ -117,6 +135,37 @@ This is the real constraint on the whole project and no statistical technique
 lifts it. Eleven years of one index is a small sample for a cross-sectional
 question, and the honest ceiling on what can be concluded here is set by that
 rather than by the estimator.
+
+## Candidates waiting for a rung
+
+Hypotheses formed by looking at pre-holdout data. Listed here so that acting on
+one is a deliberate spend rather than a drift, and so that the count is visible:
+every entry is a test the holdout could be asked to run, and it can only be
+asked a very small number of times.
+
+### The volume block points the wrong way (registered 2026-09-16)
+
+The component run found `volumeRatio20D` negative at all four horizons, and its
+6-month cell is the only one of forty-eight to clear both the detection floor
+and the family-corrected p. `engine.py:2387` pays +5 points for the quantity it
+says to avoid. See [component-stop-condition.md](component-stop-condition.md).
+
+If this is ever tested, these are fixed now, before the holdout is touched:
+
+- **Direction**: removing the `volumeRatio20D` rule, NOT inverting it. The
+  decile pattern is not a clean inverse — only the lowest-volume bucket is
+  distinct, so "buy quiet names" is not what was measured and must not be what
+  is tested.
+- **Horizon**: 1 month, the rebalance frequency the engine actually trades.
+  6 months is where the statistic was strongest, which is exactly why it is not
+  the horizon to test on.
+- **The confound to settle first**: the effect lives in the least liquid tail,
+  where a flat 15 bps per side is least believable. Re-measure it under a cost
+  model that scales with turnover or spread BEFORE spending a rung. If the edge
+  dies there, no holdout test is warranted at all.
+- **Failure branch**: if removal does not improve the holdout composite, the
+  volume block stays as it is and this candidate is closed rather than
+  re-specified at another horizon.
 
 ## Related
 
