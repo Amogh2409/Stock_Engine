@@ -352,3 +352,41 @@ condition 3 agreeing with itself, not a fourth independent check.
 
 **2 of 3 spent.** Reversal (frozen), Amihud (frozen). MAX remains parked and
 BAB quarantined; neither is registered.
+
+---
+
+## Amendment — 2026-09-17, before the PIT sensitivity rerun
+
+`research-policy.md` states that once forward outcomes for a factor have been
+observed, input changes cannot rescue that study and require a new branch. The
+Amihud outcome **has** been observed (FAIL, §13 condition 2). This amendment
+therefore has to exist before the dataset changes underneath it.
+
+**What changed and why.** The universe. Every study in this repository ranked
+today's Nifty 100 applied backwards; the official index over 2015-2026 held 195
+investable securities and 87 of them are absent from today's list. That is a
+correctness defect in a shared input, discovered independently of this study
+and repaired for every study at once.
+
+**What this rerun is, and is not.**
+
+> It is a **data-correctness sensitivity rerun**, asking whether the registered
+> conclusion survives a historically correct universe.
+>
+> It is **NOT** a new hypothesis, **NOT** a rescue, and **NOT** a second
+> attempt at the registered test.
+
+Nothing registered moves: formation stays 63/45, the signal stays raw and
+un-inverted, the primary horizon stays 1 month, the family stays 4, the cost
+model stays 15 bps per side, and the five pass conditions stay as written.
+
+**The registered verdict stands regardless of the outcome.** A FAIL that
+becomes a PASS under a corrected universe does not retroactively pass the
+original test; it would be a *new finding about the universe*, requiring its
+own registration and its own slot before anything could be claimed from it.
+The research budget is unchanged at 2 of 3 — this consumes no slot, because it
+tests no new hypothesis.
+
+**Mode is PIT_WITH_COVERAGE**, never PIT or SURVIVORSHIP_FREE: about 3% of
+constituents by count and 5% by index weight remain unpriceable, and what is
+missing is systematically the shorter-tenure, lower-weight names.
