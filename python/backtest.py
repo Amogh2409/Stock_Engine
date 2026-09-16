@@ -1211,7 +1211,17 @@ def max_daily_return(book, ticker, date, window=CANDIDATE_WINDOW):
     return max(value for _session, value in returns)
 
 
-def amihud_illiquidity(book, ticker, date, window=CANDIDATE_WINDOW):
+# Registered formation for the Amihud study. The distinctness SCREEN used the
+# generic 21-session candidate window; the registered factor is 63/45, so the
+# screen is re-run at the registered length before the registration is
+# committed -- a 21-session and a 63-session Amihud are different signals, and
+# distinctness evidence must describe the one being registered.
+AMIHUD_WINDOW = 63
+AMIHUD_MIN_OBS = 45
+
+
+def amihud_illiquidity(book, ticker, date, window=CANDIDATE_WINDOW,
+                       min_sessions=None):
     """Amihud: mean of |daily return| / traded value over the window.
 
     THE VOLUME CONTRACT MATTERS MORE THAN THE FORMULA. A session whose price
@@ -1258,9 +1268,17 @@ def amihud_illiquidity(book, ticker, date, window=CANDIDATE_WINDOW):
         if traded_value <= 0:
             continue
         values.append(abs(current / previous - 1.0) / traded_value)
-    if len(values) < CANDIDATE_MIN_SESSIONS:
+    required = CANDIDATE_MIN_SESSIONS if min_sessions is None else min_sessions
+    if len(values) < required:
         return None
+    # Arithmetic mean, as registered. No median, no log, no winsorisation.
     return sum(values) / len(values)
+
+
+def amihud_registered(book, ticker, date):
+    """The registered specification: 63 sessions, minimum 45, arithmetic mean."""
+    return amihud_illiquidity(book, ticker, date, window=AMIHUD_WINDOW,
+                              min_sessions=AMIHUD_MIN_OBS)
 
 
 def distinctness_scan(book, calendar, rebalances, bench_by_date):
@@ -1272,7 +1290,9 @@ def distinctness_scan(book, calendar, rebalances, bench_by_date):
     signals alone, so it can be run on every candidate without spending
     statistical power or research budget.
     """
-    candidates = {"MAX": max_daily_return, "amihudIlliquidity": amihud_illiquidity}
+    candidates = {"MAX": max_daily_return,
+                  "amihud21": amihud_illiquidity,
+                  "amihud63_registered": amihud_registered}
     frozen = [(name, extract) for _b, name, extract, _w in CONTINUOUS_FEATURES]
     reference_names = ([name for name, _e in frozen]
                        + ["idioVol", "totalVol", "reversal"])
