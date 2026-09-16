@@ -296,3 +296,35 @@ forward outcomes, so it spent nothing.
 | MAX | screened distinct, **parked** — ~0.53 with total volatility, entangled with a failed family |
 | Amihud | screened distinct, **input audit FAILED** on price basis |
 | BAB | quarantined |
+
+---
+
+## Amendment — repair of inputs vs rescue of results
+
+The earlier rule — an input-readiness failure means stop, not repair — was too
+strict in one direction: it rewarded leaving a known data defect in place.
+Replaced prospectively by:
+
+> **An input-readiness failure discovered BEFORE any forward outcome for that
+> factor has been inspected MAY be repaired**, provided all of:
+>
+> 1. no forward outcome for the factor has been computed;
+> 2. the defect is a general data-semantics or correctness issue, not a
+>    parameter of the candidate signal;
+> 3. the repair is determined by the mechanics of the data, not chosen to
+>    produce a result;
+> 4. the repaired input is **re-audited before registration**.
+>
+> **Once forward outcomes for a factor have been observed, input or
+> specification changes cannot rescue that study.** They require a new research
+> branch, a new registration, and they consume a new budget slot.
+
+The line is *when the outcome was seen*, not *whether a change was made*. A
+defect found by auditing inputs is a fixable bug; the same change made after a
+disappointing IC is a specification search.
+
+This amendment authorises the dual-close panel repair below. Applied to the
+record: the Amihud denominator defect was found with **no Amihud forward return
+ever computed**, the defect is in the shared panel rather than in Amihud, and
+the correction (use a dividend-unadjusted close for a rupee traded value) is
+determined by what traded value *means*.
