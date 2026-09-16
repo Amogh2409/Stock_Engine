@@ -110,6 +110,7 @@ largest unvalidated surface in the engine.
 |---|---|---|
 | trend / momentum / relStrength / volume | — | FAIL at composite, block and primitive level; re-confirmed on the corrected panel |
 | idiosyncratic volatility (126-session) | `bfb9fe8` | **FAIL** — 0 of 4 horizons positive, none detected; total vs idio indistinguishable |
+| short-term reversal (21-session) | `356a1ac` | **FAIL** — 1M IC +0.0205 against a 0.056 floor, no decile separation, 87.9% turnover; and −0.86 correlated with `priceOverSma50`, so not a distinct family |
 
 The volatility run also showed low total volatility is −0.65 correlated with
 beta per date, so it was substantially a low-beta bet; residualising halved

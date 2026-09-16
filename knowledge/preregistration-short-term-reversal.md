@@ -155,3 +155,107 @@ A pass makes reversal a **candidate**, not a component.
   asserted.
 - Survivorship: the universe is the current Nifty 100 applied to past dates.
 - Size remains unavailable point-in-time and is not a diagnostic here.
+
+---
+
+# Result — 2026-09-16
+
+Run once against the registration at `356a1ac`, implementation `b9d47ad`, on
+the calendar-corrected panel. 87 rebalance dates, 21-session formation, no
+skip, family 4. Outputs: `data-store/reports/reversal/`.
+
+## Verdict: FAIL
+
+| h | mean IC | floor | HAC t | p (Bonf) | IC>0 | Q1−Q10 | falling |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| **1 (primary)** | **+0.0205** | 0.056 | 1.03 | 1.000 | 53% | −0.03pp | 4/9 |
+| 3 | −0.0008 | 0.052 | −0.05 | 1.000 | 50% | −1.64pp | 5/9 |
+| 6 | −0.0115 | 0.045 | −0.77 | 1.000 | 44% | −5.56pp | 5/9 |
+| 12 | −0.0312 | 0.046 | −2.30 | 0.280 | 40% | −11.96pp | 5/9 |
+
+Against §6, at the 1-month horizon:
+
+| condition | result |
+|---|---|
+| Positive IC | **yes** (+0.0205) |
+| 1. Detection | **no** — 0.0205 against a floor of 0.056 |
+| 2. Significance at family 4 | **no** — Bonferroni p 1.000 |
+| 3. Spread > 0.30pp after costs | **no** — spread is −0.03pp |
+| 4. Positive in both halves | **yes** — +0.0204 (40 dates) and +0.0205 (46) |
+
+This is the most interesting of the three failures, and it is still a failure.
+The sign is right and the **stability across halves is remarkable** — +0.0204
+against +0.0205, which is not a regime effect. But the effect is roughly a
+third of the size this sample could detect, and it produces **no decile
+separation at all**: the biggest prior losers returned 2.51% and the biggest
+prior winners 2.54%, with the middle deciles below both. A weak positive rank
+correlation that does not reach the extremes is not something a portfolio can
+hold.
+
+`predictive_but_not_implementable` is **false**: that branch requires detection
+and significance first, and neither was reached. This is not an
+economically-blocked real effect. It is an undetected one.
+
+## Turnover: the concern in §4 was justified
+
+**87.9% of the top decile is replaced every rebalance.** At 15 bps per side
+that is **0.26pp per month**, roughly 3.1% a year, against a decile spread of
+−0.03pp. Even had the spread been positive at its observed magnitude, trading
+costs would have exceeded it by two orders of magnitude.
+
+## The distinctness check failed, and that is the real finding
+
+§9 said the correlation with the frozen primitives would be reported "so that
+'distinct family' is checked rather than asserted". It was checked:
+
+| frozen primitive | mean per-date Spearman vs the reversal signal |
+|---|--:|
+| `priceOverSma50` | **−0.856** |
+| `rsi14` | **−0.844** |
+| `obvPressure20D` | −0.684 |
+| `distFrom52WHighPct` | −0.490 |
+| `priceOverSma200` | −0.489 |
+| `macdHistogramPct` | −0.487 |
+
+The registration argued distinctness on horizon grounds — 21 sessions against
+3–12 months. That argument was wrong in practice. The realised signal is
+**−0.86 correlated with `priceOverSma50` and −0.84 with `rsi14`**: short-term
+reversal is very nearly those two frozen primitives with the sign flipped.
+
+The numbers agree. `rsi14` measured an IC of −0.0273 at 1 month in the
+component study; reversal measures **+0.0205**. Same null, measured twice, once
+in each direction. Policy condition 3 — "materially distinct from already-
+tested families" — was **not** met, and it was not met in a way the
+pre-registration could not see, because the correlation was only computable by
+running the study.
+
+## FAIL branch, now in force
+
+> **The short-term reversal family is frozen.**
+
+Forbidden, as named before the run: 21 → 5, 10 or 63 sessions; a 3-day or
+1-week skip; residualising momentum, beta or sector; a volatility or liquidity
+screen; a z-scored or ranked variant; moving the primary horizon to 1 week.
+
+## Budget and a proposed policy amendment
+
+Under `research-policy.md` this spends **1 of 3**. Spent: **1 of 3** — it
+counts, despite having turned out to be a re-measurement, because retroactively
+refunding a family after seeing its result is exactly the kind of accounting
+the cap exists to prevent.
+
+But the failure of condition 3 is worth learning from, and the lesson is
+cheap: **a candidate's correlation with already-tested families should be
+estimated before registration, not only reported after.** That estimate needs
+no forward returns and spends no statistical power — it is a property of the
+signals alone. Had it been run here, reversal would likely not have been
+registered as an independent family at all, and a family would have been saved.
+
+Proposed as an amendment to the policy, for the next candidate rather than
+applied retroactively to this one.
+
+## Secondary metrics
+
+Decile portfolios, monthly, 86 months: decile 1 (biggest losers) +536.4%
+cumulative with a −42.0% maximum drawdown; decile 10 (biggest winners) +572.3%
+with −29.8%. Neither is a claim; both are recorded.

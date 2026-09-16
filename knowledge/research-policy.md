@@ -47,7 +47,10 @@ A new factor may be tested only if all eight hold:
 > **At most 2–3 further independent factor families, then price-only alpha
 > research PAUSES** — regardless of outcome.
 
-Spent so far: **0 of 3.** Short-term reversal, if registered, is the first.
+Spent so far: **1 of 3.** Short-term reversal, registered at `356a1ac` and run
+once, FAILED — and it counts, despite turning out to be largely a
+re-measurement of two frozen primitives, because refunding a family after
+seeing its result is the accounting this cap exists to prevent.
 
 The cap is the part that actually binds. Conditions 1–8 police each study's
 internal honesty; only a cap polices the *number* of studies, and the number is
@@ -63,7 +66,7 @@ promoted because a diagnostic in another study made it look attractive.
 
 | candidate | rationale | status |
 |---|---|---|
-| **Short-term reversal** | Liquidity provision: recent losers are compensated for absorbing selling pressure. Distinct from the frozen family, which is medium-term continuation. | **next, if any** — named in `bfb9fe8`, which predates the volatility result |
+| ~~Short-term reversal~~ | Liquidity provision. | **FAILED 2026-09-16**, frozen. Its signal proved −0.86 correlated with `priceOverSma50` and −0.84 with `rsi14`: not a distinct family after all |
 | MAX / lottery demand | Investors overpay for right-skewed payoffs. | backlog |
 | Betting-against-beta | Leverage-constrained investors bid up high beta. | **QUARANTINED — see below** |
 | Illiquidity (Amihud) | Compensation for immediacy. Inherits the blank-volume caveat. | backlog |
@@ -103,3 +106,26 @@ rather than quietly reported:
 `scripts/archive_health.py` reports the count. The rule that matters: a study
 run on a short panel is reported with its horizon's maturity stated, never as
 though the panel were complete.
+
+## Amendment — 2026-09-16, after the reversal result
+
+**Condition 3 must be estimated before registration, not only reported after.**
+
+Reversal was registered as materially distinct on horizon grounds — 21 sessions
+against the frozen family's 3–12 months. The argument was reasonable and it was
+wrong: the realised signal correlates −0.86 with `priceOverSma50` and −0.84
+with `rsi14`. It was short-term reversal measured twice, once in each
+direction, and `rsi14`'s own 1-month IC of −0.0273 already implied the answer.
+
+So, for every future candidate, before it is registered:
+
+> Compute the per-date cross-sectional correlation between the candidate signal
+> and every already-tested family's primitives. If |mean rho| exceeds **0.70**
+> against any of them, the candidate is a **reparameterisation**, not a new
+> family, and fails condition 3.
+
+This costs nothing worth protecting. It needs no forward returns, spends no
+statistical power, and consumes no budget — it is a property of the signals
+alone. Applied here it would have saved a family.
+
+**Not applied retroactively.** Reversal stays spent.
