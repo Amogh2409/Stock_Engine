@@ -163,6 +163,11 @@ If this is ever tested, these are fixed now, before the holdout is touched:
   where a flat 15 bps per side is least believable. Re-measure it under a cost
   model that scales with turnover or spread BEFORE spending a rung. If the edge
   dies there, no holdout test is warranted at all.
+- **Data-quality confound: CLEARED 2026-09-16.** The panel had contained 581
+  forward-filled holiday bars with volume 0, feeding this primitive's
+  denominator directly. They are removed and the study re-run unchanged: the
+  6-month IC moved from −0.0639 to −0.0635. The finding was not an artefact of
+  the synthetic bars. The liquidity and cost confounds above are untouched.
 - **Failure branch**: if removal does not improve the holdout composite, the
   volume block stays as it is and this candidate is closed rather than
   re-specified at another horizon.

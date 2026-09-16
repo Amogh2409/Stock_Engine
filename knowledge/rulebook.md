@@ -4,11 +4,15 @@ Every **technical** scoring rule in the engine, with its source — and the
 position sizing built on top of it.
 
 Scope, stated because the earlier wording ("every scoring rule in the engine")
-claimed more than this file delivers. The **fundamental** half has no entry
-here at all: ROCE, growth, governance, promoter holding, pledge, valuation and
-the P/E and NPA rules each appear zero times below. That half carries 60% of the
-composite and is what actually gates selection, so the uncovered fraction is the
-larger one.
+claimed more than this file delivers. The **fundamental** half is still almost
+entirely uncovered: ROCE, growth, governance, promoter holding, valuation and
+the P/E rules have no entry here. That half carries 60% of the composite and is
+what actually gates selection, so the uncovered fraction is the larger one.
+
+Two fundamental-side rules were corrected on 2026-09-16 and are recorded at the
+end of this file, which is the first fundamental content it has ever held. The
+sentence above used to read "no entry here at all"; that is no longer true and
+saying so is cheaper than letting the file contradict its own contents.
 
 This file exists because the decisions behind the technical score lived only in
 code comments and in one conversation. A threshold with no stated provenance
@@ -1630,3 +1634,83 @@ Ranked by value, cheapest first where value ties.
    measured against and nothing else. Repairing that needs a different statistic
    altogether — one that reads the series *between* the endpoints, as every
    measure at TSaM pp. 851–852 after the first one does.
+
+
+---
+
+# Fundamental rules, where one has been corrected
+
+This section exists only where a fundamental rule has been changed and the
+reason needs recording. It is not coverage of the fundamental half, which
+remains unwritten and unmeasured.
+
+### Negative net worth is tested on equity, not inferred from debt/equity — **Corrected**
+
+`hard_red_flags` used to raise "Negative net worth" when **either** price-to-book
+**or** debt-to-equity was negative. The price-to-book half is sound: price is
+always positive, so a negative ratio can only mean a negative book value.
+
+The debt-to-equity half was not. It carries the sign of equity only when the
+provider reports **gross** debt. A provider reporting **net** debt gives a
+negative ratio to a company holding more cash than it owes — so the rule
+rejected some of the strongest balance sheets in the universe as insolvent, and
+the CSV contract says nothing about which convention an export uses. The engine
+cannot tell the two apart, so the inference is gone rather than guarded.
+
+Equity is now tested directly through a new optional `shareholdersEquity`
+column, with price-to-book as the fallback when an export lacks it. Where both
+are present and disagree, equity wins: a reported balance sheet beats a ratio
+derived from one.
+
+**Found by external code review, not by measurement**, and it is a correctness
+fix rather than a hypothesis: the old rule made a factual claim about the data
+that was not reliably true. Measured effect on the current universe: **nil** —
+no company in the 2026-09-16 run carries a negative debt-to-equity.
+
+A related judgement is deliberately **unchanged**: a negative debt-to-equity
+still earns zero balance-sheet-safety points. That is the same misreading one
+level down, but changing it would change scores, which makes it a hypothesis.
+Recorded here so nobody assumes it was considered and settled.
+
+### Gross NPA is reported, not required — **Corrected**
+
+`grossNpa` sat in `BANK_REQUIRED_FIELDS` while carrying **zero points**; net NPA
+is the scored asset-quality measure. So a lender could be refused a score over a
+field the model never reads. A requirement that cannot change any score is not a
+data-integrity check, it is a barrier.
+
+The two honest resolutions were to give it a role or to stop demanding it.
+Giving it a role would be a scoring change with no evidence behind it, so it
+joins CASA and financing margin as reported-only.
+
+Measured effect on the current universe: **nil**. Every lender in the
+2026-09-16 run is missing net NPA and capital adequacy as well, so none becomes
+scoreable by this change alone. It removes a wrong reason for refusing, not the
+refusal.
+
+### Three review findings that were NOT bugs, checked by running the code
+
+Recorded so they are not re-raised. Each was claimed as a material bug and each
+is wrong:
+
+- **"The bank model caps at 50 while the gate is 50."** It does not. Both models
+  return the same five buckets; ROA/ROE fill the 30-point quality bucket and
+  CAR/net NPA the 20-point safety bucket, with growth, valuation and governance
+  shared. A perfect bank and a perfect non-financial return identical totals
+  from equivalent inputs. The proposed `bank_raw_score * 2` fix would double-count.
+- **"A negative P/E receives maximum valuation points."** `_valuation_points`
+  already returns zero for any non-positive ratio, with the line "P/E -10.0 is
+  not meaningful, so no valuation points (+0.0)".
+- **"Portfolio volatility ignores correlation."** `portfolio_volatility_pct`
+  takes the standard deviation of the portfolio's own return series, which is
+  `sqrt(w' COV w)` without forming a covariance matrix. The shortcut the review
+  describes is the mistake this file already records catching, at 13.0% actual
+  against 22.8% from weighted-averaging the parts.
+
+### Registered as an experiment, not adopted — multi-year operating cash flow
+
+The same review proposed replacing the one-year `OCF <= 0` rejection with a
+three-year cumulative test. It is probably the better economic formulation, and
+it **changes which companies are admitted**, which makes it a hypothesis rather
+than a correctness fix. It is recorded in `knowledge/preregistration.md` to be
+benchmarked against the current rule, and must not be adopted on plausibility.

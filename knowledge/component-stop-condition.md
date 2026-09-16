@@ -180,3 +180,49 @@ trend and relative-strength blocks substantially the same bet. That is a
 structural finding about the score's design, independent of whether any of it
 predicts anything — and it explains why block-level results looked so much like
 the composite.
+
+---
+
+# Re-run on a corrected panel — 2026-09-16
+
+The panel the run above used contained rows that were never trading sessions:
+**581 forward-filled market holidays** across 6 dates, plus 47 per-symbol
+no-trade bars. Each inserted an artificial 0% daily return into every window
+that averages returns, and counted toward any gate phrased as a number of
+sessions. That is upstream of the whole study, so the study was re-run.
+
+**Nothing was retuned.** Same primitives, same weights, same horizons, same
+stop condition, same detection floors, same costs, same methodology. The only
+change is the panel. This was not a rescue attempt — it asks whether the
+measurement itself was contaminated.
+
+## The answer: it was not
+
+| | |
+|---|---|
+| Cells compared | 80 |
+| **Max abs delta IC** | **0.00174** (adx14, 12m) |
+| Median abs delta | 0.00031 |
+| Sign flips | **none** |
+| Cells clearing both bars, before | `volumeRatio20D` 6m, IC −0.0639 |
+| Cells clearing both bars, after | `volumeRatio20D` 6m, IC **−0.0635** |
+
+Composite: 1m −0.0034 → −0.0040, 3m +0.0183 → +0.0181, 6m +0.0512 → +0.0507,
+12m +0.0425 → +0.0427.
+
+ADX moved most, which is the one result that should have been predicted in
+advance: it is built on true range, and a flat OHLC bar has a true range of
+zero. That the largest contamination landed exactly where the mechanism says it
+should is a check on the diagnosis, not a coincidence.
+
+**The FAIL branch stands, now on data that is not contaminated.** The technical
+family is re-frozen on the same terms.
+
+The volume finding also survives materially unchanged, so the data-quality
+confound recorded against it in `holdout.md` is **cleared** — but the liquidity
+and cost confounds are not, and it remains a holdout candidate rather than a
+change.
+
+Both result sets are preserved:
+`data-store/reports/components/technical-components-pre-calendar-fix.json` and
+`…-post-calendar-fix.json`.

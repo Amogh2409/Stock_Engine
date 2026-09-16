@@ -360,6 +360,13 @@ COLUMN_ALIASES = {
     # Optional. Present only in exports that carry an absolute revenue column;
     # "Sales growth 3Years" is a percentage and is a different field.
     "sales": ["sales", "revenue", "total revenue", "total income"],
+    # Optional, and the DIRECT test for negative net worth. Screener exports do
+    # not carry it by default; scripts/yahoo_fundamentals.py does. When absent
+    # the flag falls back to inferring the sign from P/B.
+    "shareholdersEquity": [
+        "shareholders equity", "shareholder equity", "stockholders equity",
+        "total equity", "net worth", "equity",
+    ],
     # --- Financial-company metrics (banks, NBFCs). Optional everywhere else. ---
     # Screener.in spells these differently across screens, so each carries the
     # spellings seen in the wild; normalize_header() strips the trailing "%".
@@ -404,6 +411,7 @@ FIELD_UNITS = {
     "peRatio": UNIT_RATIO,
     "pbRatio": UNIT_RATIO,
     "sales": UNIT_CRORE,
+    "shareholdersEquity": UNIT_CRORE,
     "returnOnAssets": UNIT_PERCENT,
     "grossNpa": UNIT_PERCENT,
     "netNpa": UNIT_PERCENT,
@@ -564,6 +572,7 @@ def parse_row_values(row, mapping):
         "pbRatio": get("pbRatio"),
         "dividendYield": get("dividendYield"),
         "sales": get("sales"),
+        "shareholdersEquity": get("shareholdersEquity"),
         "returnOnAssets": get("returnOnAssets"),
         "grossNpa": get("grossNpa"),
         "netNpa": get("netNpa"),
@@ -2425,6 +2434,44 @@ def _value_at(series, stamp):
     return _finite_or_nan(series.get(stamp)) if series is not None else float("nan")
 
 
+def _volume_is_absent(volume):
+    """Zero or missing volume. Both mean no trade was recorded."""
+    return math.isnan(volume) or volume <= 0.0
+
+
+def _is_forward_filled_session(open_, high, low, close, volume, previous_close):
+    """Was this bar a carried-forward non-session rather than a trading day?
+
+    All three must hold together, and requiring all three is the point:
+
+      no volume        nothing traded;
+      flat OHLC        no intraday range existed;
+      close unchanged  the price is the previous close, carried forward.
+
+    A genuine session fails at least one. A stock that truly closed unchanged
+    still prints a high and a low, and still prints volume.
+
+    This deliberately does NOT key on the weekday. NSE holds real sessions on
+    weekends -- Muhurat trading on Diwali (2019-10-27, 2020-11-14) and the
+    Budget session of 2025-02-01 are all Saturdays or Sundays with real volume
+    and real ranges. A calendar rule that dropped weekends would delete three
+    genuine trading days from the panel.
+    """
+    if not _volume_is_absent(volume):
+        return False
+    if math.isnan(close):
+        return False
+    for value in (open_, high, low):
+        if math.isnan(value) or value != close:
+            return False
+    # The first bar of a series has nothing to carry forward FROM, so it cannot
+    # be shown to be a fill; a flat, volumeless opening bar is dropped anyway
+    # because it carries no information either way.
+    if math.isnan(previous_close):
+        return True
+    return close == previous_close
+
+
 def price_history_rows_from_download(frame, tickers):
     """Flatten a yfinance download into sorted rows.
 
@@ -2459,15 +2506,35 @@ def price_history_rows_from_download(frame, tickers):
         highs = column("High", symbol)
         lows = column("Low", symbol)
         volumes = column("Volume", symbol)
+        previous_close = float("nan")
         for stamp, close in closes.items():
             close = _finite_or_nan(close)
             if math.isnan(close):
                 continue
+            open_, high, low = (_value_at(opens, stamp), _value_at(highs, stamp),
+                                _value_at(lows, stamp))
+            volume = _value_at(volumes, stamp)
+            if _is_forward_filled_session(open_, high, low, close, volume,
+                                          previous_close):
+                # DROP. Not a session, so it must not become a row. Yahoo
+                # serves market holidays as a bar carrying the previous close
+                # with no volume -- verified to come back identically from a
+                # single-ticker download, so this is the provider and not our
+                # index alignment. Keeping it inserts an artificial 0% return
+                # into every window that averages returns, and inflates any
+                # gate phrased as a number of SESSIONS into a count of rows.
+                continue
+            if _volume_is_absent(volume):
+                # KEEP THE PRICE, DROP THE ZERO. The price moved, so this was a
+                # session and the OHLC is real; only the volume is missing. A
+                # literal 0 would feed a false denominator to volumeRatio20D,
+                # where blank correctly reads as "not measured".
+                volume = float("nan")
             rows.append((
                 pd.Timestamp(stamp).strftime("%Y-%m-%d"), ticker,
-                _value_at(opens, stamp), _value_at(highs, stamp),
-                _value_at(lows, stamp), close, _value_at(volumes, stamp),
+                open_, high, low, close, volume,
             ))
+            previous_close = close
     rows.sort(key=lambda row: (row[1], row[0]))
     return rows
 
@@ -2733,8 +2800,21 @@ WATCHLIST_NUMERIC_COLUMNS = (
 # CASA and financing margin are deliberately NOT scored, only reported: an NBFC
 # has no CASA at all, so awarding points for it would penalise every NBFC for
 # being an NBFC. Mirrors the same constants in screenerEngine.ts.
-BANK_REQUIRED_FIELDS = ("returnOnAssets", "grossNpa", "netNpa", "capitalAdequacy")
-BANK_OPTIONAL_FIELDS = ("casa", "financingMargin")
+#
+# GROSS NPA IS REPORTED, NOT REQUIRED, and it used to be required. It carries
+# zero points -- net NPA is the scored asset-quality measure -- so demanding it
+# blocked a lender from being scored over a field the model never reads. A
+# requirement that cannot change any score is not a data-integrity check, it is
+# a barrier, and the honest options were to give it a role or to stop demanding
+# it. Giving it a role would be a scoring change with no evidence behind it, so
+# it joins CASA and financing margin as reported-only.
+#
+# Measured effect on the current universe: NIL. Every lender in the 2026-09-16
+# run is missing net NPA and capital adequacy as well, so none becomes
+# scoreable by this change alone. It removes a wrong reason for refusing, not
+# the refusal.
+BANK_REQUIRED_FIELDS = ("returnOnAssets", "netNpa", "capitalAdequacy")
+BANK_OPTIONAL_FIELDS = ("grossNpa", "casa", "financingMargin")
 BANK_FIELD_LABELS = {
     "returnOnAssets": "Return on assets",
     "grossNpa": "Gross NPA %",
@@ -2767,13 +2847,25 @@ def hard_red_flags(stock, sc, is_financial, coverage):
     ph = stock.get("promoterHolding")
     pp = stock.get("promoterPledge")
     pb = stock.get("pbRatio")
-    de = stock.get("debtToEquity")
+    equity = stock.get("shareholdersEquity")
     ocf = stock.get("operatingCashFlow")
     sales = stock.get("sales")
 
-    # 1. Negative net worth. P/B and D/E change sign, not magnitude, so a
-    #    "cheap" P/B of -0.3 is insolvency rather than a bargain.
-    if (pb is not None and pb < 0) or (de is not None and de < 0):
+    # 1. Negative net worth, tested against equity itself where the export
+    #    carries it and inferred from P/B otherwise.
+    #
+    #    P/B IS a sound inference: price is always positive, so a negative P/B
+    #    can only mean a negative book value. A "cheap" P/B of -0.3 is
+    #    insolvency rather than a bargain.
+    #
+    #    DEBT/EQUITY IS NOT, and used to be part of this test. It only carries
+    #    the sign of equity when the provider reports GROSS debt. A provider
+    #    reporting NET debt gives a negative ratio to a company holding more
+    #    cash than debt -- so the rule rejected some of the strongest balance
+    #    sheets in the universe as insolvent. Nothing in the CSV contract says
+    #    which convention an export uses, and the engine cannot tell them apart,
+    #    so the inference is gone rather than guarded.
+    if (equity is not None and equity <= 0) or (equity is None and pb is not None and pb < 0):
         flags.append("Negative net worth")
     # 2. Pledged promoter stake above the configured limit.
     if pp is not None and pp > sc["maxPromoterPledgePct"]:
@@ -4905,21 +4997,38 @@ class EngineTests(unittest.TestCase):
 
     # --- screening rules found by review --------------------------------------
     def test_negative_net_worth_is_a_hard_red_flag(self):
-        result = engine_for_tests().evaluate(dict(_FULL_STOCK, debtToEquity=-3.5))
+        # Equity itself, when the export carries it. The direct test.
+        result = engine_for_tests().evaluate(dict(_FULL_STOCK, shareholdersEquity=-100.0))
         self.assertEqual(result["redFlags"], ["Negative net worth"])
         self.assertIn("Negative net worth", result["reasons"])
         self.assertFalse(result["passed"])
         # Red-flagged but still scored, so a comparison across the index can
-        # show the fundamentals beside the flag that disqualifies them:
-        # quality 18.8 + growth 16.7 + safety 10 (negative equity earns nothing
-        # for D/E, the interest cover still earns its ten) + governance 9.
-        self.assertEqual(result["score"], 54.4)
-        self.assertEqual(result["categoryScores"]["balanceSheetSafety"], 10.0)
-        self.assertIn("D/E -3.5 (+0.0)", result["scoreLines"])
-        # A negative P/B reaches the same conclusion on its own.
+        # show the fundamentals beside the flag that disqualifies them.
+        self.assertGreater(result["score"], 0.0)
+
+        # A negative P/B reaches the same conclusion when equity is absent:
+        # price is always positive, so the sign can only come from book value.
         self.assertEqual(
             engine_for_tests().evaluate(dict(_FULL_STOCK, pbRatio=-0.3))["redFlags"],
             ["Negative net worth"])
+
+        # A NEGATIVE DEBT/EQUITY NO LONGER FLAGS, and that is the point of this
+        # test. The ratio only carries the sign of equity when the provider
+        # reports GROSS debt; a provider reporting NET debt gives a negative
+        # ratio to a company holding more cash than it owes. This rule used to
+        # reject those -- some of the strongest balance sheets in the universe
+        # -- as insolvent. It still earns no safety points, which is a separate
+        # judgement and deliberately unchanged.
+        net_cash = engine_for_tests().evaluate(dict(_FULL_STOCK, debtToEquity=-3.5))
+        self.assertEqual(net_cash["redFlags"], [])
+        self.assertIn("D/E -3.5 (+0.0)", net_cash["scoreLines"])
+
+        # Equity wins over a contradictory P/B rather than the two being OR-ed:
+        # a reported balance sheet beats a ratio derived from one.
+        self.assertEqual(
+            engine_for_tests().evaluate(
+                dict(_FULL_STOCK, shareholdersEquity=5000.0, pbRatio=-0.3))["redFlags"],
+            [])
 
     def test_archiving_an_export_is_idempotent_and_never_overwrites(self):
         """The archive is the only route to a testable fundamental half.
@@ -5016,9 +5125,12 @@ class EngineTests(unittest.TestCase):
         for sector in financial:
             result = engine_for_tests().evaluate(dict(_FULL_STOCK, sector=sector))
             self.assertEqual(result["scoringModel"], "financial", sector)
+            # Gross NPA is absent from this list on purpose: it carries no
+            # points, so it is reported rather than required. See
+            # BANK_REQUIRED_FIELDS.
             self.assertEqual(result["notScored"],
                              "Not scored: missing bank metrics (Return on assets, "
-                             "Gross NPA %, Net NPA %, Capital adequacy ratio)", sector)
+                             "Net NPA %, Capital adequacy ratio)", sector)
         for sector in industrial:
             result = engine_for_tests().evaluate(dict(_FULL_STOCK, sector=sector))
             self.assertEqual(result["scoringModel"], "general", sector)
@@ -5166,6 +5278,125 @@ class EngineTests(unittest.TestCase):
                          ["Invalid custom filter field: null"])
         self.assertEqual(validate_custom_filters([{"field": "roce", "operator": ">", "value": [1]}]),
                          ["Invalid numeric value in custom filter for roce: [1]"])
+
+
+def offline_test_suite():
+    """Every offline TestCase in this module, collected by discovery.
+
+    Named classes were listed by hand until a new class was added and simply
+    never ran: the loader still said OK, and the count stayed at 90. A suite
+    that silently omits a test is worse than no test, because it reports
+    success. Discovery removes the chance to forget.
+
+    NetworkIntegrationTests is excluded by name: it reaches the network and is
+    not part of the offline gate.
+    """
+    loader = unittest.TestLoader()
+    suite = unittest.TestSuite()
+    for name, value in sorted(globals().items()):
+        if (isinstance(value, type) and issubclass(value, unittest.TestCase)
+                and value is not unittest.TestCase
+                and name != "NetworkIntegrationTests"):
+            suite.addTests(loader.loadTestsFromTestCase(value))
+    return suite
+
+
+class TradingCalendarTests(unittest.TestCase):
+    """The panel must contain sessions, not rows.
+
+    A forward-filled market holiday inserts an artificial 0% return. That is
+    upstream of realised volatility, of every covariance, of the windows
+    SMA/RSI/MACD average over, and of any gate phrased as a number of SESSIONS
+    -- which silently becomes a count of rows. These lock the boundary where
+    rows are built from the provider's frame.
+    """
+
+    @staticmethod
+    def _frame(index, per_symbol):
+        """A yfinance-shaped download: MultiIndex columns of (field, symbol)."""
+        data = {}
+        for symbol, fields in per_symbol.items():
+            for field, values in fields.items():
+                data[(field, symbol)] = values
+        return pd.DataFrame(data, index=pd.to_datetime(index))
+
+    def test_a_forward_filled_holiday_never_becomes_a_session(self):
+        # Friday trades, Monday is a holiday carried forward, Tuesday trades.
+        # This is the exact shape Yahoo serves, verified against a live
+        # single-ticker download: close equal to Friday's, flat OHLC, volume 0.
+        frame = self._frame(
+            ["2026-05-22", "2026-05-25", "2026-05-26"],
+            {"AAA.NS": {"Open": [100.0, 101.0, 101.5], "High": [102.0, 101.0, 103.0],
+                        "Low": [99.0, 101.0, 100.5], "Close": [101.0, 101.0, 102.0],
+                        "Volume": [5000.0, 0.0, 6000.0]}})
+        rows = price_history_rows_from_download(frame, ["AAA"])
+        dates = [row[0] for row in rows]
+        self.assertEqual(dates, ["2026-05-22", "2026-05-26"],
+                         "the carried-forward holiday must not be a row")
+
+    def test_a_genuine_weekend_session_is_kept(self):
+        # NSE really does trade on some weekends: Muhurat trading on Diwali
+        # (2019-10-27, 2020-11-14) and the Budget session of 2025-02-01 are
+        # Saturdays and Sundays with real volume and real intraday range. A
+        # calendar rule that dropped weekends would delete three genuine
+        # trading days from eleven years of history.
+        frame = self._frame(
+            ["2025-01-31", "2025-02-01", "2025-02-03"],
+            {"AAA.NS": {"Open": [100.0, 101.2, 103.0], "High": [102.0, 104.0, 105.0],
+                        "Low": [99.0, 100.8, 102.0], "Close": [101.0, 103.0, 104.0],
+                        "Volume": [5000.0, 4200.0, 6000.0]}})
+        rows = price_history_rows_from_download(frame, ["AAA"])
+        self.assertIn("2025-02-01", [row[0] for row in rows])
+
+    def test_a_flat_close_with_real_volume_is_still_a_session(self):
+        # A stock CAN close unchanged. What it cannot do is close unchanged
+        # with no range and no volume. Only the conjunction is synthetic.
+        frame = self._frame(
+            ["2026-03-02", "2026-03-03"],
+            {"AAA.NS": {"Open": [101.0, 101.0], "High": [101.0, 101.0],
+                        "Low": [101.0, 101.0], "Close": [101.0, 101.0],
+                        "Volume": [5000.0, 7000.0]}})
+        rows = price_history_rows_from_download(frame, ["AAA"])
+        self.assertEqual(len(rows), 2)
+
+    def test_a_moved_price_with_no_volume_keeps_its_price_and_blanks_volume(self):
+        # The price moved, so a session happened and the OHLC is real; only the
+        # volume is missing. Dropping the row would discard good price data,
+        # and a literal zero would feed a false denominator to volumeRatio20D.
+        frame = self._frame(
+            ["2026-03-02", "2026-03-03"],
+            {"AAA.NS": {"Open": [101.0, 101.0], "High": [101.0, 104.0],
+                        "Low": [101.0, 100.0], "Close": [101.0, 103.0],
+                        "Volume": [5000.0, 0.0]}})
+        rows = price_history_rows_from_download(frame, ["AAA"])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1][5], 103.0)
+        self.assertTrue(math.isnan(rows[1][6]),
+                        "absent volume must be blank, never zero")
+
+    def test_session_counts_are_sessions_not_rows(self):
+        # The gate reads "needs >= 200 sessions". With holidays present it was
+        # counting rows, so a ticker could clear it on fewer real sessions than
+        # the constant names.
+        index = pd.bdate_range("2026-01-01", periods=10).strftime("%Y-%m-%d").tolist()
+        holidays = (4, 7)
+        closes, opens, highs, lows, volumes = [], [], [], [], []
+        for position in range(10):
+            if position in holidays:
+                # Carried forward: previous close, no range, no volume.
+                price = closes[position - 1]
+                closes.append(price); opens.append(price)
+                highs.append(price); lows.append(price); volumes.append(0.0)
+            else:
+                price = 100.0 + position
+                closes.append(price); opens.append(price)
+                highs.append(price + 1.0); lows.append(price - 1.0)
+                volumes.append(1000.0)
+        frame = self._frame(index, {"AAA.NS": {
+            "Open": opens, "High": highs, "Low": lows,
+            "Close": closes, "Volume": volumes}})
+        rows = price_history_rows_from_download(frame, ["AAA"])
+        self.assertEqual(len(rows), 8, "two non-sessions must not be counted")
 
 
 class NetworkIntegrationTests(unittest.TestCase):
@@ -5417,7 +5648,7 @@ def main(argv=None):
     print("Deterministic seed: %d" % DETERMINISTIC_SEED)
 
     if args.self_test:
-        suite = unittest.TestLoader().loadTestsFromTestCase(EngineTests)
+        suite = offline_test_suite()
         outcome = unittest.TextTestRunner(verbosity=2).run(suite)
         return 0 if outcome.wasSuccessful() else 1
 
@@ -5461,7 +5692,7 @@ def main(argv=None):
                 print("  %s.%s: %s" % (section, key, value))
 
         print("\nRunning offline self-verification ...")
-        suite = unittest.TestLoader().loadTestsFromTestCase(EngineTests)
+        suite = offline_test_suite()
         test_result = unittest.TextTestRunner(verbosity=1).run(suite)
         summary["self_tests_run"] = test_result.testsRun
         summary["self_tests_failed"] = len(test_result.failures) + len(test_result.errors)

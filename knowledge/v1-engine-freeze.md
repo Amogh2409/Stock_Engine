@@ -62,12 +62,17 @@ largest unvalidated surface in the engine.
    `relativeStrength6M` correlate +0.91 per date; `priceOverSma50` and `rsi14`
    +0.89. The trend and relStrength blocks are substantially the same wager, so
    the 40/30/20/10 weights do not mean what their labels suggest.
-5. **656 zero-volume bars and 797 flat OHLC bars** remain in the current price
-   file — synthetic rows standing in for market holidays, 0.25% of 266,611.
-   They feed `volumeRatio20D` directly, which makes them a possible contaminant
-   of finding 1: a zero-volume bar depresses the 20-day average and distorts
-   the ratio. **Open defect, and a confound that must be cleared before the
-   volume hypothesis is tested.**
+5. ~~656 zero-volume bars~~ **FIXED 2026-09-16.** The panel held 581
+   forward-filled market holidays and 47 per-symbol no-trade bars, each
+   inserting an artificial 0% return. Verified to originate at the provider --
+   a single-ticker download returns the same bar -- and now dropped at the
+   ingestion boundary in `price_history_rows_from_download`, guarded by
+   `TradingCalendarTests`. The frozen study was re-run unchanged on the clean
+   panel: max abs delta IC 0.00174 across 80 cells, no sign flips, same single
+   cell clearing both bars. **The measurement was not contaminated and the FAIL
+   branch stands.** Rows where the price moved but volume was absent now carry
+   a BLANK volume rather than a zero, so `volumeRatio20D` reads them as not
+   measured instead of as a false denominator.
 
 ### Data, and what cannot be obtained
 
