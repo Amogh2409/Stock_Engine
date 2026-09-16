@@ -212,11 +212,13 @@ def main():
         (ROOT / "data" / "nifty100_source.csv").open(encoding="utf-8"))
         if r.get("Symbol")]
     rows, failures, fx_cache = [], [], {}
+    size_capture = {}
     for entry in universe:
         symbol = entry["Symbol"].strip()
         row, notes = adapter.fetch_one(yf, symbol,
                                        entry.get("Company Name", "").strip(),
-                                       entry.get("Industry", "").strip(), fx_cache)
+                                       entry.get("Industry", "").strip(), fx_cache,
+                                       size_capture)
         if row is None:
             failures.append(symbol)
             continue
@@ -248,6 +250,32 @@ def main():
         target.unlink()
         return 3
 
+    # Point-in-time market cap, written as its own dated vintage. Separate from
+    # the fundamentals export on purpose: the export is a Screener-shaped
+    # contract with fixed columns, while this is a provenance record whose only
+    # job is to be TRUE ON ITS DATE and readable in a year.
+    if size_capture:
+        size_dir = LIVE_DIR / "market_cap"
+        size_dir.mkdir(parents=True, exist_ok=True)
+        size_path = size_dir / ("market_cap_%s.csv" % today.isoformat())
+        with size_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["Symbol", "MarketCap", "SharesOutstanding",
+                             "CurrentPrice", "Currency", "FinancialCurrency",
+                             "RetrievedAt", "Source", "AdapterSha256"])
+            stamp = dt.datetime.now().isoformat(timespec="seconds")
+            fingerprint = adapter_fingerprint()
+            for symbol in sorted(size_capture):
+                record = size_capture[symbol]
+                writer.writerow([
+                    symbol, record["marketCap"], record["sharesOutstanding"],
+                    record["currentPrice"], record["currency"],
+                    record["financialCurrency"], stamp, "yfinance", fingerprint,
+                ])
+        covered = sum(1 for r in size_capture.values() if r["marketCap"])
+        print("  market cap: %d/%d populated -> %s"
+              % (covered, len(size_capture), size_path.name))
+
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
     filled, row_count = coverage(target)
     month_dir = ARCHIVE / month
@@ -266,6 +294,9 @@ def main():
         "contract_check": contract_report,
         "coverage": filled,
         "skipped_tickers": failures,
+        "market_cap_rows": len(size_capture),
+        "market_cap_populated": sum(1 for r in size_capture.values()
+                                    if r["marketCap"]),
     }
     with MANIFEST.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")

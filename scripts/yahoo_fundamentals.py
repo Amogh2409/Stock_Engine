@@ -404,7 +404,7 @@ def fx_to_inr(yf, currency, cache):
     return rate
 
 
-def fetch_one(yf, symbol, name, industry, fx_cache=None):
+def fetch_one(yf, symbol, name, industry, fx_cache=None, capture=None):
     """One Screener-shaped row, or None if Yahoo returns nothing usable."""
     ticker = yf.Ticker(symbol + ".NS")
     try:
@@ -488,6 +488,24 @@ def fetch_one(yf, symbol, name, industry, fx_cache=None):
             derived.append("ROA")
 
     market_cap = _num(info.get("marketCap"))
+    if capture is not None:
+        # POINT-IN-TIME SIZE, captured from the SAME response the row is built
+        # from so it cannot drift from it. Raw rupees and raw share count, not
+        # the crore figure the export carries: the export rounds, and a size
+        # diagnostic ranks on small differences.
+        #
+        # This exists because the strongest open hypothesis in the project --
+        # whether illiquidity carries longer-horizon information or is simply
+        # small-cap exposure -- is blocked on having market cap that was TRUE
+        # AT THE TIME. It cannot be recovered later, so the only way to have it
+        # in 2027 is to start writing it down now.
+        capture[symbol] = {
+            "marketCap": market_cap,
+            "sharesOutstanding": _num(info.get("sharesOutstanding")),
+            "currentPrice": _num(info.get("currentPrice")),
+            "currency": info.get("currency") or "",
+            "financialCurrency": info.get("financialCurrency") or "",
+        }
     row = {
         "Name": name,
         "NSE code": symbol,

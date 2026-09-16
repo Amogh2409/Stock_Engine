@@ -184,6 +184,29 @@ def main():
         print("  A changed adapter between vintages means two months were "
               "normalised by different code. That is not automatically wrong, "
               "but it is a confound and must be stated in any result.")
+    # Point-in-time market cap: the field the strongest open hypothesis is
+    # blocked on. It cannot be recovered retrospectively, so what matters is
+    # how many months have accumulated SINCE collection started -- not how far
+    # back the price history goes.
+    market_cap_dir = ROOT / "data-store" / "fundamentals" / "market_cap"
+    market_cap_files = sorted(market_cap_dir.glob("market_cap_*.csv")) \
+        if market_cap_dir.exists() else []
+    mc_months = sorted({f.stem.replace("market_cap_", "")[:7]
+                        for f in market_cap_files})
+    print("PIT market cap: %d vintage(s) over %d month(s)%s"
+          % (len(market_cap_files), len(mc_months),
+             (" (%s to %s)" % (mc_months[0], mc_months[-1])) if mc_months else
+             "  -- NONE. The long-horizon illiquidity question stays blocked."))
+    if market_cap_files:
+        newest = market_cap_files[-1]
+        rows = load_rows(newest) or []
+        populated = sum(1 for r in rows if r.get("MarketCap"))
+        with_shares = sum(1 for r in rows if r.get("SharesOutstanding"))
+        print("   newest %s: %d rows, %d with market cap, %d with share count"
+              % (newest.name, len(rows), populated, with_shares))
+        print("   size-diagnostic unlock needs several months; %d held"
+              % len(mc_months))
+
     raw_files = sorted(RAW.glob("*.json")) if RAW.exists() else []
     print("Raw provider snapshots: %d file(s)%s"
           % (len(raw_files),
@@ -200,6 +223,8 @@ def main():
             "months_held": len(by_month), "months_missing": missing,
             "months_duplicated": duplicated, "shortfall": max(0, shortfall),
             "adapter_versions": distinct, "raw_snapshots": len(raw_files),
+            "market_cap_vintages": len(market_cap_files),
+            "market_cap_months": mc_months,
             "per_vintage": per_vintage,
         }, indent=1), encoding="utf-8")
         print("\nwritten to %s" % args.json)
