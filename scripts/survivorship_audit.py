@@ -20,10 +20,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "python"))
 PIT = ROOT / "data-store" / "universe" / "pit_nifty100_extended.csv"
-PANEL = ROOT / "data-store" / "market_data" / "pit-union" / "price_history_union_v2.csv"
+PANEL = ROOT / "data-store" / "market_data" / "pit-union" / "price_history_union_v3.csv"
 TODAY = ROOT / "data" / "nifty100_source.csv"
 TRANSITIONS = ROOT / "data" / "symbol_transitions.csv"
 MANIFEST = ROOT / "data-store" / "universe" / "manifest.jsonl"
+
+
+def placeholders():
+    """NSE dummy securities: index bookkeeping, not tradeable listings.
+
+    They appear in the official reports during a demerger and have no price
+    series because no one can buy them. Counting them as missing prices
+    overstates the coverage problem; dropping them silently would hide a real
+    feature of the data. They are excluded from the INVESTABLE universe and
+    reported separately.
+    """
+    with TRANSITIONS.open(newline="", encoding="utf-8") as handle:
+        return {r["old_symbol"] for r in csv.DictReader(handle)
+                if r["event_type"] == "NSE_PLACEHOLDER"}
 
 
 def weight_and_bias():
@@ -38,7 +52,9 @@ def weight_and_bias():
     read, because the question is whether the missing group is systematically
     different, not whether it performed differently.
     """
-    rows = list(csv.DictReader(PIT.open(encoding="utf-8")))
+    skip = placeholders()
+    rows = [r for r in csv.DictReader(PIT.open(encoding="utf-8"))
+            if r["symbol"] not in skip]
     panel = {r["Ticker"] for r in csv.DictReader(PANEL.open(encoding="utf-8"))}
     by_date = collections.defaultdict(list)
     for row in rows:

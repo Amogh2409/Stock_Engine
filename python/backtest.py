@@ -264,6 +264,90 @@ def get_nifty100_universe(date, store=None, available=None):
     return sorted(s for s in members if s in available)
 
 
+class PitBook:
+    """A PriceBook whose visible universe is the index membership of one date.
+
+    Every study in this file discovers its universe by calling
+    `book.tickers()` inside a per-rebalance loop. Wrapping the book, rather
+    than threading a universe argument through six studies, means the frozen
+    code paths are untouched: they ask the same question and get a
+    historically correct answer.
+
+    RESEARCH MODE IS `PIT_WITH_COVERAGE`, never `PIT` and never
+    `SURVIVORSHIP_FREE`. Roughly 3% of constituents by count and 5% by index
+    weight cannot be priced, and what is missing is systematically the
+    shorter-tenure, lower-weight names -- so this reduces survivorship bias
+    without eliminating it, and every result carries the coverage that
+    produced it.
+    """
+
+    MODE = "PIT_WITH_COVERAGE"
+
+    def __init__(self, book, store, placeholders=frozenset()):
+        self._book = book
+        self._store = store
+        self._placeholders = frozenset(placeholders)
+        self._date = None
+        self._priceable = set(book.tickers())
+        self.coverage_log = {}
+
+    def __getattr__(self, item):
+        return getattr(self._book, item)
+
+    def set_date(self, date):
+        """Point the universe at one rebalance date, and record its coverage."""
+        self._date = date
+        official = {s for s in self._store.members(date) if s not in self._placeholders}
+        priced = official & self._priceable
+        detail = self._store.detail(date)
+        total_w = sum(float(detail[s]["weight_pct"] or 0) for s in official
+                      if s in detail)
+        have_w = sum(float(detail[s]["weight_pct"] or 0) for s in priced
+                     if s in detail)
+        self.coverage_log[date] = {
+            "report_date": self._store.report_for(date),
+            "official": len(official), "priceable": len(priced),
+            "count_coverage": (len(priced) / len(official)) if official else float("nan"),
+            "weight_coverage": (have_w / total_w) if total_w else float("nan"),
+            "missing": sorted(official - priced),
+        }
+        return priced
+
+    def tickers(self):
+        if self._date is None:
+            return self._book.tickers()
+        official = {s for s in self._store.members(self._date)
+                    if s not in self._placeholders}
+        return sorted(official & self._priceable)
+
+    def coverage_summary(self):
+        log = list(self.coverage_log.values())
+        if not log:
+            return {}
+        counts = [e["count_coverage"] for e in log]
+        weights = [e["weight_coverage"] for e in log if e["weight_coverage"] == e["weight_coverage"]]
+        return {
+            "mode": self.MODE, "dates": len(log),
+            "mean_count_coverage": sum(counts) / len(counts),
+            "min_count_coverage": min(counts),
+            "mean_weight_coverage": (sum(weights) / len(weights)) if weights else float("nan"),
+            "min_weight_coverage": min(weights) if weights else float("nan"),
+            "never_fully_covered": sum(1 for c in counts if c < 1.0),
+        }
+
+
+def load_pit_book(book, store_path=None, transitions=None):
+    """(PitBook, store) or raise. Placeholders are read from the register."""
+    store = PitUniverse.load(store_path)
+    skip = set()
+    path = Path(transitions or (ROOT_DIR / "data" / "symbol_transitions.csv"))
+    if path.exists():
+        with path.open(newline="", encoding="utf-8") as handle:
+            skip = {r["old_symbol"] for r in csv.DictReader(handle)
+                    if r["event_type"] == "NSE_PLACEHOLDER"}
+    return PitBook(book, store, skip), store
+
+
 def month_end_sessions(calendar, respect_holdout=True):
     """The last session of each month, which is when the screen is re-run.
 
@@ -818,6 +902,11 @@ def rank_on(book, date, bench_by_date, block=None, rsi_flip=False, continuous=Fa
     and the comparison became part scoring and part universe with no way to
     separate them afterwards.
     """
+    # PIT mode: the visible universe becomes the index membership of `date`.
+    # A no-op on a plain PriceBook, so the frozen static path is unchanged.
+    if hasattr(book, "set_date"):
+        book.set_date(date)
+
     if continuous:
         entries = []
         points_blocks = {}
@@ -1180,9 +1269,14 @@ def run_equal_weight(book, calendar, rebalances):
     same dividend treatment, same execution rule. It answers "did picking help,
     against owning the lot".
     """
-    everything = book.tickers()
     periods = []
     for index in range(len(rebalances) - 1):
+        # The comparator must hold what the index actually held THEN. Comparing
+        # a point-in-time strategy against today's survivors equal-weighted
+        # would put the whole survivorship advantage on the benchmark's side.
+        if hasattr(book, "set_date"):
+            book.set_date(rebalances[index])
+        everything = book.tickers()
         entry_date = next_session(calendar, rebalances[index])
         exit_date = next_session(calendar, rebalances[index + 1])
         if entry_date is None or exit_date is None:
@@ -1335,6 +1429,8 @@ def amihud_study(book, calendar, rebalances, bench_by_date,
     midpoint = rebalances[len(rebalances) // 2] if rebalances else None
 
     for signal_date in rebalances:
+        if hasattr(book, "set_date"):
+            book.set_date(signal_date)
         entry_date = next_session(calendar, signal_date)
         if entry_date is None:
             continue
@@ -1730,6 +1826,8 @@ def reversal_study(book, calendar, rebalances, bench_by_date,
     midpoint = rebalances[len(rebalances) // 2] if rebalances else None
 
     for signal_date in rebalances:
+        if hasattr(book, "set_date"):
+            book.set_date(signal_date)
         entry_date = next_session(calendar, signal_date)
         if entry_date is None:
             continue
@@ -2014,6 +2112,8 @@ def volatility_study(book, calendar, rebalances, bench_by_date,
     per_date_holdings = {}
 
     for signal_date in rebalances:
+        if hasattr(book, "set_date"):
+            book.set_date(signal_date)
         entry_date = next_session(calendar, signal_date)
         if entry_date is None:
             continue
@@ -3396,8 +3496,12 @@ def _after_tax_block(book, periods, cost_bps_per_side, stcg_rate, capital):
 def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PER_SIDE,
              variants_tried=1, variants_note="", rsi_flip=False, respect_holdout=True,
              continuous=False, neutral=False, no_skip_month=False, buffer_multiple=1,
-             stcg_rate=STCG_RATE, capital=None, portfolio_block=None, invert=False, components=False, volatility=False, reversal=False, amihud=False):
+             stcg_rate=STCG_RATE, capital=None, portfolio_block=None, invert=False, components=False, volatility=False, reversal=False, amihud=False, pit=False):
     book = PriceBook(history)
+    if pit:
+        # PIT_WITH_COVERAGE. Never falls back to the current index: an
+        # uncovered date raises, which is the point of the resolver.
+        book, _pit_store = load_pit_book(book)
     calendar = market_calendar(history)
     rebalances = month_end_sessions(calendar, respect_holdout=respect_holdout)
     bench = history[E.BENCHMARK_SYMBOL]
@@ -3517,6 +3621,10 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
                      if reversal else None),
         "amihud": (amihud_study(book, calendar, rebalances, bench_by_date)
                    if amihud else None),
+        "pit": ({"mode": PitBook.MODE,
+                 "coverage": book.coverage_summary(),
+                 "per_date": book.coverage_log}
+                if hasattr(book, "coverage_summary") else None),
         "quality": {
             "total_fills": total_fills,
             "fallbacks": sum(p["open_fallbacks"] for p in periods),
@@ -5100,6 +5208,10 @@ def main(argv=None):
                              "it. Exists for the single final test described in "
                              "knowledge/holdout.md, and for nothing else."
                              % HOLDOUT_START)
+    parser.add_argument("--pit", action="store_true",
+                        help="PIT_WITH_COVERAGE: use the official point-in-time "
+                             "Nifty 100 membership at each rebalance. A data "
+                             "correction, not a parameter change.")
     parser.add_argument("--amihud", action="store_true",
                         help="the registered Amihud illiquidity study. "
                              "Spends slot 2 of 3 when it runs.")
@@ -5190,7 +5302,7 @@ def main(argv=None):
                        capital=args.capital, portfolio_block=args.portfolio_block,
                        invert=args.invert, components=args.components,
                        volatility=args.volatility, reversal=args.reversal,
-                       amihud=args.amihud)
+                       amihud=args.amihud, pit=args.pit)
     report = format_report(results)
     print(report)
     if args.out_dir:

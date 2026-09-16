@@ -23,3 +23,10 @@ TATAGLOBAL,TATACONSUM,RENAME_VERIFIED,27-FEB-2020,yes,"NSE official symbol-chang
 TATAMOTORS,TMPV,RENAME_VERIFIED,24-OCT-2025,yes,"NSE official symbol-change register (archives.nseindia.com/content/equities/symbolchange.csv); symbol change effective 24-OCT-2025, strictly AFTER the constituent window ends, so the listing is the same security on every date it was an index member",VERIFIED_NSE_REGISTER
 TATAMTRDVR,,SECURITY_RETIRED,2024,no,"Tata Motors DVR class converted/cancelled. A dual-class security, never present in Nifty 50 or Next 50.",UNVERIFIED
 ZOMATO,ETERNAL,RENAME_VERIFIED,09-APR-2025,yes,"NSE official symbol-change register (archives.nseindia.com/content/equities/symbolchange.csv); symbol change effective 09-APR-2025, strictly AFTER the constituent window ends, so the listing is the same security on every date it was an index member",VERIFIED_NSE_REGISTER
+DUMMYHDLVR,,NSE_PLACEHOLDER,2025-12,no,"NSE dummy security created for the demerger process; not a tradeable listing. Excluded from the investable universe, not counted as a missing price.",VERIFIED_NOT_TRADEABLE
+DUMMYSIEMS,,NSE_PLACEHOLDER,2025-04,no,"NSE dummy security for the Siemens Energy demerger; not tradeable",VERIFIED_NOT_TRADEABLE
+DUMMYTATAM,,NSE_PLACEHOLDER,2025-10,no,"NSE dummy security for the Tata Motors demerger; not tradeable",VERIFIED_NOT_TRADEABLE
+DUMMYVEDL1,,NSE_PLACEHOLDER,2026-04,no,"NSE dummy security for the Vedanta demerger; not tradeable",VERIFIED_NOT_TRADEABLE
+DUMMYVEDL2,,NSE_PLACEHOLDER,2026-04,no,"NSE dummy security for the Vedanta demerger; not tradeable",VERIFIED_NOT_TRADEABLE
+DUMMYVEDL3,,NSE_PLACEHOLDER,2026-04,no,"NSE dummy security for the Vedanta demerger; not tradeable",VERIFIED_NOT_TRADEABLE
+DUMMYVEDL4,,NSE_PLACEHOLDER,2026-04,no,"NSE dummy security for the Vedanta demerger; not tradeable",VERIFIED_NOT_TRADEABLE
