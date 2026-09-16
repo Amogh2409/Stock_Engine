@@ -268,3 +268,111 @@ version to be registered as its own experiment rather than read into this one.
 Beta and liquidity are unaffected and are reported as registered.
 
 Recorded before execution. No result exists at the time of writing.
+
+---
+
+# Result — 2026-09-16
+
+Run once against the registration at `bfb9fe8` on the calendar-corrected panel.
+87 rebalance dates, 126-session window, minimum 100 observations, family 8.
+Outputs: `data-store/reports/volatility/`.
+
+## Verdict: FAIL
+
+| estimator | h | mean IC | floor | HAC t | p (Bonf) | IC>0 | Q1−Q10 |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| idio | 1 | −0.0057 | 0.062 | −0.26 | 1.000 | 48% | −1.81pp |
+| idio | 3 | −0.0301 | 0.086 | −1.01 | 1.000 | 48% | −7.17pp |
+| idio | 6 | −0.0559 | 0.128 | −1.32 | 1.000 | 36% | −20.48pp |
+| idio | 12 | −0.1019 | 0.223 | −1.56 | 1.000 | 40% | −58.66pp |
+
+Against §9: horizons with a positive IC **0 of 4** (needs ≥3); horizons
+detected and significant **0 of 4** (needs ≥2); every decile spread negative.
+**All four conditions fail.**
+
+Two things must be said separately, because conflating them would overclaim.
+**Nothing was detected** — no cell comes close to its floor, the largest being
+0.1019 against 0.223. And **every point estimate leans opposite** to the
+hypothesis: in this sample the noisier names earned more, not less. The second
+observation is not a finding. It is what an undetected null looks like when it
+happens to lean one way, and by the registered rule it is a refutation of the
+registered direction, not evidence for the reverse.
+
+## Mechanism check (§7): indistinguishable
+
+| | 1M | 3M | 6M | 12M |
+|---|--:|--:|--:|--:|
+| Idio-vol IC | −0.0057 | −0.0301 | −0.0559 | −0.1019 |
+| Total-vol IC | −0.0058 | −0.0280 | −0.0499 | −0.0915 |
+| **Difference** | +0.0001 | −0.0021 | −0.0060 | −0.0104 |
+
+The threshold was +0.02 at 3 of 4 horizons. The largest difference is +0.0001,
+and three of four are negative. **Residualising against the benchmark does no
+work here.** Whatever these two quantities are measuring, they are measuring
+the same thing, and the idiosyncratic framing adds nothing.
+
+## Diagnostics (§8) — measured, not neutralised
+
+Per-date Spearman, summarised:
+
+| signal | vs beta | vs liquidity |
+|---|--:|--:|
+| −idio-vol | mean −0.371 (P25 −0.475, P75 −0.261) | mean +0.183 |
+| −total-vol | mean **−0.646** (P25 −0.721, P75 −0.583) | mean +0.043 |
+
+Size: **UNAVAILABLE**, per the pre-run amendment.
+
+The beta correlations are the most informative numbers in the run and they
+explain the mechanism result. Total volatility is −0.65 correlated with beta,
+so ranking on low total volatility is substantially ranking on low beta.
+Residualising halves that to −0.37 — the regression does remove real beta
+exposure — and yet the IC barely moves. So the benchmark-orthogonal component
+behaves like the raw one, which is evidence that neither is measuring anything
+that predicts returns in this sample, rather than evidence that the
+residualisation failed.
+
+Top-decile turnover: **21.9%** per rebalance.
+
+Decile portfolios, monthly, 86 months (secondary; cannot affect the verdict):
+
+| | cumulative | max drawdown |
+|---|--:|--:|
+| idio decile 1 (quietest) | +188.4% | −35.4% |
+| idio decile 10 (noisiest) | +829.2% | −40.5% |
+| total decile 1 | +244.9% | −20.9% |
+| total decile 10 | +563.1% | −45.5% |
+
+The one result pointing the registered way is that low *total* volatility did
+deliver a materially shallower drawdown (−20.9% against −45.5%). That is a
+risk observation, not a return one, and the registered hypothesis was about
+performance. It is recorded, not claimed.
+
+## FAIL branch, now in force
+
+> **The low/idiosyncratic-volatility family is frozen**, on the same terms as
+> the technical family.
+
+Specifically forbidden, as named in §9 before the run: changing 126 → 63 → 252
+sessions; switching `^NSEI` → `^CNX100`; adding a liquidity or size screen;
+neutralising beta, size or sector; swapping the residual standard deviation for
+a downside or EWMA variant. Each was listed in advance precisely because each
+is a move that looks reasonable only after a disappointing number.
+
+Reversal, betting-against-beta, MAX and illiquidity remain unregistered. The
+beta diagnostic above is *suggestive* about betting-against-beta, and that is
+exactly why it must not be run as a follow-up to this: it would be a hypothesis
+formed by reading these results.
+
+## Two disclosures about this run
+
+**1. The registered cost floor was arithmetically wrong.** §9 says the decile
+spread must exceed "**0.60pp** at 15 bps per side, both legs". 15 bps per side
+is 0.15%, so a round trip is **0.30pp**, and the implementation used 0.30pp —
+the *easier* bar. The registered figure was a slip, disclosed here rather than
+quietly corrected. The verdict is identical under either, because all four
+spreads are negative and fail any positive threshold.
+
+**2. Drawdown was registered and initially not implemented.** §5 lists maximum
+drawdown of the decile-1 portfolio as a secondary metric; the first run omitted
+it. It was added and the study re-run in full before this result was written.
+The table above is from the complete run. No primary number changed.

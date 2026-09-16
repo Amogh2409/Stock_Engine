@@ -104,11 +104,23 @@ largest unvalidated surface in the engine.
 13. **The fundamental archive holds one distinct month.** About twelve are
     needed. See `scripts/archive_health.py`.
 
+## Families tested and frozen
+
+| family | registered | result |
+|---|---|---|
+| trend / momentum / relStrength / volume | — | FAIL at composite, block and primitive level; re-confirmed on the corrected panel |
+| idiosyncratic volatility (126-session) | `bfb9fe8` | **FAIL** — 0 of 4 horizons positive, none detected; total vs idio indistinguishable |
+
+The volatility run also showed low total volatility is −0.65 correlated with
+beta per date, so it was substantially a low-beta bet; residualising halved
+that to −0.37 and moved the IC almost not at all.
+
 ## What would re-open the engine
 
 Only one of these, and each needs its own pre-registration:
 
-- A **genuinely different factor family** — not a variation on the four blocks.
+- A **genuinely different factor family** — not a variation on the four blocks,
+  and not a variation on volatility either.
 - **Point-in-time fundamentals** reaching ~12 vintages, which makes the whole
   fundamental side testable for the first time.
 - A **longer price history**, which the power decomposition showed buys ~42%

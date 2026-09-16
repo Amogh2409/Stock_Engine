@@ -1292,6 +1292,26 @@ def _traded_value_median(book, ticker, date, window):
     return _median(values)
 
 
+def _path_statistics(monthly_returns):
+    """Compound a monthly return series and describe the path it took.
+
+    Registered as a secondary metric. A mean return says nothing about the
+    order the returns arrived in, and a low-volatility factor is bought
+    precisely for the order -- so the drawdown is the metric the claim would
+    actually be judged on if it ever became a portfolio.
+    """
+    if not monthly_returns:
+        return {"months": 0, "max_drawdown": float("nan"),
+                "cumulative": float("nan")}
+    level, peak, worst = 1.0, 1.0, 0.0
+    for value in monthly_returns:
+        level *= (1.0 + value)
+        peak = max(peak, level)
+        worst = min(worst, level / peak - 1.0)
+    return {"months": len(monthly_returns), "max_drawdown": worst,
+            "cumulative": level - 1.0}
+
+
 def volatility_study(book, calendar, rebalances, bench_by_date,
                      horizons=DECILE_HORIZONS):
     """The registered low-volatility study. Runs once, decides by the rule.
@@ -1309,6 +1329,7 @@ def volatility_study(book, calendar, rebalances, bench_by_date,
     buckets = {e: {h: {d: [] for d in range(10)} for h in horizons}
                for e in estimators}
     diagnostics = {e: {"beta": [], "liquidity": []} for e in estimators}
+    decile_path = {e: {0: [], 9: []} for e in estimators}
     factor_values = []          # raw factor values, per rebalance date
     dates_used = 0
     per_date_holdings = {}
@@ -1392,9 +1413,18 @@ def volatility_study(book, calendar, rebalances, bench_by_date,
                 series[estimator][horizon].append(rho)
                 ordered = sorted(zip(signal_values, returns), key=lambda p: -p[0])
                 count = len(ordered)
+                per_bucket = {d: [] for d in range(10)}
                 for position, (_value, ret) in enumerate(ordered):
-                    buckets[estimator][horizon][
-                        min(9, position * 10 // count)].append(ret)
+                    bucket = min(9, position * 10 // count)
+                    buckets[estimator][horizon][bucket].append(ret)
+                    per_bucket[bucket].append(ret)
+                if horizon == 1:
+                    # One observation per rebalance, so the decile portfolio
+                    # has a PATH and a drawdown rather than only a mean.
+                    for bucket in (0, 9):
+                        if per_bucket[bucket]:
+                            decile_path[estimator][bucket].append(
+                                sum(per_bucket[bucket]) / len(per_bucket[bucket]))
 
     out = {"dates": dates_used, "family_size": VOLATILITY_FAMILY,
            "window": VOLATILITY_WINDOW, "min_observations": VOLATILITY_MIN_OBS,
@@ -1424,6 +1454,9 @@ def volatility_study(book, calendar, rebalances, bench_by_date,
         out["diagnostics"][estimator] = {
             key: _percentiles(values)
             for key, values in diagnostics[estimator].items()}
+        out["estimators"][estimator]["portfolio"] = {
+            ("decile_1" if bucket == 0 else "decile_10"): _path_statistics(path)
+            for bucket, path in decile_path[estimator].items()}
 
     # The mechanism table of section 7. Diagnostic only: it cannot produce a
     # pass, and the decision rule below never reads it.
