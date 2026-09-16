@@ -235,3 +235,36 @@ A pass makes this a **candidate**, not a component of the engine.
 One family, one window, one estimator, one direction, four horizons, a
 mechanism check that cannot rescue a failure, three diagnostics that are not
 neutralisations, and a failure branch that freezes rather than re-specifies.
+
+---
+
+## Amendment — 2026-09-16, before the run
+
+**The size diagnostic in §8 cannot be measured and is withdrawn.**
+
+§8 declared three diagnostics: beta, size as "market capitalisation at the
+signal date", and liquidity. Beta and liquidity are computable from the price
+panel. Size is not: `backtest.py` carries **no market-capitalisation data at
+all** — it works purely from OHLCV — and point-in-time market cap is exactly
+what the fundamental archive does not yet hold.
+
+The two ways to produce a number here are both refused:
+
+- **Today's market cap applied to past dates** is the backfill that is
+  forbidden project-wide. It would look like a diagnostic and be look-ahead.
+- **A price-only proxy** cannot separate size from liquidity. Median daily
+  traded value is already the liquidity diagnostic; using it twice under two
+  names would manufacture an answer rather than measure one.
+
+So the size diagnostic is reported as **UNAVAILABLE**, not estimated.
+
+This changes nothing in §9: the decision rule never consulted the diagnostics.
+It does weaken §10's stated concern — that a Nifty 50 benchmark biases the
+signal toward smaller constituents — because the diagnostic that would have
+detected it is precisely the missing one. **That concern therefore stands
+unresolved by this run**, and remains a reason for a Nifty 100-benchmark
+version to be registered as its own experiment rather than read into this one.
+
+Beta and liquidity are unaffected and are reported as registered.
+
+Recorded before execution. No result exists at the time of writing.
