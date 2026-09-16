@@ -119,13 +119,37 @@ direction, and `rsi14`'s own 1-month IC of −0.0273 already implied the answer.
 
 So, for every future candidate, before it is registered:
 
-> Compute the per-date cross-sectional correlation between the candidate signal
-> and every already-tested family's primitives. If |mean rho| exceeds **0.70**
-> against any of them, the candidate is a **reparameterisation**, not a new
-> family, and fails condition 3.
+> Compute the per-date cross-sectional Spearman correlation between the
+> candidate signal and every already-tested primitive. The candidate **FAILS
+> distinctness** if, against any one of them, **either**
+>
+> - `|mean per-date rho| > 0.70`, **or**
+> - `|median per-date rho| > 0.70`.
+>
+> The interquartile range is reported diagnostically alongside.
+
+**Mean alone is not enough**, and the failure mode is specific: a candidate
+correlating +0.90 with a primitive on half the dates and −0.80 on the other
+half has a mean near zero and would pass a mean-only screen while being a
+sign-switching restatement of that primitive. The median catches it. Adding the
+median costs nothing and closes the hole.
+
+This is a screen against obvious duplication, not an alpha test, and it is
+deliberately not a hypothesis test — no p-value, no correction, no power
+calculation. It touches **no forward returns at all**, so it cannot leak
+information about outcomes and cannot consume statistical power.
 
 This costs nothing worth protecting. It needs no forward returns, spends no
 statistical power, and consumes no budget — it is a property of the signals
 alone. Applied here it would have saved a family.
+
+**Failing the screen does not consume budget.** A candidate ruled a
+reparameterisation was never a family, so nothing was spent on it. Only a
+registered study that executes spends a slot.
+
+**The budget is a maximum, not a quota.** If the screen shows the remaining
+candidates are mostly transformations of things already tested, stopping at 1
+of 3 is a stronger research decision than running two more studies because the
+allowance exists. Nothing obliges the third slot to be used, or the second.
 
 **Not applied retroactively.** Reversal stays spent.

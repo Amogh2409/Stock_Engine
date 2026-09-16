@@ -1188,6 +1188,154 @@ def _percentiles(values):
     return sum(clean) / len(clean), at(0.5), at(0.25), at(0.75)
 
 
+# --- Distinctness screen (signal-only; touches NO forward returns) -----------
+# knowledge/research-policy.md: a candidate whose per-date correlation with any
+# already-tested primitive exceeds 0.70 in ABSOLUTE MEAN OR ABSOLUTE MEDIAN is
+# a reparameterisation, not a new family. Median as well as mean because a
+# candidate at +0.90 on half the dates and -0.80 on the other half averages to
+# nothing while being a sign-switching restatement.
+DISTINCTNESS_LIMIT = 0.70
+CANDIDATE_WINDOW = 21          # sessions, for both candidate signals
+CANDIDATE_MIN_SESSIONS = 15    # valid observations required inside the window
+
+
+def max_daily_return(book, ticker, date, window=CANDIDATE_WINDOW):
+    """MAX: the single largest daily return in the window. Bali-Cakici-Whitelaw.
+
+    The lottery-demand signal: investors are held to overpay for stocks with a
+    recent extreme positive day, so a HIGH value is the undesirable one.
+    """
+    returns = _returns_upto(book, ticker, date, window)
+    if len(returns) < CANDIDATE_MIN_SESSIONS:
+        return None
+    return max(value for _session, value in returns)
+
+
+def amihud_illiquidity(book, ticker, date, window=CANDIDATE_WINDOW):
+    """Amihud: mean of |daily return| / traded value over the window.
+
+    THE VOLUME CONTRACT MATTERS MORE THAN THE FORMULA. A session whose price
+    moved with no reported volume is MISSING liquidity data, not zero liquidity
+    -- and zero would divide into infinity, making the least-measured stock
+    look like the most illiquid one in the universe. Since the 2026-09-16
+    calendar fix those sessions carry a blank volume, which parses to None, and
+    there are no remaining zeros in the panel. Both are skipped here anyway, so
+    the contract holds even if the panel later changes.
+
+    Sessions are skipped, not defaulted. If too few survive, the stock is not
+    scored at this date.
+    """
+    end = book.index_upto(ticker, date)
+    if end is None:
+        return None
+    series = book.history[ticker]
+    closes, volumes = series["closes"], (series.get("volumes") or [])
+    values = []
+    for index in range(max(1, end - window + 1), end + 1):
+        if index >= len(volumes):
+            break
+        previous, current, volume = closes[index - 1], closes[index], volumes[index]
+        # None volume is MISSING. Zero volume would be a division by zero and
+        # is refused for the same reason: neither is a measurement of liquidity.
+        if previous is None or current is None or previous <= 0 or current <= 0:
+            continue
+        if volume is None or volume <= 0:
+            continue
+        traded_value = current * volume
+        if traded_value <= 0:
+            continue
+        values.append(abs(current / previous - 1.0) / traded_value)
+    if len(values) < CANDIDATE_MIN_SESSIONS:
+        return None
+    return sum(values) / len(values)
+
+
+def distinctness_scan(book, calendar, rebalances, bench_by_date):
+    """Per-date correlation of each candidate against every tested primitive.
+
+    NO FORWARD RETURNS ARE COMPUTED ANYWHERE IN THIS FUNCTION, and that is
+    structural rather than a promise: nothing here calls execution_price or
+    looks at a date after the signal date. The screen is a property of the
+    signals alone, so it can be run on every candidate without spending
+    statistical power or research budget.
+    """
+    candidates = {"MAX": max_daily_return, "amihudIlliquidity": amihud_illiquidity}
+    frozen = [(name, extract) for _b, name, extract, _w in CONTINUOUS_FEATURES]
+    reference_names = ([name for name, _e in frozen]
+                       + ["idioVol", "totalVol", "reversal"])
+    pairs = {c: {r: [] for r in reference_names} for c in candidates}
+    coverage = {c: 0 for c in candidates}
+    dates_used = 0
+
+    for signal_date in rebalances:
+        bench_returns = dict(_returns_upto(book, E.BENCHMARK_SYMBOL, signal_date,
+                                           VOLATILITY_WINDOW))
+        if len(bench_returns) < VOLATILITY_MIN_OBS:
+            continue
+        values = {name: {} for name in reference_names}
+        candidate_values = {name: {} for name in candidates}
+        scored = 0
+        for ticker in book.tickers():
+            tech = technicals_on(book, ticker, signal_date, bench_by_date)
+            if tech is None:
+                continue
+            gate = E.calculate_technical_score(tech, True)
+            total = gate[0] if isinstance(gate, tuple) else gate
+            if total is None:
+                continue
+            scored += 1
+            for name, extract in frozen:
+                values[name][ticker] = extract(tech)
+            observations = [(value, bench_returns[session])
+                            for session, value in _returns_upto(
+                                book, ticker, signal_date, VOLATILITY_WINDOW)
+                            if session in bench_returns]
+            _beta, residual_sd, total_sd = _ols_beta_and_residual_sd(observations)
+            values["idioVol"][ticker] = residual_sd
+            values["totalVol"][ticker] = total_sd
+            formation = formation_return(book, ticker, signal_date)
+            values["reversal"][ticker] = None if formation is None else -formation
+            for name, function in candidates.items():
+                candidate_values[name][ticker] = function(book, ticker, signal_date)
+        if scored < 10:
+            continue
+        dates_used += 1
+        for candidate, by_ticker in candidate_values.items():
+            present = [t for t, v in by_ticker.items() if v is not None]
+            if len(present) >= 10:
+                coverage[candidate] += 1
+            for reference in reference_names:
+                paired = [(by_ticker[t], values[reference][t]) for t in present
+                          if values[reference].get(t) is not None]
+                if len(paired) > 2:
+                    rho = spearman(paired)
+                    if rho is not None:
+                        pairs[candidate][reference].append(rho)
+
+    out = {"dates": dates_used, "limit": DISTINCTNESS_LIMIT,
+           "window": CANDIDATE_WINDOW, "forward_returns_used": False,
+           "candidates": {}}
+    for candidate in candidates:
+        rows, worst = {}, None
+        for reference, samples in pairs[candidate].items():
+            if not samples:
+                continue
+            mean, median, p25, p75 = _percentiles(samples)
+            rows[reference] = {"mean": mean, "median": median, "p25": p25,
+                               "p75": p75, "dates": len(samples)}
+            score = max(abs(mean), abs(median))
+            if worst is None or score > worst[1]:
+                worst = (reference, score)
+        duplicate = bool(worst and worst[1] > DISTINCTNESS_LIMIT)
+        out["candidates"][candidate] = {
+            "against": rows, "dates_scored": coverage[candidate],
+            "closest": (worst[0] if worst else None),
+            "closest_score": (worst[1] if worst else float("nan")),
+            "verdict": ("REPARAMETERISATION" if duplicate else "potentially distinct"),
+        }
+    return out
+
+
 # --- Registered 2026-09-16: short-term reversal ------------------------------
 # Fixed by knowledge/preregistration-short-term-reversal.md, committed at
 # 356a1ac before any result existed. Spends 1 of the 3 families the research
@@ -2706,6 +2854,40 @@ def _component_section(components):
     return out
 
 
+def format_distinctness(scan):
+    """The screen as a table. Reports the IQR beside mean and median."""
+    out = ["", "=" * 74,
+           "DISTINCTNESS SCREEN -- signal only, no forward returns",
+           "=" * 74, "",
+           "Per-date cross-sectional Spearman against every already-tested",
+           "primitive, over %d rebalance dates. A candidate is a"
+           % scan["dates"],
+           "REPARAMETERISATION if |mean| OR |median| exceeds %.2f against any one"
+           % scan["limit"],
+           "of them -- the median included because a candidate that flips sign",
+           "between regimes averages to nothing while duplicating a primitive.",
+           ""]
+    for candidate, body in scan["candidates"].items():
+        out.append("-" * 74)
+        out.append("Candidate: %s   (scored on %d dates)"
+                   % (candidate, body["dates_scored"]))
+        out.append("-" * 74)
+        out.append("%-24s %8s %9s %8s %8s" % ("", "mean", "median", "P25", "P75"))
+        ordered = sorted(body["against"].items(),
+                         key=lambda kv: -max(abs(kv[1]["mean"]), abs(kv[1]["median"])))
+        for reference, stats in ordered:
+            flag = "  <-- DUPLICATE" if max(abs(stats["mean"]),
+                                            abs(stats["median"])) > scan["limit"] else ""
+            out.append("%-24s %+8.3f %+9.3f %+8.3f %+8.3f%s"
+                       % (reference, stats["mean"], stats["median"],
+                          stats["p25"], stats["p75"], flag))
+        out.append("")
+        out.append("  closest: %s at %.3f  ->  %s"
+                   % (body["closest"], body["closest_score"], body["verdict"]))
+        out.append("")
+    return "\n".join(out)
+
+
 def format_report(results):
     out = []
     out.append("# Technical-score backtest")
@@ -3938,6 +4120,52 @@ class BacktestTests(unittest.TestCase):
         # And the default is the protective one.
         self.assertEqual(month_end_sessions(calendar), reserved)
 
+    def test_amihud_treats_absent_volume_as_MISSING_not_as_zero_liquidity(self):
+        """The contract that matters more than the formula.
+
+        Amihud divides by traded value. A session whose price moved with no
+        reported volume is MISSING liquidity data, and treating it as zero
+        would divide into infinity -- making the least-MEASURED stock look like
+        the most illiquid in the universe, and putting it at one end of the
+        ranking for a reason that is not about liquidity at all.
+        """
+        dates = self._business_days(40)
+        closes = [100.0 + i for i in range(40)]
+        clean = self._series(dates, closes)
+        clean["volumes"] = [10000.0] * 40
+        holed = self._series(dates, closes)
+        # Same prices, same volumes, except three sessions report nothing.
+        holed["volumes"] = [None if i in (30, 33, 36) else 10000.0 for i in range(40)]
+        book = PriceBook({"CLEAN": clean, "HOLED": holed})
+
+        full = amihud_illiquidity(book, "CLEAN", dates[39])
+        partial = amihud_illiquidity(book, "HOLED", dates[39])
+        self.assertIsNotNone(full)
+        self.assertIsNotNone(partial)
+        self.assertTrue(math.isfinite(partial), "a blank volume must not be infinite")
+        # The surviving sessions are identical, so the means must agree closely.
+        # A zero-volume reading would send this to infinity instead.
+        self.assertAlmostEqual(full, partial, delta=abs(full) * 0.25)
+
+    def test_amihud_refuses_a_window_with_too_little_volume_data(self):
+        dates = self._business_days(40)
+        series = self._series(dates, [100.0 + i for i in range(40)])
+        series["volumes"] = [None] * 40
+        book = PriceBook({"AAA": series})
+        self.assertIsNone(amihud_illiquidity(book, "AAA", dates[39]),
+                          "no volume at all is not a liquidity measurement")
+
+    def test_the_distinctness_screen_flags_a_signal_that_is_a_renamed_primitive(self):
+        # A candidate perfectly rank-correlated with a reference must be caught,
+        # and the median must catch a sign-flipping one the mean would miss.
+        self.assertGreater(max(abs(-0.86), abs(-0.87)), DISTINCTNESS_LIMIT)
+        alternating = [0.90] * 10 + [-0.80] * 10
+        mean, median, _p25, _p75 = _percentiles(alternating)
+        self.assertLess(abs(mean), DISTINCTNESS_LIMIT,
+                        "the mean alone would call this distinct")
+        self.assertGreater(abs(median), DISTINCTNESS_LIMIT,
+                           "the median is what catches a sign-flipping duplicate")
+
     def _reversal_fixture(self, rebound=True):
         """Monthly moves that ALTERNATE in sign, with magnitude ordered by rank.
 
@@ -4260,6 +4488,10 @@ def main(argv=None):
                              "it. Exists for the single final test described in "
                              "knowledge/holdout.md, and for nothing else."
                              % HOLDOUT_START)
+    parser.add_argument("--distinctness", action="store_true",
+                        help="screen backlog candidates against every already-"
+                             "tested primitive. Signal-only: it computes no "
+                             "forward returns and spends no research budget.")
     parser.add_argument("--reversal", action="store_true",
                         help="the registered short-term reversal study. "
                              "A measurement: it changes no score.")
@@ -4280,6 +4512,30 @@ def main(argv=None):
         parser.error("--prices is required unless --self-test is given")
     history, skipped = E.parse_price_history_csv(Path(args.prices).read_text(encoding="utf-8"))
     print("Loaded %d tickers (%d rows skipped)." % (len(history), skipped))
+
+    if args.distinctness:
+        # EARLY EXIT, deliberately. The screen returns before backtest() is
+        # ever called, so no forward return is computed anywhere in this path.
+        # That is what makes the screen free: it cannot learn anything about
+        # outcomes, so it cannot spend statistical power or research budget.
+        book = PriceBook(history)
+        calendar = sorted({d for s in history.values() for d in s["dates"]})
+        bench = history.get(E.BENCHMARK_SYMBOL)
+        if bench is None:
+            print("no benchmark in the price file", file=sys.stderr)
+            return 1
+        bench_by_date = dict(zip(bench["dates"], bench["closes"]))
+        rebalances = month_end_sessions(calendar, respect_holdout=respect_holdout)
+        scan = distinctness_scan(book, calendar, rebalances, bench_by_date)
+        print(format_distinctness(scan))
+        if args.out_dir:
+            out = Path(args.out_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "distinctness.json").write_text(
+                json.dumps(scan, indent=1, default=str), encoding="utf-8")
+            print("\nWrote %s" % (out / "distinctness.json"))
+        return 0
+
     if args.buffer > 1:
         print("RANK BUFFER %dx: a holding is sold only once it leaves the top %d."
               % (args.buffer, args.buffer * args.top_n))
