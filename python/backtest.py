@@ -1188,6 +1188,175 @@ def _percentiles(values):
     return sum(clean) / len(clean), at(0.5), at(0.25), at(0.75)
 
 
+# --- Registered 2026-09-16: Amihud illiquidity -------------------------------
+# Fixed by knowledge/preregistration-amihud-illiquidity.md at b20e86c. Spends
+# slot 2 of 3 when this runs, regardless of outcome. AMIHUD_WINDOW and
+# AMIHUD_MIN_OBS live beside the estimator above.
+AMIHUD_FAMILY = 4
+AMIHUD_PRIMARY_HORIZON = 1
+
+
+def amihud_study(book, calendar, rebalances, bench_by_date,
+                 horizons=DECILE_HORIZONS):
+    """The registered Amihud study. One run, one decision.
+
+    The signal is RAW Amihud, with no sign inversion: higher Amihud is more
+    illiquid and ranks higher, so a POSITIVE IC supports the registered
+    hypothesis that illiquidity earns a premium. A negative IC refutes that
+    direction; it does not establish the inverse, which is not registered.
+    """
+    series = {h: [] for h in horizons}
+    buckets = {h: {d: [] for d in range(10)} for h in horizons}
+    half_series = {"first": [], "second": []}
+    decile_path = {0: [], 9: []}
+    factor_values, per_date_holdings = [], {}
+    dates_used = observations = 0
+    midpoint = rebalances[len(rebalances) // 2] if rebalances else None
+
+    for signal_date in rebalances:
+        entry_date = next_session(calendar, signal_date)
+        if entry_date is None:
+            continue
+        row = {}
+        for ticker in book.tickers():
+            tech = technicals_on(book, ticker, signal_date, bench_by_date)
+            if tech is None:
+                continue
+            gate = E.calculate_technical_score(tech, True)
+            total = gate[0] if isinstance(gate, tuple) else gate
+            if total is None:
+                continue
+            value = amihud_registered(book, ticker, signal_date)
+            if value is None:
+                continue
+            row[ticker] = value          # RAW: higher illiquidity ranks higher
+        if len(row) < 10:
+            continue
+        dates_used += 1
+        observations += len(row)
+        # Rank 1 is the MOST ILLIQUID name, which is the registered top decile.
+        per_date_holdings[signal_date] = sorted(row, key=lambda t: (-row[t], t))
+        factor_values.append({"date": signal_date, "names": len(row),
+                              "amihud": dict(row)})
+
+        for horizon in horizons:
+            exit_index = rebalances.index(signal_date) + horizon
+            if exit_index >= len(rebalances):
+                continue
+            exit_date = next_session(calendar, rebalances[exit_index])
+            if exit_date is None:
+                continue
+            forward = {}
+            for ticker in row:
+                entry, _f1 = book.execution_price(ticker, entry_date)
+                exit_price, _f2 = book.execution_price(ticker, exit_date)
+                if entry and exit_price and entry > 0:
+                    forward[ticker] = exit_price / entry - 1.0
+            if len(forward) < 10:
+                continue
+            names = sorted(forward)
+            rho = spearman([(row[t], forward[t]) for t in names])
+            if rho is None:
+                continue
+            series[horizon].append(rho)
+            if horizon == AMIHUD_PRIMARY_HORIZON and midpoint is not None:
+                half_series["first" if signal_date <= midpoint else "second"].append(rho)
+            # Descending by signal: bucket 0 is the MOST ILLIQUID decile.
+            ordered = sorted(((row[t], forward[t]) for t in names),
+                             key=lambda pair: -pair[0])
+            count = len(ordered)
+            per_bucket = {d: [] for d in range(10)}
+            for position, (_value, ret) in enumerate(ordered):
+                bucket = min(9, position * 10 // count)
+                buckets[horizon][bucket].append(ret)
+                per_bucket[bucket].append(ret)
+            if horizon == AMIHUD_PRIMARY_HORIZON:
+                for bucket in (0, 9):
+                    if per_bucket[bucket]:
+                        decile_path[bucket].append(
+                            sum(per_bucket[bucket]) / len(per_bucket[bucket]))
+
+    out = {"dates": dates_used, "observations": observations,
+           "family_size": AMIHUD_FAMILY, "window": AMIHUD_WINDOW,
+           "min_observations": AMIHUD_MIN_OBS,
+           "primary_horizon": AMIHUD_PRIMARY_HORIZON,
+           "horizons": list(horizons), "cells": {},
+           "factor_values": factor_values, "midpoint": midpoint,
+           "size_diagnostic": "NOT MEASURED -- no point-in-time market cap; "
+                              "neither passed nor failed nor controlled",
+           "decile_labels": {"0": "most illiquid", "9": "most liquid"}}
+    for horizon in horizons:
+        stats = _ic_statistics(series[horizon], AMIHUD_FAMILY, hac_lag=horizon - 1)
+        values = series[horizon]
+        stats["positive_ic_share"] = (
+            sum(1 for v in values if v > 0) / len(values)) if values else float("nan")
+        rows = buckets[horizon]
+        means = [(sum(rows[d]) / len(rows[d])) if rows[d] else float("nan")
+                 for d in range(10)]
+        stats["deciles"] = means
+        stats["most_illiquid_mean"] = means[0]
+        stats["most_liquid_mean"] = means[9]
+        stats["illiquid_minus_liquid"] = means[0] - means[9]
+        stats["monotonic_falling_steps"] = sum(
+            1 for i in range(9) if means[i + 1] < means[i])
+        out["cells"][horizon] = stats
+
+    out["halves"] = {half: {"periods": len(v),
+                            "mean_ic": (sum(v) / len(v)) if v else float("nan")}
+                     for half, v in half_series.items()}
+    out["portfolio"] = {("most_illiquid_decile" if b == 0 else "most_liquid_decile"):
+                        _path_statistics(path) for b, path in decile_path.items()}
+
+    turnovers = []
+    ordered_dates = sorted(per_date_holdings)
+    for index in range(1, len(ordered_dates)):
+        before = per_date_holdings[ordered_dates[index - 1]]
+        after = per_date_holdings[ordered_dates[index]]
+        size = max(1, len(after) // 10)
+        turnovers.append(1.0 - len(set(before[:size]) & set(after[:size])) / float(size))
+    turnover = (sum(turnovers) / len(turnovers)) if turnovers else float("nan")
+    out["top_decile_turnover"] = turnover
+    out["verdict"] = _amihud_verdict(out, turnover)
+    return out
+
+
+def _amihud_verdict(study, turnover):
+    """The registered rule, plus the registered third verdict.
+
+    PREDICTIVE BUT NOT IMPLEMENTABLE is a distinct outcome, not a softened
+    pass: every predictive condition holds and the spread does not survive the
+    cost model. The registration says it must be reported as such.
+    """
+    cell = study["cells"][AMIHUD_PRIMARY_HORIZON]
+    positive = cell["mean_ic"] > 0
+    detected = abs(cell["mean_ic"]) >= cell["detectable_ic_80pct"]
+    significant = cell["hac_p_bonferroni"] < 0.05
+    spread = cell["illiquid_minus_liquid"]
+    spread_positive = spread > 0
+    halves = [h for h in study["halves"].values() if h["periods"] > 0]
+    both_halves = len(halves) == 2 and all(h["mean_ic"] > 0 for h in halves)
+    predictive = bool(positive and detected and significant and both_halves
+                      and spread_positive)
+    # Cost on the registered machinery: both legs, at the observed turnover of
+    # the decile the spread is measured on.
+    cost = (2.0 * DEFAULT_COST_BPS_PER_SIDE / 10000.0) * (turnover if turnover == turnover else 1.0)
+    net_spread = spread - cost
+    implementable = bool(predictive and net_spread > 0)
+    branch = ("PASS" if implementable else
+              "PREDICTIVE BUT NOT IMPLEMENTABLE" if predictive else "FAIL")
+    return {"branch": branch, "passed": implementable,
+            "predictive": predictive, "positive": positive,
+            "detected": detected, "significant": significant,
+            "both_halves_positive": both_halves,
+            "spread_positive": spread_positive,
+            "mean_ic": cell["mean_ic"], "floor": cell["detectable_ic_80pct"],
+            "spread": spread, "round_trip_cost": cost, "net_spread": net_spread,
+            "cost_note": "A factor that deliberately selects less-liquid names "
+                         "is where a flat 15 bps most likely understates "
+                         "reality. Registered in advance; disclosed even on a "
+                         "pass."}
+
+
 # --- Distinctness screen (signal-only; touches NO forward returns) -----------
 # knowledge/research-policy.md: a candidate whose per-date correlation with any
 # already-tested primitive exceeds 0.70 in ABSOLUTE MEAN OR ABSOLUTE MEDIAN is
@@ -3106,7 +3275,7 @@ def _after_tax_block(book, periods, cost_bps_per_side, stcg_rate, capital):
 def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PER_SIDE,
              variants_tried=1, variants_note="", rsi_flip=False, respect_holdout=True,
              continuous=False, neutral=False, no_skip_month=False, buffer_multiple=1,
-             stcg_rate=STCG_RATE, capital=None, portfolio_block=None, invert=False, components=False, volatility=False, reversal=False):
+             stcg_rate=STCG_RATE, capital=None, portfolio_block=None, invert=False, components=False, volatility=False, reversal=False, amihud=False):
     book = PriceBook(history)
     calendar = market_calendar(history)
     rebalances = month_end_sessions(calendar, respect_holdout=respect_holdout)
@@ -3225,6 +3394,8 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
                        if volatility else None),
         "reversal": (reversal_study(book, calendar, rebalances, bench_by_date)
                      if reversal else None),
+        "amihud": (amihud_study(book, calendar, rebalances, bench_by_date)
+                   if amihud else None),
         "quality": {
             "total_fills": total_fills,
             "fallbacks": sum(p["open_fallbacks"] for p in periods),
@@ -4153,6 +4324,142 @@ class BacktestTests(unittest.TestCase):
         # And the default is the protective one.
         self.assertEqual(month_end_sessions(calendar), reserved)
 
+    def _amihud_fixture(self, premium=True):
+        """Illiquid names built to earn more (or less), volume the only driver.
+
+        Prices are IDENTICAL in shape across tickers within a month so the
+        Amihud numerator does not vary with rank; only traded value does. That
+        isolates the denominator, which is the quantity under test.
+        """
+        dates = self._business_days(600)
+        ends = sorted(set(month_end_sessions(dates, respect_holdout=False)))
+        signal_dates = [d for d in ends if dates.index(d) >= 320]
+        marks = sorted(dates.index(d) for d in ends)
+        history, tickers = {}, ["T%02d" % i for i in range(20)]
+        for rank, ticker in enumerate(tickers):
+            # rank 0 trades the LEAST -> highest Amihud -> most illiquid.
+            volume = 10000.0 * (rank + 1)
+            drift = (0.0016 - 0.00014 * rank) if premium else (0.0002 + 0.00014 * rank)
+            closes, level = [], 100.0
+            for index in range(len(dates)):
+                closes.append(level)
+                block = sum(1 for m in marks if m <= index)
+                # A fixed wobble so |return| is non-zero and equal across ranks.
+                wobble = 0.004 * (1.0 if index % 2 == 0 else -1.0)
+                level *= (1.0 + drift + wobble)
+            series = self._series(dates, closes)
+            series["volumes"] = [volume] * len(dates)
+            series["closesUnadjusted"] = list(closes)
+            history[ticker] = series
+        bench = self._series(dates, [1000.0] * len(dates))
+        bench["closesUnadjusted"] = list(bench["closes"])
+        history[E.BENCHMARK_SYMBOL] = bench
+        return dates, history, signal_dates
+
+    def test_illiquid_names_that_earn_more_produce_a_POSITIVE_amihud_ic(self):
+        dates, history, signal_dates = self._amihud_fixture(premium=True)
+        book = PriceBook(history)
+        bench_by_date = dict(zip(dates, [1000.0] * len(dates)))
+        rebalances = signal_dates[:-2]
+        self.assertGreater(len(rebalances), 3)
+        study = amihud_study(book, dates, rebalances, bench_by_date, horizons=(1,))
+        cell = study["cells"][1]
+        self.assertGreater(cell["mean_ic"], 0.5,
+                           "an illiquidity premium must read POSITIVE on the "
+                           "raw, un-inverted signal")
+        self.assertGreater(cell["illiquid_minus_liquid"], 0.0)
+        self.assertEqual(study["window"], 63)
+        self.assertEqual(study["min_observations"], 45)
+        self.assertEqual(study["family_size"], 4)
+        self.assertEqual(study["decile_labels"]["0"], "most illiquid")
+
+    def test_reversing_the_amihud_sign_reverses_the_known_truth_ic(self):
+        dates, history, signal_dates = self._amihud_fixture(premium=True)
+        book = PriceBook(history)
+        bench_by_date = dict(zip(dates, [1000.0] * len(dates)))
+        rebalances = signal_dates[:-2]
+        registered = amihud_study(book, dates, rebalances, bench_by_date,
+                                  horizons=(1,))["cells"][1]["mean_ic"]
+        original = globals()["amihud_registered"]
+        try:
+            globals()["amihud_registered"] = (
+                lambda b, t, d: (lambda v: None if v is None else -v)(original(b, t, d)))
+            flipped = amihud_study(book, dates, rebalances, bench_by_date,
+                                   horizons=(1,))["cells"][1]["mean_ic"]
+        finally:
+            globals()["amihud_registered"] = original
+        self.assertLess(flipped, 0.0)
+        self.assertAlmostEqual(registered, -flipped, places=6)
+
+    def test_amihud_formation_cannot_consume_the_first_forward_session(self):
+        """The look-ahead boundary, for the registered 63-session window."""
+        dates = self._business_days(200)
+        signal_index = 150
+        closes = [100.0] * len(dates)
+        for index in range(signal_index + 1, len(dates)):
+            closes[index] = 500.0        # a jump strictly AFTER the signal
+        series = self._series(dates, closes)
+        series["volumes"] = [10000.0] * len(dates)
+        series["closesUnadjusted"] = list(closes)
+        book = PriceBook({"AAA": series})
+        # Flat through the window, so every |return| inside it is zero.
+        self.assertEqual(amihud_registered(book, "AAA", dates[signal_index]), 0.0,
+                         "a session after the signal must not enter formation")
+
+    def test_amihud_ignores_the_dividend_adjustment_in_its_denominator(self):
+        """Two stocks, same trading, different dividend histories.
+
+        The adjusted close differs by a factor of three between them; the
+        traded-value close does not. Amihud must come back IDENTICAL, because
+        the only thing that differed is a dividend adjustment that has no
+        business in a rupee denominator.
+        """
+        dates = self._business_days(120)
+        raw = [100.0 + (2.0 if i % 2 else 0.0) for i in range(len(dates))]
+        plain = self._series(dates, list(raw))
+        plain["volumes"] = [10000.0] * len(dates)
+        plain["closesUnadjusted"] = list(raw)
+        # Same stock, but its adjusted closes are deflated 3x by dividends.
+        payer = self._series(dates, [v / 3.0 for v in raw])
+        payer["volumes"] = [10000.0] * len(dates)
+        payer["closesUnadjusted"] = list(raw)
+        book = PriceBook({"PLAIN": plain, "PAYER": payer})
+        a = amihud_registered(book, "PLAIN", dates[-1])
+        b = amihud_registered(book, "PAYER", dates[-1])
+        self.assertIsNotNone(a)
+        # Returns are scale-invariant, so the numerators match too; the point
+        # is that the DENOMINATOR used the traded-value close for both.
+        self.assertAlmostEqual(a, b, places=15, msg=(
+            "a dividend adjustment must not reach the traded-value denominator"))
+
+    def test_amihud_traded_value_is_unmoved_by_a_split(self):
+        """Price restated and volume restated together leave rupees unchanged."""
+        dates = self._business_days(140)
+        split_at = 70
+        closes, volumes = [], []
+        for index in range(len(dates)):
+            if index < split_at:
+                closes.append(500.0 + (2.0 if index % 2 else 0.0))
+                volumes.append(2000.0)
+            else:
+                closes.append(100.0 + (0.4 if index % 2 else 0.0))
+                volumes.append(10000.0)
+        # Restated the way the provider does it: both sides divided by 5.
+        restated = [c / 5.0 if i < split_at else c for i, c in enumerate(closes)]
+        restated_volume = [v * 5.0 if i < split_at else v
+                           for i, v in enumerate(volumes)]
+        series = self._series(dates, list(restated))
+        series["volumes"] = restated_volume
+        series["closesUnadjusted"] = list(restated)
+        book = PriceBook({"AAA": series})
+        before = amihud_registered(book, "AAA", dates[split_at - 1])
+        after = amihud_registered(book, "AAA", dates[-1])
+        self.assertIsNotNone(before)
+        self.assertIsNotNone(after)
+        # Traded value is 100,000 on both sides of the split by construction,
+        # so the two Amihud readings must agree closely.
+        self.assertAlmostEqual(before, after, delta=abs(after) * 0.05)
+
     def test_amihud_treats_absent_volume_as_MISSING_not_as_zero_liquidity(self):
         """The contract that matters more than the formula.
 
@@ -4200,6 +4507,21 @@ class BacktestTests(unittest.TestCase):
         book = PriceBook({"AAA": series})
         self.assertIsNone(amihud_illiquidity(book, "AAA", dates[39]),
                           "a v1 panel cannot support a traded value")
+
+        # THE CASE THAT ACTUALLY TESTS THE FALLBACK. The check above is
+        # satisfied by the length guard -- an absent key gives an empty list
+        # and the loop stops immediately -- so it stays green even if the code
+        # silently substitutes the adjusted close. The dangerous shape is a
+        # column that is PRESENT and null, which a partially populated panel
+        # would produce, and only this exercises the branch.
+        present_but_null = self._series(dates, [100.0 + i for i in range(40)])
+        present_but_null["volumes"] = [10000.0] * 40
+        present_but_null["closesUnadjusted"] = [None] * 40
+        book = PriceBook({"AAA": present_but_null})
+        self.assertIsNone(
+            amihud_illiquidity(book, "AAA", dates[39]),
+            "a null traded-value close must be refused, never replaced by the "
+            "adjusted close -- that fallback restores the dividend deflation")
 
     def test_the_distinctness_screen_flags_a_signal_that_is_a_renamed_primitive(self):
         # A candidate perfectly rank-correlated with a reference must be caught,
@@ -4534,6 +4856,9 @@ def main(argv=None):
                              "it. Exists for the single final test described in "
                              "knowledge/holdout.md, and for nothing else."
                              % HOLDOUT_START)
+    parser.add_argument("--amihud", action="store_true",
+                        help="the registered Amihud illiquidity study. "
+                             "Spends slot 2 of 3 when it runs.")
     parser.add_argument("--distinctness", action="store_true",
                         help="screen backlog candidates against every already-"
                              "tested primitive. Signal-only: it computes no "
@@ -4620,7 +4945,8 @@ def main(argv=None):
                        buffer_multiple=args.buffer, stcg_rate=args.tax_stcg,
                        capital=args.capital, portfolio_block=args.portfolio_block,
                        invert=args.invert, components=args.components,
-                       volatility=args.volatility, reversal=args.reversal)
+                       volatility=args.volatility, reversal=args.reversal,
+                       amihud=args.amihud)
     report = format_report(results)
     print(report)
     if args.out_dir:
