@@ -1188,6 +1188,302 @@ def _percentiles(values):
     return sum(clean) / len(clean), at(0.5), at(0.25), at(0.75)
 
 
+# --- Registered 2026-09-16: idiosyncratic volatility -------------------------
+# Every constant here is fixed by
+# knowledge/preregistration-idiosyncratic-volatility.md, committed at
+# bfb9fe8 before any result existed. Changing one after a result is a
+# specification search, and the FAIL branch names these specific moves.
+VOLATILITY_WINDOW = 126        # trading sessions, the ONLY window
+VOLATILITY_MIN_OBS = 100       # valid session returns required inside it
+VOLATILITY_FAMILY = 8          # 2 estimators x 4 horizons; see prereg section 6
+VOLATILITY_MECHANISM_DELTA = 0.02   # "materially cleaner", fixed in advance
+VOLATILITY_MECHANISM_HORIZONS = 3   # ... at this many of the four
+
+
+def _returns_upto(book, ticker, date, window):
+    """Close-to-close returns over the last `window` sessions ending at `date`.
+
+    Returns [(session_date, return)], newest last. Only genuine sessions exist
+    in the panel since the 2026-09-16 calendar fix, which matters here more
+    than anywhere else: a forward-filled holiday is an artificial 0% return,
+    and an artificial 0% return suppresses a standard deviation. This study
+    measures standard deviations.
+    """
+    end = book.index_upto(ticker, date)
+    if end is None:
+        return []
+    series = book.history[ticker]
+    dates, closes = series["dates"], series["closes"]
+    start = max(1, end - window + 1)
+    out = []
+    for index in range(start, end + 1):
+        previous, current = closes[index - 1], closes[index]
+        if previous is None or current is None or previous <= 0 or current <= 0:
+            continue
+        out.append((dates[index], current / previous - 1.0))
+    return out
+
+
+def _ols_beta_and_residual_sd(pairs):
+    """(beta, residual sd, total sd) from [(stock return, benchmark return)].
+
+    Plain OLS with an intercept. The residual standard deviation is the
+    registered estimator of idiosyncratic volatility; the slope is beta, which
+    the same regression yields free and which section 8 reports as a
+    diagnostic. Total sd is the raw standard deviation of the stock's own
+    returns over the same window -- the mechanism check of section 7, computed
+    on exactly the same observations so the comparison is like for like.
+    """
+    n = len(pairs)
+    if n < VOLATILITY_MIN_OBS:
+        return None, None, None
+    stock = [a for a, _b in pairs]
+    bench = [b for _a, b in pairs]
+    mean_stock = sum(stock) / n
+    mean_bench = sum(bench) / n
+    covariance = sum((a - mean_stock) * (b - mean_bench) for a, b in pairs)
+    variance = sum((b - mean_bench) ** 2 for b in bench)
+    total_sd = math.sqrt(sum((a - mean_stock) ** 2 for a in stock) / (n - 1))
+    if variance <= 0:
+        # A benchmark that never moved carries no information to remove. The
+        # residual would equal the raw return and the two estimators would be
+        # identical by construction, which would corrupt the mechanism check.
+        return None, None, total_sd
+    beta = covariance / variance
+    intercept = mean_stock - beta * mean_bench
+    residuals = [a - (intercept + beta * b) for a, b in pairs]
+    # n - 2: an intercept and a slope were estimated from these points.
+    residual_sd = math.sqrt(sum(r * r for r in residuals) / (n - 2))
+    return beta, residual_sd, total_sd
+
+
+def _median(values):
+    ordered = sorted(values)
+    count = len(ordered)
+    if not count:
+        return None
+    middle = count // 2
+    if count % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+
+def _traded_value_median(book, ticker, date, window):
+    """Median daily traded value over the window: the liquidity diagnostic.
+
+    Blank volume is skipped rather than read as zero. That distinction was
+    created by the same calendar fix -- a session whose price moved with no
+    reported volume now carries a blank, and treating it as zero would drag a
+    median toward a number nobody traded at.
+    """
+    end = book.index_upto(ticker, date)
+    if end is None:
+        return None
+    series = book.history[ticker]
+    closes, volumes = series["closes"], series.get("volumes") or []
+    values = []
+    for index in range(max(0, end - window + 1), end + 1):
+        if index >= len(volumes):
+            break
+        volume, close = volumes[index], closes[index]
+        if volume is None or close is None or volume <= 0 or close <= 0:
+            continue
+        values.append(volume * close)
+    return _median(values)
+
+
+def volatility_study(book, calendar, rebalances, bench_by_date,
+                     horizons=DECILE_HORIZONS):
+    """The registered low-volatility study. Runs once, decides by the rule.
+
+    Signal is NEGATIVE volatility, so a POSITIVE IC supports the hypothesis
+    "lower volatility ranks higher". That convention is in the registration
+    because the previous study's single most consequential finding was a sign.
+
+    Nothing here is tuned. The window, the minimum observations, the family
+    size and the mechanism threshold are constants above, fixed in a commit
+    that predates every number this function produces.
+    """
+    estimators = ("idio", "total")
+    series = {e: {h: [] for h in horizons} for e in estimators}
+    buckets = {e: {h: {d: [] for d in range(10)} for h in horizons}
+               for e in estimators}
+    diagnostics = {e: {"beta": [], "liquidity": []} for e in estimators}
+    factor_values = []          # raw factor values, per rebalance date
+    dates_used = 0
+    per_date_holdings = {}
+
+    for signal_date in rebalances:
+        entry_date = next_session(calendar, signal_date)
+        if entry_date is None:
+            continue
+        bench_returns = {}
+        bench_series = _returns_upto(book, E.BENCHMARK_SYMBOL, signal_date,
+                                     VOLATILITY_WINDOW)
+        for session, value in bench_series:
+            bench_returns[session] = value
+        if len(bench_returns) < VOLATILITY_MIN_OBS:
+            continue
+
+        # Eligibility is the engine's own refusal, exactly as rank_on applies
+        # it -- the registered universe rule, not a new screen.
+        eligible = [ticker for ticker, _score in rank_on(book, signal_date,
+                                                         bench_by_date)]
+        row = {}
+        for ticker in eligible:
+            pairs = [(value, bench_returns[session])
+                     for session, value in _returns_upto(
+                         book, ticker, signal_date, VOLATILITY_WINDOW)
+                     if session in bench_returns]
+            beta, residual_sd, total_sd = _ols_beta_and_residual_sd(pairs)
+            if residual_sd is None or total_sd is None:
+                continue
+            row[ticker] = {
+                "idio": -residual_sd,      # NEGATIVE: high rank = low vol
+                "total": -total_sd,
+                "beta": beta,
+                "liquidity": _traded_value_median(book, ticker, signal_date,
+                                                  VOLATILITY_WINDOW),
+                "idio_raw": residual_sd, "total_raw": total_sd,
+                "observations": len(pairs),
+            }
+        if len(row) < 10:
+            continue
+        dates_used += 1
+        per_date_holdings[signal_date] = sorted(
+            row, key=lambda t: (-row[t]["idio"], t))
+        factor_values.append({
+            "date": signal_date, "names": len(row),
+            "idio": {t: row[t]["idio_raw"] for t in row},
+            "total": {t: row[t]["total_raw"] for t in row},
+        })
+
+        for estimator in estimators:
+            for key in ("beta", "liquidity"):
+                paired = [(row[t][estimator], row[t][key]) for t in row
+                          if row[t][key] is not None]
+                if len(paired) > 2:
+                    value = spearman(paired)
+                    if value is not None:
+                        diagnostics[estimator][key].append(value)
+
+        for horizon in horizons:
+            exit_index = rebalances.index(signal_date) + horizon
+            if exit_index >= len(rebalances):
+                continue
+            exit_date = next_session(calendar, rebalances[exit_index])
+            if exit_date is None:
+                continue
+            forward = {}
+            for ticker in row:
+                entry, _f1 = book.execution_price(ticker, entry_date)
+                exit_price, _f2 = book.execution_price(ticker, exit_date)
+                if entry and exit_price and entry > 0:
+                    forward[ticker] = exit_price / entry - 1.0
+            if len(forward) < 10:
+                continue
+            for estimator in estimators:
+                names = sorted(forward)
+                signal_values = [row[t][estimator] for t in names]
+                returns = [forward[t] for t in names]
+                rho = spearman(list(zip(signal_values, returns)))
+                if rho is None:
+                    continue
+                series[estimator][horizon].append(rho)
+                ordered = sorted(zip(signal_values, returns), key=lambda p: -p[0])
+                count = len(ordered)
+                for position, (_value, ret) in enumerate(ordered):
+                    buckets[estimator][horizon][
+                        min(9, position * 10 // count)].append(ret)
+
+    out = {"dates": dates_used, "family_size": VOLATILITY_FAMILY,
+           "window": VOLATILITY_WINDOW, "min_observations": VOLATILITY_MIN_OBS,
+           "horizons": list(horizons), "estimators": {}, "diagnostics": {},
+           "mechanism": {}, "factor_values": factor_values,
+           "size_diagnostic": "UNAVAILABLE -- no point-in-time market cap; "
+                              "see the 2026-09-16 amendment"}
+
+    for estimator in estimators:
+        out["estimators"][estimator] = {}
+        for horizon in horizons:
+            stats = _ic_statistics(series[estimator][horizon], VOLATILITY_FAMILY,
+                                   hac_lag=horizon - 1)
+            values = series[estimator][horizon]
+            stats["positive_ic_share"] = (
+                sum(1 for v in values if v > 0) / len(values)) if values else float("nan")
+            rows = buckets[estimator][horizon]
+            means = [(sum(rows[d]) / len(rows[d])) if rows[d] else float("nan")
+                     for d in range(10)]
+            stats["deciles"] = means
+            stats["decile_top_mean"] = means[0]
+            stats["decile_bottom_mean"] = means[9]
+            stats["decile_spread"] = means[0] - means[9]
+            stats["monotonic_falling_steps"] = sum(
+                1 for i in range(9) if means[i + 1] < means[i])
+            out["estimators"][estimator][horizon] = stats
+        out["diagnostics"][estimator] = {
+            key: _percentiles(values)
+            for key, values in diagnostics[estimator].items()}
+
+    # The mechanism table of section 7. Diagnostic only: it cannot produce a
+    # pass, and the decision rule below never reads it.
+    cleaner = 0
+    for horizon in horizons:
+        idio = out["estimators"]["idio"][horizon]["mean_ic"]
+        total = out["estimators"]["total"][horizon]["mean_ic"]
+        difference = idio - total
+        if difference >= VOLATILITY_MECHANISM_DELTA:
+            cleaner += 1
+        out["mechanism"][horizon] = {"idio_ic": idio, "total_ic": total,
+                                     "difference": difference}
+    out["mechanism_verdict"] = (
+        "idiosyncratic materially cleaner"
+        if cleaner >= VOLATILITY_MECHANISM_HORIZONS else "indistinguishable")
+
+    # Turnover of the registered ranking: share of the top decile replaced.
+    turnovers = []
+    ordered_dates = sorted(per_date_holdings)
+    for index in range(1, len(ordered_dates)):
+        before = per_date_holdings[ordered_dates[index - 1]]
+        after = per_date_holdings[ordered_dates[index]]
+        size = max(1, len(after) // 10)
+        previous_top, current_top = set(before[:size]), set(after[:size])
+        turnovers.append(1.0 - len(previous_top & current_top) / float(size))
+    out["top_decile_turnover"] = (sum(turnovers) / len(turnovers)) if turnovers else float("nan")
+
+    out["verdict"] = _volatility_verdict(out, horizons)
+    return out
+
+
+def _volatility_verdict(study, horizons):
+    """Apply the registered rule. Conjunctive, and it reads only idio-vol."""
+    cost_floor = 2.0 * DEFAULT_COST_BPS_PER_SIDE / 10000.0   # both legs
+    detail, detected_and_significant, positive = {}, 0, 0
+    for horizon in horizons:
+        cell = study["estimators"]["idio"][horizon]
+        detected = abs(cell["mean_ic"]) >= cell["detectable_ic_80pct"]
+        significant = cell["hac_p_bonferroni"] < 0.05
+        separated = cell["decile_spread"] > cost_floor
+        if detected and significant:
+            detected_and_significant += 1
+        if cell["mean_ic"] > 0:
+            positive += 1
+        detail[horizon] = {"detected": detected, "significant": significant,
+                           "separated": separated,
+                           "mean_ic": cell["mean_ic"],
+                           "floor": cell["detectable_ic_80pct"],
+                           "spread": cell["decile_spread"]}
+    consistent = positive >= 3 and detected_and_significant >= 2
+    # A significantly NEGATIVE IC refutes rather than passing inverted.
+    any_separated = any(d["separated"] for d in detail.values())
+    passed = consistent and any_separated
+    return {"passed": passed, "cost_floor": cost_floor,
+            "horizons_positive": positive,
+            "horizons_detected_and_significant": detected_and_significant,
+            "per_horizon": detail,
+            "branch": ("PASS" if passed else "FAIL")}
+
+
 def component_study(book, calendar, rebalances, bench_by_date, horizons=DECILE_HORIZONS):
     """Every primitive measured on its own, plus correlations and leave-one-out.
 
@@ -2354,7 +2650,7 @@ def _after_tax_block(book, periods, cost_bps_per_side, stcg_rate, capital):
 def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PER_SIDE,
              variants_tried=1, variants_note="", rsi_flip=False, respect_holdout=True,
              continuous=False, neutral=False, no_skip_month=False, buffer_multiple=1,
-             stcg_rate=STCG_RATE, capital=None, portfolio_block=None, invert=False, components=False):
+             stcg_rate=STCG_RATE, capital=None, portfolio_block=None, invert=False, components=False, volatility=False):
     book = PriceBook(history)
     calendar = market_calendar(history)
     rebalances = month_end_sessions(calendar, respect_holdout=respect_holdout)
@@ -2469,6 +2765,8 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
         # date twelve more ways and roughly doubles the run.
         "components": (component_study(book, calendar, rebalances, bench_by_date)
                        if components else None),
+        "volatility": (volatility_study(book, calendar, rebalances, bench_by_date)
+                       if volatility else None),
         "quality": {
             "total_fills": total_fills,
             "fallbacks": sum(p["open_fallbacks"] for p in periods),
@@ -3397,6 +3695,102 @@ class BacktestTests(unittest.TestCase):
         # And the default is the protective one.
         self.assertEqual(month_end_sessions(calendar), reserved)
 
+    def test_the_ols_estimator_recovers_a_beta_and_a_residual_it_was_given(self):
+        # Build returns with a KNOWN beta and a known residual scale, then
+        # require the estimator to return them. An idiosyncratic-volatility
+        # study whose estimator is wrong would still produce a tidy table.
+        rng = random.Random(11)
+        beta_true, resid_scale = 1.4, 0.02
+        pairs = []
+        for _ in range(VOLATILITY_WINDOW):
+            bench = rng.gauss(0.0, 0.01)
+            pairs.append((0.0003 + beta_true * bench + rng.gauss(0.0, resid_scale),
+                          bench))
+        beta, residual_sd, total_sd = _ols_beta_and_residual_sd(pairs)
+        self.assertAlmostEqual(beta, beta_true, delta=0.25)
+        self.assertAlmostEqual(residual_sd, resid_scale, delta=0.005)
+        # Total volatility must EXCEED idiosyncratic here: the stock carries
+        # the benchmark's variance on top of its own. If these came back equal
+        # the mechanism check of section 7 would be meaningless.
+        self.assertGreater(total_sd, residual_sd)
+
+    def test_the_estimator_refuses_too_few_observations(self):
+        # The registered minimum is 100 valid sessions inside the 126-session
+        # window. Ninety-nine must return nothing rather than a confident
+        # standard deviation off a short sample.
+        rng = random.Random(3)
+        short = [(rng.gauss(0, 0.02), rng.gauss(0, 0.01))
+                 for _ in range(VOLATILITY_MIN_OBS - 1)]
+        self.assertEqual(_ols_beta_and_residual_sd(short), (None, None, None))
+        enough = [(rng.gauss(0, 0.02), rng.gauss(0, 0.01))
+                  for _ in range(VOLATILITY_MIN_OBS)]
+        self.assertIsNotNone(_ols_beta_and_residual_sd(enough)[1])
+
+    def test_low_volatility_ranks_first_so_a_true_effect_reads_POSITIVE(self):
+        """The sign convention, which the whole verdict depends on.
+
+        The signal is NEGATIVE volatility, so if quiet stocks really do earn
+        more, the IC must come back POSITIVE. A pipeline fed the raw quantity
+        would produce the same magnitudes with the opposite sign and be read
+        backwards -- which is exactly the error the component study nearly made
+        with volumeRatio20D.
+        """
+        # DETERMINISTIC by construction rather than statistical. An earlier
+        # version drew random noise, and the noise it gave the high-volatility
+        # names swamped the very drift that was supposed to separate them -- so
+        # the fixture failed to contain the effect it claimed to test. Here the
+        # "volatility" is a sine wave whose period divides the rebalance
+        # interval, so it contributes a known amount to the standard deviation
+        # over the formation window and cancels almost exactly over a forward
+        # month. Volatility and forward return are then separately controlled.
+        dates = self._business_days(600)
+        history, tickers = {}, ["T%02d" % i for i in range(20)]
+        # A benchmark that moves, so residualising has something to remove and
+        # idiosyncratic volatility is not merely total volatility renamed.
+        bench_returns = [0.0004 + 0.006 * math.sin(2.0 * math.pi * i / 14.0)
+                         for i in range(len(dates))]
+        bench, price = [], 1000.0
+        for value in bench_returns:
+            bench.append(price)
+            price *= (1.0 + value)
+        for rank, ticker in enumerate(tickers):
+            amplitude = 0.002 + 0.0015 * rank   # rises with rank
+            drift = 0.0015 - 0.00012 * rank     # falls with rank
+            closes, level = [], 100.0
+            for index in range(len(dates)):
+                closes.append(level)
+                wobble = amplitude * math.sin(2.0 * math.pi * index / 7.0)
+                level *= (1.0 + drift + 1.0 * bench_returns[index] + wobble)
+            history[ticker] = self._series(dates, closes)
+        history[E.BENCHMARK_SYMBOL] = self._series(dates, bench)
+
+        book = PriceBook(history)
+        bench_by_date = dict(zip(dates, bench))
+        ends = sorted(set(month_end_sessions(dates, respect_holdout=False)))
+        rebalances = [d for d in ends if dates.index(d) >= 260][:-2]
+        self.assertGreater(len(rebalances), 3)
+
+        study = volatility_study(book, dates, rebalances, bench_by_date,
+                                 horizons=(1,))
+        cell = study["estimators"]["idio"][1]
+        self.assertGreater(cell["mean_ic"], 0.5,
+                           "a built-in low-vol effect must read POSITIVE")
+        self.assertGreater(cell["decile_spread"], 0.0,
+                           "top decile is the LOW-volatility end")
+        self.assertEqual(study["family_size"], VOLATILITY_FAMILY)
+        self.assertEqual(study["window"], 126)
+        self.assertEqual(study["size_diagnostic"][:11], "UNAVAILABLE")
+
+    def test_the_registered_rule_refuses_to_pass_on_a_negative_ic(self):
+        # "Sign is not free": a significantly NEGATIVE IC refutes the
+        # hypothesis rather than passing it inverted.
+        cell = {"mean_ic": -0.09, "detectable_ic_80pct": 0.04,
+                "hac_p_bonferroni": 0.001, "decile_spread": -0.05}
+        study = {"estimators": {"idio": {h: dict(cell) for h in (1, 3, 6, 12)}}}
+        verdict = _volatility_verdict(study, (1, 3, 6, 12))
+        self.assertFalse(verdict["passed"])
+        self.assertEqual(verdict["branch"], "FAIL")
+
     def test_component_study_recovers_a_primitive_it_was_given(self):
         """A known-truth check on the sign convention, which everything rests on.
 
@@ -3518,6 +3912,9 @@ def main(argv=None):
                              "it. Exists for the single final test described in "
                              "knowledge/holdout.md, and for nothing else."
                              % HOLDOUT_START)
+    parser.add_argument("--volatility", action="store_true",
+                        help="the registered idiosyncratic-volatility study. "
+                             "A measurement: it changes no score.")
     parser.add_argument("--components", action="store_true",
                         help="measure every primitive on its own, plus cross-correlations "
                              "and leave-one-block-out. A diagnostic: changes no score.")
@@ -3566,7 +3963,8 @@ def main(argv=None):
                        neutral=args.neutral, no_skip_month=args.no_skip_month,
                        buffer_multiple=args.buffer, stcg_rate=args.tax_stcg,
                        capital=args.capital, portfolio_block=args.portfolio_block,
-                       invert=args.invert, components=args.components)
+                       invert=args.invert, components=args.components,
+                       volatility=args.volatility)
     report = format_report(results)
     print(report)
     if args.out_dir:
