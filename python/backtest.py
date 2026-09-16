@@ -1188,6 +1188,214 @@ def _percentiles(values):
     return sum(clean) / len(clean), at(0.5), at(0.25), at(0.75)
 
 
+# --- Registered 2026-09-16: short-term reversal ------------------------------
+# Fixed by knowledge/preregistration-short-term-reversal.md, committed at
+# 356a1ac before any result existed. Spends 1 of the 3 families the research
+# policy permits. The FAIL branch names 21 -> 10/63, a skip week, momentum
+# residualisation, screens and neutralisation as forbidden repairs.
+REVERSAL_WINDOW = 21          # genuine trading sessions, the ONLY window
+REVERSAL_MIN_SESSIONS = 21    # no short-sample formation
+REVERSAL_FAMILY = 4           # one estimator x four horizons
+REVERSAL_PRIMARY_HORIZON = 1  # the only horizon that can produce a pass
+REVERSAL_SKIP = 0             # registered as none; present so it cannot drift
+
+
+def formation_return(book, ticker, date, window=REVERSAL_WINDOW,
+                     skip=REVERSAL_SKIP):
+    """Cumulative simple return over the `window` sessions ENDING AT `date`.
+
+    THE BOUNDARY IS THE WHOLE POINT. The formation window ends at the signal
+    date's close, and the forward window begins at the NEXT session's open.
+    They must not share a single observation. The dangerous bug in a reversal
+    study is not a wrong window length -- it is a window that reaches one day
+    into the future, because a signal built partly from the first day of its
+    own forward return will look strongly predictive and be worthless.
+
+    `index_upto` returns the last session ON OR BEFORE `date`, never after, and
+    the return spans closes[end - window] to closes[end]. Nothing past `end` is
+    read. `_reversal_boundary` in the tests pins this.
+
+    Returns None when the window is not fully covered by valid closes -- a
+    partial window is a different, shorter signal, and the registration fixed
+    the length.
+    """
+    end = book.index_upto(ticker, date)
+    if end is None:
+        return None
+    end -= skip
+    start = end - window
+    if start < 0:
+        return None
+    closes = book.history[ticker]["closes"]
+    first, last = closes[start], closes[end]
+    if first is None or last is None or first <= 0 or last <= 0:
+        return None
+    # Every close inside the window must exist: a gap means the window did not
+    # cover the sessions it claims to.
+    for index in range(start, end + 1):
+        if closes[index] is None or closes[index] <= 0:
+            return None
+    return last / first - 1.0
+
+
+def reversal_study(book, calendar, rebalances, bench_by_date,
+                   horizons=DECILE_HORIZONS):
+    """The registered short-term reversal study. One run, one decision.
+
+    Signal is NEGATIVE the 21-session cumulative return, so a more negative
+    prior return ranks higher and a POSITIVE IC supports reversal. A negative
+    IC here does not mean "reversal inverted" -- it means momentum continued at
+    this horizon, which is a different hypothesis and is not registered.
+    """
+    series = {h: [] for h in horizons}
+    buckets = {h: {d: [] for d in range(10)} for h in horizons}
+    half_series = {"first": [], "second": []}
+    decile_path = {0: [], 9: []}
+    frozen_correlation = {name: [] for _b, name, _e, _w in CONTINUOUS_FEATURES}
+    factor_values, per_date_holdings = [], {}
+    dates_used = 0
+    # Fixed before the run: the median rebalance splits the pre-holdout window
+    # into halves for the sign-persistence condition.
+    midpoint = rebalances[len(rebalances) // 2] if rebalances else None
+
+    for signal_date in rebalances:
+        entry_date = next_session(calendar, signal_date)
+        if entry_date is None:
+            continue
+        entries, row = [], {}
+        for ticker in book.tickers():
+            tech = technicals_on(book, ticker, signal_date, bench_by_date)
+            if tech is None:
+                continue
+            gate = E.calculate_technical_score(tech, True)
+            total = gate[0] if isinstance(gate, tuple) else gate
+            if total is None:
+                continue
+            value = formation_return(book, ticker, signal_date)
+            if value is None:
+                continue
+            entries.append((ticker, tech))
+            row[ticker] = -value      # NEGATIVE: bigger loser ranks higher
+        if len(row) < 10:
+            continue
+        dates_used += 1
+        per_date_holdings[signal_date] = sorted(row, key=lambda t: (-row[t], t))
+        factor_values.append({"date": signal_date, "names": len(row),
+                              "formation_return": {t: -row[t] for t in row}})
+
+        # Is this actually a distinct family, or a frozen primitive renamed?
+        for _block, name, extract, _weight in CONTINUOUS_FEATURES:
+            paired = []
+            for ticker, tech in entries:
+                other = extract(tech)
+                if other is not None and ticker in row:
+                    paired.append((row[ticker], other))
+            if len(paired) > 2:
+                rho = spearman(paired)
+                if rho is not None:
+                    frozen_correlation[name].append(rho)
+
+        for horizon in horizons:
+            exit_index = rebalances.index(signal_date) + horizon
+            if exit_index >= len(rebalances):
+                continue
+            exit_date = next_session(calendar, rebalances[exit_index])
+            if exit_date is None:
+                continue
+            forward = {}
+            for ticker in row:
+                entry, _f1 = book.execution_price(ticker, entry_date)
+                exit_price, _f2 = book.execution_price(ticker, exit_date)
+                if entry and exit_price and entry > 0:
+                    forward[ticker] = exit_price / entry - 1.0
+            if len(forward) < 10:
+                continue
+            names = sorted(forward)
+            rho = spearman([(row[t], forward[t]) for t in names])
+            if rho is None:
+                continue
+            series[horizon].append(rho)
+            if horizon == REVERSAL_PRIMARY_HORIZON and midpoint is not None:
+                half_series["first" if signal_date <= midpoint else "second"].append(rho)
+            ordered = sorted(((row[t], forward[t]) for t in names),
+                             key=lambda pair: -pair[0])
+            count = len(ordered)
+            per_bucket = {d: [] for d in range(10)}
+            for position, (_value, ret) in enumerate(ordered):
+                bucket = min(9, position * 10 // count)
+                buckets[horizon][bucket].append(ret)
+                per_bucket[bucket].append(ret)
+            if horizon == REVERSAL_PRIMARY_HORIZON:
+                for bucket in (0, 9):
+                    if per_bucket[bucket]:
+                        decile_path[bucket].append(
+                            sum(per_bucket[bucket]) / len(per_bucket[bucket]))
+
+    out = {"dates": dates_used, "family_size": REVERSAL_FAMILY,
+           "window": REVERSAL_WINDOW, "skip": REVERSAL_SKIP,
+           "primary_horizon": REVERSAL_PRIMARY_HORIZON,
+           "horizons": list(horizons), "cells": {}, "factor_values": factor_values,
+           "midpoint": midpoint}
+    for horizon in horizons:
+        stats = _ic_statistics(series[horizon], REVERSAL_FAMILY, hac_lag=horizon - 1)
+        values = series[horizon]
+        stats["positive_ic_share"] = (
+            sum(1 for v in values if v > 0) / len(values)) if values else float("nan")
+        rows = buckets[horizon]
+        means = [(sum(rows[d]) / len(rows[d])) if rows[d] else float("nan")
+                 for d in range(10)]
+        stats["deciles"] = means
+        stats["decile_spread"] = means[0] - means[9]
+        stats["monotonic_falling_steps"] = sum(
+            1 for i in range(9) if means[i + 1] < means[i])
+        out["cells"][horizon] = stats
+
+    out["halves"] = {half: {"periods": len(v),
+                            "mean_ic": (sum(v) / len(v)) if v else float("nan")}
+                     for half, v in half_series.items()}
+    out["frozen_family_correlation"] = {
+        name: _percentiles(v) for name, v in frozen_correlation.items() if v}
+    out["portfolio"] = {("decile_1" if b == 0 else "decile_10"):
+                        _path_statistics(path) for b, path in decile_path.items()}
+
+    turnovers = []
+    ordered_dates = sorted(per_date_holdings)
+    for index in range(1, len(ordered_dates)):
+        before = per_date_holdings[ordered_dates[index - 1]]
+        after = per_date_holdings[ordered_dates[index]]
+        size = max(1, len(after) // 10)
+        turnovers.append(1.0 - len(set(before[:size]) & set(after[:size])) / float(size))
+    out["top_decile_turnover"] = (sum(turnovers) / len(turnovers)) if turnovers else float("nan")
+    out["verdict"] = _reversal_verdict(out)
+    return out
+
+
+def _reversal_verdict(study):
+    """The registered rule. Reads ONLY the 1-month cell, plus both halves."""
+    cost_floor = 2.0 * DEFAULT_COST_BPS_PER_SIDE / 10000.0   # 0.30pp round trip
+    cell = study["cells"][REVERSAL_PRIMARY_HORIZON]
+    detected = abs(cell["mean_ic"]) >= cell["detectable_ic_80pct"]
+    significant = cell["hac_p_bonferroni"] < 0.05
+    positive = cell["mean_ic"] > 0
+    separated = cell["decile_spread"] > cost_floor
+    halves = study["halves"]
+    both_halves = all(h["mean_ic"] > 0 for h in halves.values()
+                      if h["periods"] > 0) and len(
+                          [h for h in halves.values() if h["periods"] > 0]) == 2
+    passed = bool(positive and detected and significant and separated and both_halves)
+    # Registered wording: statistically real but not implementable is NOT a pass.
+    predictive_not_implementable = bool(
+        positive and detected and significant and both_halves and not separated)
+    return {"passed": passed, "branch": "PASS" if passed else "FAIL",
+            "cost_floor": cost_floor,
+            "positive": positive, "detected": detected,
+            "significant": significant, "separated": separated,
+            "both_halves_positive": both_halves,
+            "predictive_but_not_implementable": predictive_not_implementable,
+            "mean_ic": cell["mean_ic"], "floor": cell["detectable_ic_80pct"],
+            "spread": cell["decile_spread"]}
+
+
 # --- Registered 2026-09-16: idiosyncratic volatility -------------------------
 # Every constant here is fixed by
 # knowledge/preregistration-idiosyncratic-volatility.md, committed at
@@ -2683,7 +2891,7 @@ def _after_tax_block(book, periods, cost_bps_per_side, stcg_rate, capital):
 def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PER_SIDE,
              variants_tried=1, variants_note="", rsi_flip=False, respect_holdout=True,
              continuous=False, neutral=False, no_skip_month=False, buffer_multiple=1,
-             stcg_rate=STCG_RATE, capital=None, portfolio_block=None, invert=False, components=False, volatility=False):
+             stcg_rate=STCG_RATE, capital=None, portfolio_block=None, invert=False, components=False, volatility=False, reversal=False):
     book = PriceBook(history)
     calendar = market_calendar(history)
     rebalances = month_end_sessions(calendar, respect_holdout=respect_holdout)
@@ -2800,6 +3008,8 @@ def backtest(history, top_n=DEFAULT_TOP_N, cost_bps_per_side=DEFAULT_COST_BPS_PE
                        if components else None),
         "volatility": (volatility_study(book, calendar, rebalances, bench_by_date)
                        if volatility else None),
+        "reversal": (reversal_study(book, calendar, rebalances, bench_by_date)
+                     if reversal else None),
         "quality": {
             "total_fills": total_fills,
             "fallbacks": sum(p["open_fallbacks"] for p in periods),
@@ -3728,6 +3938,111 @@ class BacktestTests(unittest.TestCase):
         # And the default is the protective one.
         self.assertEqual(month_end_sessions(calendar), reserved)
 
+    def _reversal_fixture(self, rebound=True):
+        """Monthly moves that ALTERNATE in sign, with magnitude ordered by rank.
+
+        The obvious fixture does not work and the reason is structural: with a
+        21-session formation and roughly 21-session months, the forward window
+        of one rebalance IS the formation window of the next. There is no gap
+        in which a separate "forward regime" could live, so a fixture that sets
+        formation and forward behaviour independently ends up contradicting
+        itself -- the first attempt here scored a perfect -1.0.
+
+        Genuine reversal is therefore built as alternation: a stock that fell
+        last month rises this month. Then at every signal date the sign of the
+        formation return is the opposite of the coming month's, which is what
+        reversal MEANS, and the rank correlation is exact rather than noisy.
+
+        rebound=False makes every month repeat its predecessor's sign instead,
+        which is continuation -- the momentum case, used to prove the fixture
+        can express both and is not simply hard-wired to the answer.
+        """
+        dates = self._business_days(600)
+        ends = sorted(set(month_end_sessions(dates, respect_holdout=False)))
+        signal_dates = [d for d in ends if dates.index(d) >= 300]
+        marks = sorted(dates.index(d) for d in ends)
+        history, tickers = {}, ["T%02d" % i for i in range(20)]
+        for rank, ticker in enumerate(tickers):
+            amplitude = 0.004 - 0.00015 * rank    # rank 0 moves most
+            closes, level = [], 100.0
+            for index in range(len(dates)):
+                closes.append(level)
+                block = sum(1 for m in marks if m <= index)
+                direction = (1.0 if block % 2 == 0 else -1.0) if rebound else 1.0
+                level *= (1.0 + amplitude * direction)
+            history[ticker] = self._series(dates, closes)
+        history[E.BENCHMARK_SYMBOL] = self._series(dates, [1000.0] * len(dates))
+        return dates, history, signal_dates
+
+    def test_the_formation_window_never_reaches_into_the_forward_window(self):
+        """The dangerous reversal bug: overlapping endpoints.
+
+        A signal built partly from the first day of its own forward return
+        looks strongly predictive and is worthless. Here the price is flat
+        through the whole formation window and then jumps the day AFTER the
+        signal date. The formation return must be exactly zero: if it moved,
+        the window reached into the future.
+        """
+        dates = self._business_days(120)
+        signal_index = 80
+        closes = [100.0] * len(dates)
+        for index in range(signal_index + 1, len(dates)):
+            closes[index] = 500.0          # a jump strictly AFTER the signal
+        book = PriceBook({"AAA": self._series(dates, closes)})
+        value = formation_return(book, "AAA", dates[signal_index])
+        self.assertEqual(value, 0.0,
+                         "formation must not see the session after the signal")
+        # And it must span exactly REVERSAL_WINDOW sessions: a window ending one
+        # session earlier still sees only flat prices.
+        self.assertEqual(formation_return(book, "AAA", dates[signal_index - 1]), 0.0)
+        # A window that DID reach forward would be this, and it must not match.
+        reaching = closes[signal_index + 1] / closes[signal_index - REVERSAL_WINDOW] - 1.0
+        self.assertNotEqual(value, reaching)
+
+    def test_formation_refuses_a_window_it_cannot_fully_cover(self):
+        dates = self._business_days(30)
+        book = PriceBook({"AAA": self._series(dates, [100.0 + i for i in range(30)])})
+        self.assertIsNone(formation_return(book, "AAA", dates[5]),
+                          "a partial window is a different, shorter signal")
+        self.assertIsNotNone(formation_return(book, "AAA", dates[25]))
+
+    def test_losers_that_rebound_produce_a_POSITIVE_reversal_ic(self):
+        dates, history, signal_dates = self._reversal_fixture(rebound=True)
+        book = PriceBook(history)
+        bench_by_date = dict(zip(dates, [1000.0] * len(dates)))
+        rebalances = signal_dates[:-2]
+        self.assertGreater(len(rebalances), 3)
+        study = reversal_study(book, dates, rebalances, bench_by_date, horizons=(1,))
+        self.assertGreater(study["cells"][1]["mean_ic"], 0.5,
+                           "constructed rebounding losers must read POSITIVE")
+        self.assertGreater(study["cells"][1]["decile_spread"], 0.0)
+
+    def test_flipping_the_signal_sign_flips_the_ic_on_the_same_fixture(self):
+        """The sign control the registration asks for.
+
+        Same data, signal negated: the IC must change sign and keep its
+        magnitude. This is what distinguishes a real convention from a lucky
+        one, because a pipeline that ignored the sign would pass the previous
+        test and fail this one.
+        """
+        dates, history, signal_dates = self._reversal_fixture(rebound=True)
+        book = PriceBook(history)
+        bench_by_date = dict(zip(dates, [1000.0] * len(dates)))
+        rebalances = signal_dates[:-2]
+        registered = reversal_study(book, dates, rebalances, bench_by_date,
+                                    horizons=(1,))["cells"][1]["mean_ic"]
+        original = globals()["formation_return"]
+        try:
+            globals()["formation_return"] = (
+                lambda b, t, d, window=REVERSAL_WINDOW, skip=REVERSAL_SKIP:
+                (lambda v: None if v is None else -v)(original(b, t, d, window, skip)))
+            flipped = reversal_study(book, dates, rebalances, bench_by_date,
+                                     horizons=(1,))["cells"][1]["mean_ic"]
+        finally:
+            globals()["formation_return"] = original
+        self.assertLess(flipped, 0.0, "the flipped signal must read NEGATIVE")
+        self.assertAlmostEqual(registered, -flipped, places=6)
+
     def test_the_ols_estimator_recovers_a_beta_and_a_residual_it_was_given(self):
         # Build returns with a KNOWN beta and a known residual scale, then
         # require the estimator to return them. An idiosyncratic-volatility
@@ -3945,6 +4260,9 @@ def main(argv=None):
                              "it. Exists for the single final test described in "
                              "knowledge/holdout.md, and for nothing else."
                              % HOLDOUT_START)
+    parser.add_argument("--reversal", action="store_true",
+                        help="the registered short-term reversal study. "
+                             "A measurement: it changes no score.")
     parser.add_argument("--volatility", action="store_true",
                         help="the registered idiosyncratic-volatility study. "
                              "A measurement: it changes no score.")
@@ -3997,7 +4315,7 @@ def main(argv=None):
                        buffer_multiple=args.buffer, stcg_rate=args.tax_stcg,
                        capital=args.capital, portfolio_block=args.portfolio_block,
                        invert=args.invert, components=args.components,
-                       volatility=args.volatility)
+                       volatility=args.volatility, reversal=args.reversal)
     report = format_report(results)
     print(report)
     if args.out_dir:
