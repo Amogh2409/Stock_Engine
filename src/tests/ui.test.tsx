@@ -184,7 +184,8 @@ describe('Rendered detail panels', () => {
       roce: 25, roe: 25, debtToEquity: 0, interestCoverage: 10,
       operatingCashFlow: 100, promoterHolding: 60, promoterPledge: 0,
       peRatio: 15, pbRatio: 2, dividendYield: 1,
-      sales: null, returnOnAssets: null, grossNpa: null, netNpa: null,
+      sales: null,
+      shareholdersEquity: null, returnOnAssets: null, grossNpa: null, netNpa: null,
       capitalAdequacy: null, casa: null, financingMargin: null,
       technicals: emptyTechnicals(), rawRow: {},
     };
@@ -218,7 +219,8 @@ const BASE_STOCK: CleanedStock = {
   roce: 25, roe: 25, debtToEquity: 0, interestCoverage: 10,
   operatingCashFlow: 100, promoterHolding: 60, promoterPledge: 0,
   peRatio: 15, pbRatio: 2, dividendYield: 1,
-  sales: null, returnOnAssets: null, grossNpa: null, netNpa: null,
+  sales: null,
+  shareholdersEquity: null, returnOnAssets: null, grossNpa: null, netNpa: null,
   capitalAdequacy: null, casa: null, financingMargin: null,
   technicals: null, rawRow: {},
 };
@@ -306,7 +308,7 @@ describe('Technical panel', () => {
     render(
       <WatchlistTable
         watchlist={[ranked({ technicals: tech }, 1)]}
-        priceHistory={{ AAA: { dates, closes, volumes: [], opens: [], highs: [], lows: [] } }}
+        priceHistory={{ AAA: { dates, closes, volumes: [], opens: [], highs: [], lows: [], closesUnadjusted: [] } }}
       />,
     );
     const chart = screen.getByTestId('price-chart');
@@ -331,7 +333,7 @@ describe('Technical panel', () => {
     render(
       <WatchlistTable
         watchlist={[ranked({ technicals: tech }, 1)]}
-        priceHistory={{ ZZZ: { dates, closes, volumes: [], opens: [], highs: [], lows: [] } }}
+        priceHistory={{ ZZZ: { dates, closes, volumes: [], opens: [], highs: [], lows: [], closesUnadjusted: [] } }}
       />,
     );
     expect(screen.queryByTestId('price-chart')).toBeNull();

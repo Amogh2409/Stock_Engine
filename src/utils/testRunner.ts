@@ -57,6 +57,7 @@ function makeStock(overrides: Partial<CleanedStock> = {}): CleanedStock {
     pbRatio: 2,
     dividendYield: 1,
     sales: null,
+    shareholdersEquity: null,
     returnOnAssets: null,
     grossNpa: null,
     netNpa: null,

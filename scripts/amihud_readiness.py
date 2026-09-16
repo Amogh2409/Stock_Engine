@@ -85,10 +85,20 @@ def check_price_basis(by_ticker):
                 raw_close = float(raw["Close"].iloc[0])
             except Exception:
                 continue
-        panel_close = next((_float(r["Close"]) for r in series if r["Date"] == date), None)
-        if panel_close is None or raw_close <= 0:
+        # SCHEMA v2: audit the column Amihud actually divides by. Before the
+        # dual-close repair this read "Close", and it FAILED -- correctly,
+        # because the adjusted close carries a per-stock dividend deflation.
+        row = next((r for r in series if r["Date"] == date), None)
+        if row is None or raw_close <= 0:
             continue
-        factors[ticker] = panel_close / raw_close
+        traded_close = _float(row.get("CloseUnadjusted") or "")
+        if traded_close is None:
+            # v1 panel: fall back to auditing Close, which is what Amihud would
+            # have been forced to use, and which is expected to fail.
+            traded_close = _float(row["Close"])
+            if traded_close is None:
+                continue
+        factors[ticker] = traded_close / raw_close
     if len(factors) < 3:
         return None
     low, high = min(factors.values()), max(factors.values())
@@ -114,7 +124,16 @@ def _float(text):
 
 
 def traded_value(row):
-    close, volume = _float(row["Close"]), _float(row["Volume"])
+    """Rupees that changed hands, on the basis Amihud actually divides by.
+
+    CloseUnadjusted where the panel carries it (schema v2), falling back to
+    Close only for a v1 file -- where the figure is wrong in the documented
+    way, which is exactly what check 2b then reports.
+    """
+    close = _float(row.get("CloseUnadjusted") or "")
+    if close is None:
+        close = _float(row["Close"])
+    volume = _float(row["Volume"])
     if close is None or volume is None or close <= 0 or volume <= 0:
         return None
     return close * volume
@@ -229,6 +248,7 @@ def main():
     print()
 
     print("2b. PRICE BASIS FOR TRADED VALUE  (network)")
+    print("   auditing CloseUnadjusted, the column the denominator divides by")
     basis = check_price_basis(by_ticker)
     ok_basis = basis is not None and basis["spread_ratio"] <= BASIS_SPREAD_LIMIT
     if basis is None:

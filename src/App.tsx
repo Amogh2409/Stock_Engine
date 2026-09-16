@@ -107,6 +107,18 @@ function readCsvInput(
   reader.readAsText(file);
 }
 
+/**
+ * What GET /api/data-store answers with. Declared here rather than imported
+ * from src/server/dataStore so no bundler is ever tempted to pull node:fs into
+ * the browser build; the server test pins the two shapes together.
+ */
+interface DataStoreSnapshot {
+  available: boolean;
+  root: string;
+  fundamentals: { name: string; modifiedMs: number; bytes: number } | null;
+  prices: { name: string; modifiedMs: number; bytes: number } | null;
+}
+
 export default function App() {
   const [rawCsv, setRawCsv] = useState<string>(SAMPLE_SCREENER_CSV_STRING);
   const [fileName, setFileName] = useState<string>('bundled_sample.csv');
@@ -118,6 +130,9 @@ export default function App() {
   const [prices, setPrices] = useState<LoadedPrices | null>(null);
   const [savedRun, setSavedRun] = useState<SavedRun | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  // Prices fetched from the data-store but not yet matched against the screened
+  // universe. See the two effects below for why this is a two-step load.
+  const [pendingPrices, setPendingPrices] = useState<{ fileName: string; text: string } | null>(null);
 
   useEffect(() => {
     try {
@@ -129,6 +144,58 @@ export default function App() {
     } catch {
       setSavedRun(null);
     }
+  }, []);
+
+  /**
+   * Load whatever the CLI last wrote, so opening the page after a run shows
+   * that run rather than the bundled sample.
+   *
+   * Runs once, on mount, and only ever replaces the SAMPLE: a person who has
+   * uploaded a file has said what they want screened, and a background fetch
+   * must not overrule them. Every failure path -- no route, no server, no
+   * data-store, an empty file -- leaves the sample in place silently, because
+   * `data-store/**` is gitignored and its absence is the normal state of a
+   * fresh clone rather than a fault worth interrupting anyone about.
+   *
+   * Prices are staged rather than applied here. Matching them against the
+   * screened tickers needs the pipeline to have re-run on the new fundamentals
+   * first, which has not happened yet at this point.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const indexResponse = await fetch('/api/data-store');
+        if (!indexResponse.ok) return;
+        const snapshot = (await indexResponse.json()) as DataStoreSnapshot;
+        if (cancelled || !snapshot.available || snapshot.fundamentals === null) return;
+
+        const csvResponse = await fetch('/api/data-store/fundamentals');
+        if (!csvResponse.ok) return;
+        const text = await csvResponse.text();
+        if (cancelled || text.trim() === '') return;
+
+        setRawCsv(text);
+        setFileName(snapshot.fundamentals.name);
+        setIsSampleData(false);
+        setFileLastModified(snapshot.fundamentals.modifiedMs);
+
+        if (snapshot.prices !== null) {
+          const priceResponse = await fetch('/api/data-store/prices');
+          if (priceResponse.ok) {
+            const priceText = await priceResponse.text();
+            if (!cancelled && priceText.trim() !== '') {
+              setPendingPrices({ fileName: snapshot.prices.name, text: priceText });
+            }
+          }
+        }
+      } catch {
+        // Offline, or a server without these routes. The sample stands.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const result = useMemo(
@@ -144,6 +211,38 @@ export default function App() {
     [rawCsv, screeningConfig, appConfig, fileLastModified, prices, fileName],
   );
   const { inspectionReport: report, watchlist, rejected, evaluations: allEvaluations } = result;
+
+  /**
+   * Apply the staged price file, now that the pipeline has re-run on the
+   * fundamentals from disk and `result` names the tickers that were actually
+   * screened. Counting matches against the sample's tickers would have reported
+   * a match rate for a universe nobody is looking at.
+   *
+   * Mirrors handlePriceUpload's checks rather than trusting the file: a
+   * data-store CSV is no more guaranteed to parse, or to use bare NSE symbols,
+   * than one a person picked by hand.
+   */
+  useEffect(() => {
+    if (pendingPrices === null || isSampleData) return;
+    setPendingPrices(null);
+    let parsed: ReturnType<typeof parsePriceHistoryCsv>;
+    try {
+      parsed = parsePriceHistoryCsv(pendingPrices.text);
+    } catch {
+      return;
+    }
+    const screened = new Set(result.evaluations.map((e) => e.stock.ticker));
+    const matched = Object.keys(parsed.history).filter((t) => screened.has(t)).length;
+    if (matched === 0) return;
+    setPrices({ fileName: pendingPrices.fileName, history: parsed.history });
+    setNotice({
+      kind: 'info',
+      message:
+        `Loaded from data-store: "${fileName}" and "${pendingPrices.fileName}" — ` +
+        `${matched} of the ${screened.size} screened tickers have prices. ` +
+        'This is the newest run on disk; re-run the engine and reload to refresh it.',
+    });
+  }, [pendingPrices, isSampleData, result, fileName]);
 
   const currentSnapshot = useMemo(() => toSnapshot(watchlist), [watchlist]);
 

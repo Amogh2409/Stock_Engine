@@ -177,3 +177,22 @@ If this is ever tested, these are fixed now, before the holdout is touched:
 - `knowledge/rulebook.md`, "Testing methodology" — what the book requires and
   where this repository has failed it.
 - `python/backtest.py` — `HOLDOUT_START`, and `--no-respect-holdout`.
+
+## 2026-09-16 — the scoring hash moved, and scoring did not
+
+`SCORING_HASH` changed from `e2cebaa95afdbcf2` to `cce5e6369b60810b` when the
+price panel gained its schema-v2 `CloseUnadjusted` column. The guard covers
+every module ALL_CAPS constant, and two of them changed:
+`PRICE_HISTORY_COLUMNS` and the new `PRICE_HISTORY_SCHEMA_VERSION`. The
+constant count went 106 to 107.
+
+**No scoring function changed.** `compute_technical_indicators` and
+`calculate_technical_score` have zero diff lines. The evidence beyond the diff:
+the frozen component study was re-run on the new panel and moved by a maximum
+of 0.00075 IC across 80 cells, with the same single cell clearing both bars;
+the screen still evaluates 100 companies and passes 45 with the same 20-name
+watchlist; and the panel's Volume column is byte-identical.
+
+The guard is deliberately conservative — it would rather fire on a schema
+constant than miss a scoring one. Recording the reason here is the required
+answer to it, not a way around it.

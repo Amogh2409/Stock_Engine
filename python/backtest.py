@@ -1230,18 +1230,31 @@ def amihud_illiquidity(book, ticker, date, window=CANDIDATE_WINDOW):
         return None
     series = book.history[ticker]
     closes, volumes = series["closes"], (series.get("volumes") or [])
+    # TWO CLOSES, ON PURPOSE. The numerator is a TOTAL RETURN and uses the
+    # dividend-adjusted close, which is correct. The denominator is a rupee
+    # amount that changed hands, and must use the dividend-UNADJUSTED close:
+    # the dividend adjustment deflates each stock's history by its own dividend
+    # record, so close x volume was distorted differently for every stock --
+    # 0.332 for VEDL against 0.912 for HDFCBANK at 2016-06-30. A uniform
+    # deflation would cancel in a cross-sectional ranking; that one does not.
+    traded_closes = series.get("closesUnadjusted") or []
     values = []
     for index in range(max(1, end - window + 1), end + 1):
-        if index >= len(volumes):
+        if index >= len(volumes) or index >= len(traded_closes):
             break
         previous, current, volume = closes[index - 1], closes[index], volumes[index]
+        traded_close = traded_closes[index]
         # None volume is MISSING. Zero volume would be a division by zero and
         # is refused for the same reason: neither is a measurement of liquidity.
         if previous is None or current is None or previous <= 0 or current <= 0:
             continue
         if volume is None or volume <= 0:
             continue
-        traded_value = current * volume
+        # A v1 panel has no traded-value close. Refused rather than falling
+        # back to the adjusted one, which would silently restore the defect.
+        if traded_close is None or traded_close <= 0:
+            continue
+        traded_value = traded_close * volume
         if traded_value <= 0:
             continue
         values.append(abs(current / previous - 1.0) / traded_value)
@@ -4136,6 +4149,8 @@ class BacktestTests(unittest.TestCase):
         holed = self._series(dates, closes)
         # Same prices, same volumes, except three sessions report nothing.
         holed["volumes"] = [None if i in (30, 33, 36) else 10000.0 for i in range(40)]
+        for fixture in (clean, holed):
+            fixture["closesUnadjusted"] = list(fixture["closes"])
         book = PriceBook({"CLEAN": clean, "HOLED": holed})
 
         full = amihud_illiquidity(book, "CLEAN", dates[39])
@@ -4151,9 +4166,20 @@ class BacktestTests(unittest.TestCase):
         dates = self._business_days(40)
         series = self._series(dates, [100.0 + i for i in range(40)])
         series["volumes"] = [None] * 40
+        series["closesUnadjusted"] = list(series["closes"])
         book = PriceBook({"AAA": series})
         self.assertIsNone(amihud_illiquidity(book, "AAA", dates[39]),
                           "no volume at all is not a liquidity measurement")
+
+    def test_amihud_refuses_a_v1_panel_rather_than_using_the_adjusted_close(self):
+        """Falling back would silently restore the defect the column removes."""
+        dates = self._business_days(40)
+        series = self._series(dates, [100.0 + i for i in range(40)])
+        series["volumes"] = [10000.0] * 40
+        # No closesUnadjusted at all: a schema v1 file.
+        book = PriceBook({"AAA": series})
+        self.assertIsNone(amihud_illiquidity(book, "AAA", dates[39]),
+                          "a v1 panel cannot support a traded value")
 
     def test_the_distinctness_screen_flags_a_signal_that_is_a_renamed_primitive(self):
         # A candidate perfectly rank-correlated with a reference must be caught,

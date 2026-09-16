@@ -62,7 +62,7 @@ DOCS = ("knowledge/rulebook.md", "knowledge/project-guide.html",
 SCORING_SOURCE = "python/engine.py"
 SCORING_FUNCTIONS = ("compute_technical_indicators", "calculate_technical_score")
 # Re-record in the SAME commit that changes the scoring, never separately.
-SCORING_HASH = "8ed6a95febeac1326c2fb8b6b70d7eeb7bb9eef9f9191ced23e1dee083b0e98f"
+SCORING_HASH = "cce5e6369b60810b36c26c9b664c166ef10680b9c7899708a81dc16bc8467e55"
 
 # A line carrying any of these is retracting a number on purpose, not asserting
 # it. Retired values are allowed there and nowhere else.

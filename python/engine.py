@@ -1715,7 +1715,29 @@ BENCHMARK_SYMBOL = "^NSEI"   # Nifty 50: the relative-strength benchmark
 # optional: a four-column Date,Ticker,Close,Volume file written by an earlier
 # version still loads, and the indicators that need a high and a low report
 # themselves unavailable on it rather than substituting the close.
-PRICE_HISTORY_COLUMNS = ["Date", "Ticker", "Open", "High", "Low", "Close", "Volume"]
+# SCHEMA v2 (2026-09-16): CloseUnadjusted appended.
+#
+# "Close" stays what it has always been -- split AND dividend adjusted --
+# and every return, indicator and existing study continues to read it.
+# "CloseUnadjusted" is split-adjusted but NOT dividend-adjusted, and exists
+# for one purpose: a rupee TRADED VALUE.
+#
+# Why both are needed. A dividend adjustment deflates a stock's history by
+# its OWN dividend record, which is correct for a total return and wrong
+# for "how many rupees changed hands that day". Because the deflation
+# differs per stock, close x volume was distorted ACROSS the cross-section:
+# at 2016-06-30 the factor ran 0.332 for VEDL against 0.912 for HDFCBANK,
+# a 2.75x spread. Any liquidity measure built on it inherited that.
+#
+# The basis was verified empirically rather than taken from the flag name:
+# auto_adjust=True's Close equals auto_adjust=False's "Adj Close" exactly,
+# and auto_adjust=False's "Close" is the split-adjusted-only series.
+#
+# Appended last, and the parser matches by header name, so a v1 file still
+# parses -- its CloseUnadjusted simply reads as absent.
+PRICE_HISTORY_SCHEMA_VERSION = 2
+PRICE_HISTORY_COLUMNS = ["Date", "Ticker", "Open", "High", "Low", "Close",
+                         "Volume", "CloseUnadjusted"]
 _ISO_DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 _BSE_CODE_RE = re.compile(r"^[0-9]+$")
 _MONTH_DAYS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
@@ -2472,7 +2494,7 @@ def _is_forward_filled_session(open_, high, low, close, volume, previous_close):
     return close == previous_close
 
 
-def price_history_rows_from_download(frame, tickers):
+def price_history_rows_from_download(frame, tickers, unadjusted=None):
     """Flatten a yfinance download into sorted rows.
 
     Each row is (date, ticker, open, high, low, close, volume). yfinance labels
@@ -2486,6 +2508,27 @@ def price_history_rows_from_download(frame, tickers):
     wanted[BENCHMARK_SYMBOL] = BENCHMARK_SYMBOL
     if frame is None or len(frame) == 0:
         return []
+
+    def unadjusted_at(symbol, stamp):
+        """Split-adjusted, dividend-unadjusted close, or NaN when unavailable.
+
+        A separate frame rather than a derived one: scaling the adjusted close
+        by a ratio would introduce floating-point drift into a column the rest
+        of the panel must keep byte-identical.
+        """
+        if unadjusted is None or getattr(unadjusted, "empty", True):
+            return float("nan")
+        columns = unadjusted.columns
+        if not isinstance(columns, pd.MultiIndex):
+            return float("nan")
+        level = 0 if "Close" in set(columns.get_level_values(0)) else 1
+        key = ("Close", symbol) if level == 0 else (symbol, "Close")
+        if key not in columns:
+            return float("nan")
+        try:
+            return _finite_or_nan(unadjusted[key].get(stamp))
+        except Exception:
+            return float("nan")
     columns = frame.columns
     if isinstance(columns, pd.MultiIndex):
         field_level = 0 if "Close" in set(columns.get_level_values(0)) else 1
@@ -2533,6 +2576,7 @@ def price_history_rows_from_download(frame, tickers):
             rows.append((
                 pd.Timestamp(stamp).strftime("%Y-%m-%d"), ticker,
                 open_, high, low, close, volume,
+                unadjusted_at(symbol, stamp),
             ))
             previous_close = close
     rows.sort(key=lambda row: (row[1], row[0]))
@@ -2561,10 +2605,13 @@ def price_history_to_csv(rows):
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
     writer.writerow(PRICE_HISTORY_COLUMNS)
-    for date, ticker, open_price, high, low, close, volume in rows:
+    for row in rows:
+        date, ticker, open_price, high, low, close, volume = row[:7]
+        unadjusted = row[7] if len(row) > 7 else float("nan")
         writer.writerow([
             date, ticker, _price_cell(open_price), _price_cell(high),
             _price_cell(low), repr(float(close)), _volume_cell(volume),
+            _price_cell(unadjusted),
         ])
     return buffer.getvalue()
 
@@ -2599,6 +2646,8 @@ def parse_price_history_csv(text):
     # Optional: a file written before the OHLCV widening has none of these, and
     # the indicators that need a high and a low then report unavailable.
     open_col, high_col, low_col = find("open"), find("high"), find("low")
+    # Schema v2. Absent in a v1 file, which then reads as "not measured".
+    unadjusted_col = find("closeunadjusted", "close_unadjusted", "rawclose")
     if date_col is None or ticker_col is None or close_col is None:
         raise ValueError("Price history CSV needs Date, Ticker and Close columns (Volume is optional)")
 
@@ -2623,6 +2672,7 @@ def parse_price_history_csv(text):
             parse_strict_decimal(cell(open_col)),
             parse_strict_decimal(cell(high_col)),
             parse_strict_decimal(cell(low_col)),
+            parse_strict_decimal(cell(unadjusted_col)),
         )
 
     history = {}
@@ -2635,6 +2685,8 @@ def parse_price_history_csv(text):
             "opens": [points[d][2] for d in ordered],
             "highs": [points[d][3] for d in ordered],
             "lows": [points[d][4] for d in ordered],
+            # Traded value only. Never a return: see PRICE_HISTORY_COLUMNS.
+            "closesUnadjusted": [points[d][5] for d in ordered],
         }
     return history, skipped
 
@@ -2692,10 +2744,30 @@ class MarketDataProvider:
         # start= rather than period=: yfinance offers no period between "10y"
         # and "max". auto_adjust folds splits and dividends into every OHLC
         # field, so the highs and lows stay consistent with the closes.
-        return yf.download(
-            [yahoo_symbol(s) for s in symbols] + [BENCHMARK_SYMBOL], start=period,
-            interval="1d", auto_adjust=True, progress=False, group_by="column",
+        tickers = [yahoo_symbol(s) for s in symbols] + [BENCHMARK_SYMBOL]
+        adjusted = yf.download(
+            tickers, start=period, interval="1d", auto_adjust=True,
+            progress=False, group_by="column",
         )
+        # A SECOND download rather than a derived column. auto_adjust=False
+        # returns Open/High/Low/Close adjusted for splits ONLY, plus an
+        # "Adj Close" that equals the first download's Close exactly (verified
+        # empirically, not assumed from the flag name). Its "Close" is the
+        # dividend-unadjusted basis a rupee traded value needs.
+        #
+        # Deriving it instead -- scaling by AdjClose/Close -- would put
+        # floating-point drift into the adjusted OHLC that every existing study
+        # reads, and those columns must stay byte-identical.
+        try:
+            unadjusted = yf.download(
+                tickers, start=period, interval="1d", auto_adjust=False,
+                progress=False, group_by="column",
+            )
+        except Exception:
+            # The panel is still valid without it; only traded value is lost,
+            # and an absent column reads as "not measured" rather than as zero.
+            unadjusted = None
+        return adjusted, unadjusted
 
     def fetch(self, symbols, period=HISTORY_START):
         downloader = self.downloader or self._default_downloader
@@ -2737,7 +2809,15 @@ class MarketDataProvider:
         problem = "offline run"
         if allow_network:
             try:
-                rows = price_history_rows_from_download(self.fetch(tickers, period), tickers)
+                fetched = self.fetch(tickers, period)
+                # An injected downloader (tests, Colab) may return a single
+                # frame; the second is optional everywhere.
+                if isinstance(fetched, tuple):
+                    adjusted_frame, unadjusted_frame = fetched
+                else:
+                    adjusted_frame, unadjusted_frame = fetched, None
+                rows = price_history_rows_from_download(
+                    adjusted_frame, tickers, unadjusted_frame)
             except Exception as exc:  # noqa: BLE001 - reported, then fall back to cache
                 rows, problem = [], "the download failed (%s)" % exc
             else:
@@ -4904,6 +4984,11 @@ class EngineTests(unittest.TestCase):
             # A file written before the OHLCV widening still loads; the missing
             # columns stay absent and are never guessed from the close.
             "opens": [None, None], "highs": [None, None], "lows": [None, None],
+            # Schema v1 file: the traded-value close is absent, and absent is
+            # what it stays. Never defaulted to the adjusted close, which would
+            # silently reintroduce the dividend deflation this column exists to
+            # remove.
+            "closesUnadjusted": [None, None],
         })
         with self.assertRaises(ValueError):
             parse_price_history_csv("Date,Close\n2025-01-01,1\n")
@@ -4912,6 +4997,38 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(wide["TCS"]["opens"], [99.0])
         self.assertEqual(wide["TCS"]["highs"], [105.0])
         self.assertEqual(wide["TCS"]["lows"], [98.0])
+        self.assertEqual(wide["TCS"]["closesUnadjusted"], [None],
+                         "a v1 header must still parse, with the new column absent")
+
+        # Schema v2: the traded-value close is read, and it is NOT the close.
+        v2, _ = parse_price_history_csv(
+            "Date,Ticker,Open,High,Low,Close,Volume,CloseUnadjusted\n"
+            "2025-01-01,TCS,99,105,98,104,1000,131.5\n")
+        self.assertEqual(v2["TCS"]["closes"], [104.0])
+        self.assertEqual(v2["TCS"]["closesUnadjusted"], [131.5])
+
+    def test_the_two_closes_are_kept_apart(self):
+        """The whole point of schema v2, pinned.
+
+        A dividend adjustment deflates a stock's history by its own dividend
+        record. That is right for a return and wrong for "how many rupees
+        changed hands", and because the deflation differs per stock it moved
+        traded value ACROSS the cross-section -- 0.332 for VEDL against 0.912
+        for HDFCBANK at 2016-06-30. Returns must keep using Close; traded value
+        must use CloseUnadjusted; neither may substitute for the other.
+        """
+        text = ("Date,Ticker,Open,High,Low,Close,Volume,CloseUnadjusted\n"
+                "2025-01-01,AAA,40,41,39,40.0,1000,120.0\n"
+                "2025-01-02,AAA,41,42,40,44.0,1000,132.0\n")
+        history, _ = parse_price_history_csv(text)
+        series = history["AAA"]
+        # The return comes from the adjusted close and is unaffected by the
+        # new column, even though the two differ by a factor of three.
+        self.assertAlmostEqual(series["closes"][1] / series["closes"][0] - 1.0, 0.10)
+        # Traded value comes from the unadjusted close and is three times the
+        # figure the adjusted close would have produced.
+        self.assertEqual(series["closesUnadjusted"][0] * series["volumes"][0], 120000.0)
+        self.assertEqual(series["closes"][0] * series["volumes"][0], 40000.0)
 
     def test_download_frame_is_flattened_to_screener_tickers(self):
         # TCS carries a high and a low; 500209 and the benchmark carry neither,
@@ -4929,15 +5046,25 @@ class EngineTests(unittest.TestCase):
             index=idx, columns=columns)
         text = price_history_to_csv(price_history_rows_from_download(frame, ["TCS", "500209"]))
         self.assertEqual(text.splitlines(), [
-            "Date,Ticker,Open,High,Low,Close,Volume",
-            "2025-01-01,500209,,,,2.0,", "2025-01-02,500209,,,,2.5,",
-            "2025-01-03,500209,,,,2.6,",
+            "Date,Ticker,Open,High,Low,Close,Volume,CloseUnadjusted",
+            "2025-01-01,500209,,,,2.0,,", "2025-01-02,500209,,,,2.5,,",
+            "2025-01-03,500209,,,,2.6,,",
             # The middle session has no close, so it is dropped entirely; an
             # absent open is written blank rather than copied from the close.
-            "2025-01-01,TCS,,1.5,0.9,1.0,10", "2025-01-03,TCS,,1.7,1.1,1.2,",
-            "2025-01-01,^NSEI,,,,3.0,", "2025-01-02,^NSEI,,,,3.5,",
-            "2025-01-03,^NSEI,,,,3.6,",
+            "2025-01-01,TCS,,1.5,0.9,1.0,10,", "2025-01-03,TCS,,1.7,1.1,1.2,,",
+            "2025-01-01,^NSEI,,,,3.0,,", "2025-01-02,^NSEI,,,,3.5,,",
+            "2025-01-03,^NSEI,,,,3.6,,",
         ])
+
+        # With the second frame supplied, the traded-value close is written and
+        # the adjusted close is untouched.
+        unadjusted = pd.DataFrame(
+            [[3.0], [3.1], [3.2]], index=idx,
+            columns=pd.MultiIndex.from_tuples([("Close", "TCS.NS")]))
+        rows = price_history_rows_from_download(frame, ["TCS", "500209"], unadjusted)
+        tcs = [r for r in rows if r[1] == "TCS"]
+        self.assertEqual([r[5] for r in tcs], [1.0, 1.2], "adjusted close unchanged")
+        self.assertEqual([r[7] for r in tcs], [3.0, 3.2], "traded-value close added")
 
     def test_technicals_align_benchmark_by_date(self):
         dates = [d.strftime("%Y-%m-%d") for d in pd.date_range("2024-01-01", periods=300, freq="B")]

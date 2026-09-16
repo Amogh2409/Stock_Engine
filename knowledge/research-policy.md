@@ -328,3 +328,82 @@ record: the Amihud denominator defect was found with **no Amihud forward return
 ever computed**, the defect is in the shared panel rather than in Amihud, and
 the correction (use a dividend-unadjusted close for a rupee traded value) is
 determined by what traded value *means*.
+
+---
+
+## Dual-close panel repair — 2026-09-16
+
+Authorised under the repair-vs-rescue amendment. **No Amihud forward return had
+been computed, and none was computed during the repair.**
+
+### What changed
+
+Price panel **schema v1 → v2**: `CloseUnadjusted` appended — split-adjusted,
+**not** dividend-adjusted — for traded value only. `Close` keeps its meaning
+(split *and* dividend adjusted) and every return, indicator and existing study
+still reads it. The basis was verified empirically, not from the flag name:
+`auto_adjust=True`'s Close equals `auto_adjust=False`'s `Adj Close` exactly,
+and the latter's `Close` is the split-adjusted-only series.
+
+A **second download** rather than a derived column: scaling the adjusted close
+by a ratio would put floating-point drift into the OHLC every other study
+reads. Mirrored in TypeScript as `closesUnadjusted`, so cross-engine parity
+holds. A v1 file still parses, with the column absent — and Amihud **refuses**
+a v1 panel rather than falling back to `Close`, which would silently restore
+the defect.
+
+### The denominator correction, validated mechanically
+
+`old traded value / new traded value` equals the cumulative dividend factor
+exactly (to 1e-12) for every ticker tested:
+
+| ticker | adjClose/unadjClose | oldTV/newTV | match |
+|---|--:|--:|---|
+| VEDL | 0.3320 | 0.3320 | ✓ |
+| COALINDIA | 0.4516 | 0.4516 | ✓ |
+| ITC | 0.6969 | 0.6969 | ✓ |
+| TCS | 0.7843 | 0.7843 | ✓ |
+| HDFCBANK | 0.9120 | 0.9120 | ✓ |
+
+The old basis dispersed **2.75×** across the cross-section at 2016-06-30. On
+the new basis the audit reports a spread of **1.0000 .. 1.0000 (1.00×)** — the
+dispersion is gone, because the unadjusted close *is* the price shares traded
+at.
+
+### Re-audited after rebuild
+
+| check | before | after |
+|---|---|---|
+| Volume unit | PASS | PASS |
+| Corporate-action invariance | PASS | PASS |
+| **Price basis for traded value** | **FAIL (2.75×)** | **PASS (1.00×)** |
+| Missing-volume contract | PASS | PASS |
+| Cross-sectional coverage | PASS | PASS (100%) |
+| Extreme-value inspection | PASS | PASS |
+
+**READINESS: PASS.** Calendar invariants re-run: 0 synthetic sessions, 0
+no-trade bars, 29 blank-volume rows, 0 month-ends on a synthetic session.
+
+### Collateral effect
+
+**Volume: byte-identical, 0 differing cells.**
+
+The adjusted OHLC differ in **135,109 of 266,095** cells — but not because of
+this change. Adding the `auto_adjust=False` call to a multi-ticker download
+changes **0 of 21** adjusted closes in a controlled test; the drift is
+provider-side float variation between two separate downloads, bounded at
+**8.8e-7 relative**, or **0.013 bps** on a daily return.
+
+The substantive proof is the frozen study re-run on the v2 panel: across 80
+cells the largest IC move is **0.00075** and the median **0.0000072**, with the
+same single cell (`volumeRatio20D` 6m) clearing both bars. **Conclusions
+unchanged.**
+
+`SCORING_HASH` moved to `cce5e6369b60810b` because the guard covers every
+module constant and two schema constants changed; the scoring functions have
+zero diff lines. Recorded in `holdout.md`.
+
+### Budget
+
+Still **1 of 3**. Amihud is now eligible for registration; slot 2 is consumed
+only when a registered return study actually runs.

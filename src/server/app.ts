@@ -3,6 +3,8 @@ import type { Server } from 'node:http';
 
 import express, { type Express, type RequestHandler } from 'express';
 
+import { mountDataStoreRoutes } from './dataStore';
+
 export interface ServerOptions {
   port?: number;
   host?: string;
@@ -12,6 +14,18 @@ export interface ServerOptions {
   clientDir?: string;
   /** Supplies the dev middleware (Vite), injected so tests need no bundler. */
   devMiddleware?: () => Promise<RequestHandler>;
+  /**
+   * Repository root, used to find `data-store/`. Defaults to the working
+   * directory, which is the repo root under `npm run dev`; tests point it at a
+   * fixture instead.
+   */
+  repoRoot?: string;
+  /**
+   * Serve the CLI's data-store to the app. Defaults to on in development and
+   * off in production -- see mountDataStoreRoutes for why that asymmetry is
+   * deliberate.
+   */
+  serveDataStore?: boolean;
 }
 
 /**
@@ -43,6 +57,12 @@ export async function createApp(options: ServerOptions = {}): Promise<Express> {
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok' });
   });
+
+  // Mounted before the static client and before the Vite middleware, so an
+  // /api route is answered here rather than falling through to the SPA page.
+  if (options.serveDataStore ?? !production) {
+    mountDataStoreRoutes(app, options.repoRoot ?? process.cwd());
+  }
 
   if (production) {
     const clientDir = options.clientDir ?? clientDirFor(entryDir());

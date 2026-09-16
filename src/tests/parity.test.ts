@@ -223,7 +223,11 @@ const EDGE_CASE_CSV = [
   ...['PASSA', 'PASSB', 'PASSC', 'PASSD', 'PASSE'].map(
     (t) => `${t} Ltd,${t},Computers - Software,"Rs 1,500",5000,20%,20%,25%,25%,0.1,10,500,60%,0%,15,2,1%`,
   ),
-  'Negative Equity Ltd,NEGEQ,Pharmaceuticals,1200,5000,20%,20%,25%,25%,-3.5,10,500,60%,0%,15,2,1%',
+  // P/B is NEGATIVE here, which is what actually makes the book value
+  // negative. It previously read +2 while relying on the -3.5 D/E to raise
+  // the flag -- a row that called itself Negative Equity Ltd while carrying
+  // a positive book value, which is the net-cash case rather than insolvency.
+  'Negative Equity Ltd,NEGEQ,Pharmaceuticals,1200,5000,20%,20%,25%,25%,-3.5,10,500,60%,0%,15,-2,1%',
   'Depository Ltd,FINSVC,Financial - Services,1480,30900,28%,34%,38%,29%,0,145,410,15%,0%,55,17,1.3%',
 ].join('\n');
 
@@ -741,6 +745,8 @@ describe('Cross-engine parity on additional screens', () => {
     const byTicker = new Map(ours.evaluations.map((e) => [e.stock.ticker, e]));
     expect(byTicker.get('NEGEQ')!.redFlags).toEqual(['Negative net worth']);
     expect(byTicker.get('NEGEQ')!.rejectionReasons).not.toContain('High D/E');
+    // Its D/E of -3.5 no longer contributes: only the negative P/B does.
+    expect(byTicker.get('NEGEQ')!.stock.debtToEquity).toBe(-3.5);
     expect(byTicker.get('FINSVC')!.scoringModel).toBe('financial');
     expect(byTicker.get('FINSVC')!.notScored).toContain('missing bank metrics');
     expect(byTicker.get('PASSA')!.stock.currentPrice).toBe(1500);

@@ -260,6 +260,11 @@ const COLUMN_ALIASES: Record<string, string[]> = {
   // Optional. Present only in exports that carry an absolute revenue column;
   // "Sales growth 3Years" is a percentage and is a different field.
   sales: ['sales', 'revenue', 'total revenue', 'total income'],
+  // Optional, and the DIRECT test for negative net worth.
+  shareholdersEquity: [
+    'shareholders equity', 'shareholder equity', 'stockholders equity',
+    'total equity', 'net worth', 'equity',
+  ],
   // --- Financial-company metrics (banks, NBFCs). Optional everywhere else. ---
   // Screener.in spells these differently across screens, so each carries the
   // spellings seen in the wild; normalizeHeader() strips the trailing "%".
@@ -300,6 +305,7 @@ export const FIELD_UNITS: Record<string, FieldUnit> = {
   peRatio: 'ratio',
   pbRatio: 'ratio',
   sales: 'crore',
+  shareholdersEquity: 'crore',
   returnOnAssets: 'percent',
   grossNpa: 'percent',
   netNpa: 'percent',
@@ -1789,6 +1795,14 @@ export interface PriceSeries {
   opens: (number | null)[];
   highs: (number | null)[];
   lows: (number | null)[];
+  /**
+   * Schema v2: split-adjusted but NOT dividend-adjusted, for TRADED VALUE only
+   * -- never for a return. `closes` above stays fully adjusted and remains what
+   * every indicator reads. Null on every session of a v1 file, and null is
+   * where it stays: defaulting to `closes` would silently restore the
+   * per-stock dividend deflation this column exists to remove.
+   */
+  closesUnadjusted: (number | null)[];
 }
 
 /** Ticker -> sessions. The benchmark is stored under BENCHMARK_SYMBOL. */
@@ -2176,11 +2190,14 @@ export function parsePriceHistoryCsv(text: string): { history: PriceHistory; ski
   const openCol = find('open');
   const highCol = find('high');
   const lowCol = find('low');
+  // Schema v2. Absent in a v1 file, which then reads as "not measured".
+  const unadjustedCol = find('closeunadjusted', 'close_unadjusted', 'rawclose');
   if (dateCol === null || tickerCol === null || closeCol === null) {
     throw new Error('Price history CSV needs Date, Ticker and Close columns (Volume is optional)');
   }
 
-  type Point = [number, number | null, number | null, number | null, number | null];
+  type Point = [number, number | null, number | null, number | null, number | null,
+    number | null];
   const pointsByTicker = new Map<string, Map<string, Point>>();
   let skipped = 0;
   for (const row of rows.slice(1)) {
@@ -2200,6 +2217,7 @@ export function parsePriceHistoryCsv(text: string): { history: PriceHistory; ski
       parseStrictDecimal(cell(openCol)),
       parseStrictDecimal(cell(highCol)),
       parseStrictDecimal(cell(lowCol)),
+      parseStrictDecimal(cell(unadjustedCol)),
     ]);
   }
 
@@ -2213,6 +2231,7 @@ export function parsePriceHistoryCsv(text: string): { history: PriceHistory; ski
       opens: dates.map((d) => points.get(d)![2]),
       highs: dates.map((d) => points.get(d)![3]),
       lows: dates.map((d) => points.get(d)![4]),
+      closesUnadjusted: dates.map((d) => points.get(d)![5]),
     };
   }
   return { history, skipped };
@@ -2301,6 +2320,7 @@ export function parseScreenerRows(
       pbRatio: num('pbRatio'),
       dividendYield: num('dividendYield'),
       sales: num('sales'),
+      shareholdersEquity: num('shareholdersEquity'),
       returnOnAssets: num('returnOnAssets'),
       grossNpa: num('grossNpa'),
       netNpa: num('netNpa'),
@@ -2404,10 +2424,16 @@ const COVERAGE_FIELDS_NON_FINANCIAL = ['debtToEquity', 'interestCoverage'] as co
  * has no CASA at all, so awarding points for it would penalise every NBFC for
  * being an NBFC. Counterpart of the same constants in python/engine.py.
  */
+// GROSS NPA IS REPORTED, NOT REQUIRED, and it used to be required. It carries
+// zero points -- net NPA is the scored asset-quality measure -- so demanding it
+// blocked a lender from being scored over a field the model never reads. A
+// requirement that cannot change any score is not a data-integrity check, it is
+// a barrier. Giving it a role would be a scoring change with no evidence behind
+// it, so it joins CASA and financing margin as reported-only.
 export const BANK_REQUIRED_FIELDS = [
-  'returnOnAssets', 'grossNpa', 'netNpa', 'capitalAdequacy',
+  'returnOnAssets', 'netNpa', 'capitalAdequacy',
 ] as const;
-export const BANK_OPTIONAL_FIELDS = ['casa', 'financingMargin'] as const;
+export const BANK_OPTIONAL_FIELDS = ['grossNpa', 'casa', 'financingMargin'] as const;
 export const BANK_FIELD_LABELS: Record<string, string> = {
   returnOnAssets: 'Return on assets',
   grossNpa: 'Gross NPA %',
@@ -2446,12 +2472,26 @@ export function hardRedFlags(
   const flags: string[] = [];
   const {
     marketCap: mcap, promoterHolding: ph, promoterPledge: pp,
-    pbRatio: pb, debtToEquity: de, operatingCashFlow: ocf, sales,
+    pbRatio: pb, shareholdersEquity: equity, operatingCashFlow: ocf, sales,
   } = stock;
 
-  // 1. Negative net worth. P/B and D/E change sign, not magnitude, so a
-  //    "cheap" P/B of -0.3 is insolvency rather than a bargain.
-  if ((pb !== null && pb < 0) || (de !== null && de < 0)) flags.push('Negative net worth');
+  // 1. Negative net worth, tested against equity itself where the export
+  //    carries it and inferred from P/B otherwise.
+  //
+  //    P/B IS a sound inference: price is always positive, so a negative P/B
+  //    can only mean a negative book value. A "cheap" P/B of -0.3 is
+  //    insolvency rather than a bargain.
+  //
+  //    DEBT/EQUITY IS NOT, and used to be part of this test. It only carries
+  //    the sign of equity when the provider reports GROSS debt. A provider
+  //    reporting NET debt gives a negative ratio to a company holding more cash
+  //    than debt -- so the rule rejected some of the strongest balance sheets
+  //    as insolvent. Nothing in the CSV contract says which convention an
+  //    export uses, so the inference is gone rather than guarded.
+  if ((equity !== null && equity !== undefined && equity <= 0)
+      || ((equity === null || equity === undefined) && pb !== null && pb < 0)) {
+    flags.push('Negative net worth');
+  }
   // 2. Pledged promoter stake above the configured limit.
   if (pp !== null && pp > config.maxPromoterPledgePct) flags.push('High Promoter Pledge');
   // 3. Operating cash flow, for NON-FINANCIAL companies only. For a bank or

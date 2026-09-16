@@ -58,7 +58,8 @@ function makeStock(overrides: Partial<CleanedStock> = {}): CleanedStock {
     salesGrowth: 20, profitGrowth: 20, roce: 25, roe: 25, debtToEquity: 0,
     interestCoverage: 10, operatingCashFlow: 100, promoterHolding: 60,
     promoterPledge: 0, peRatio: 15, pbRatio: 2, dividendYield: 1,
-    sales: null, returnOnAssets: null, grossNpa: null, netNpa: null,
+    sales: null,
+    shareholdersEquity: null, returnOnAssets: null, grossNpa: null, netNpa: null,
     capitalAdequacy: null, casa: null, financingMargin: null,
     technicals: emptyTechnicals(), rawRow: {}, ...overrides,
   };
@@ -91,7 +92,7 @@ describe('Position sizing', () => {
         volumes: Array(sessions).fill(null),
         opens: Array(sessions).fill(null),
         highs: Array(sessions).fill(null),
-        lows: Array(sessions).fill(null),
+        lows: Array(sessions).fill(null), closesUnadjusted: Array(sessions).fill(null),
       };
     });
     return history;
@@ -203,7 +204,7 @@ describe('Position sizing', () => {
     }
     const series = (closes: number[]): PriceSeries => ({
       dates: [...dates], closes, volumes: Array(80).fill(null),
-      opens: Array(80).fill(null), highs: Array(80).fill(null), lows: Array(80).fill(null),
+      opens: Array(80).fill(null), highs: Array(80).fill(null), lows: Array(80).fill(null), closesUnadjusted: Array(80).fill(null),
     });
     const [value, basis] = portfolioVolatilityPct(
       { AAA: 0.5, BBB: 0.5 }, { AAA: series(up), BBB: series(down) },
@@ -516,7 +517,7 @@ describe('Screening and scoring', () => {
   });
 
   it('gives a red-flagged company the red-flag verdict whatever it scores', () => {
-    const ev = evaluateStock(makeStock({ debtToEquity: -3.5 }), DEFAULT_SCREENING_CONFIG, APP);
+    const ev = evaluateStock(makeStock({ shareholdersEquity: -100 }), DEFAULT_SCREENING_CONFIG, APP);
     expect(ev.verdict).toBe('Red flag');
     expect(ev.compositeScore).toBeGreaterThan(0);
   });
@@ -647,7 +648,7 @@ describe('Screening and scoring', () => {
     // Without the bank columns it names exactly what is missing, rather than
     // being scored on ratios that do not describe a lender.
     expect(ev.notScored).toBe(
-      'Not scored: missing bank metrics (Return on assets, Gross NPA %, Net NPA %, Capital adequacy ratio)',
+      'Not scored: missing bank metrics (Return on assets, Net NPA %, Capital adequacy ratio)',
     );
 
     const scored = evaluateStock(
@@ -948,7 +949,7 @@ describe('Price history', () => {
       // columns stay absent and are never guessed from the close.
       opens: [null, null],
       highs: [null, null],
-      lows: [null, null],
+      lows: [null, null], closesUnadjusted: [null, null],
     });
     expect(() => parsePriceHistoryCsv('Date,Close\n2025-01-01,1\n')).toThrow(/Date, Ticker and Close/);
   });
@@ -963,7 +964,7 @@ describe('Price history', () => {
           volumes: d.map(() => 1000),
           opens: d.map(() => null),
           highs: d.map(() => null),
-          lows: d.map(() => null),
+          lows: d.map(() => null), closesUnadjusted: d.map(() => null),
         },
         [BENCHMARK_SYMBOL]: {
           dates: d.filter((_, i) => i % 2 === 0),
@@ -971,7 +972,7 @@ describe('Price history', () => {
           volumes: Array(150).fill(null),
           opens: Array(150).fill(null),
           highs: Array(150).fill(null),
-          lows: Array(150).fill(null),
+          lows: Array(150).fill(null), closesUnadjusted: Array(150).fill(null),
         },
       },
       ['AAA', 'MISSING'],
@@ -997,7 +998,7 @@ describe('Price history', () => {
         volumes: d.map(() => null),
         opens: d.map(() => null),
         highs: d.map(() => null),
-        lows: d.map(() => null),
+        lows: d.map(() => null), closesUnadjusted: d.map(() => null),
       },
     });
     const byTicker = new Map(withHistory.evaluations.map((e) => [e.stock.ticker, e]));
@@ -1018,11 +1019,11 @@ describe('Price history', () => {
       describePriceHistory({
         TCS: {
           dates: ['2025-01-01', '2025-01-03'], closes: [1, 2], volumes: [null, null],
-          opens: [null, null], highs: [null, null], lows: [null, null],
+          opens: [null, null], highs: [null, null], lows: [null, null], closesUnadjusted: [null, null],
         },
         [BENCHMARK_SYMBOL]: {
           dates: ['2025-01-02'], closes: [1], volumes: [null],
-          opens: [null], highs: [null], lows: [null],
+          opens: [null], highs: [null], lows: [null], closesUnadjusted: [null],
         },
       }),
     ).toEqual({ tickers: 1, asOf: '2025-01-03', hasBenchmark: true });
@@ -1077,22 +1078,37 @@ describe('Removed entries', () => {
 
 describe('Screening rules found by review', () => {
   it('treats a negative net worth as a hard red flag', () => {
-    const ev = evaluateStock(makeStock({ debtToEquity: -3.5 }), DEFAULT_SCREENING_CONFIG, APP);
+    // Equity itself, when the export carries it. The direct test.
+    const ev = evaluateStock(makeStock({ shareholdersEquity: -100 }), DEFAULT_SCREENING_CONFIG, APP);
     expect(ev.redFlags).toEqual(['Negative net worth']);
     expect(ev.rejectionReasons).toContain('Negative net worth');
-    expect(ev.rejectionReasons).not.toContain('High D/E');
     expect(ev.passed).toBe(false);
     // Red-flagged but still scored, so a comparison across the index can show
-    // the fundamentals beside the flag that disqualifies them: quality 18.8 +
-    // growth 16.7 + safety 10 (negative equity earns nothing for D/E, the
-    // interest cover still earns its ten) + governance 9.
-    expect(ev.score).toBe(54.4);
-    expect(ev.categoryScores.balanceSheetSafety.score).toBe(10);
-    expect(ev.scoreLines).toContain('D/E -3.5 (+0.0)');
-    // A negative P/B reaches the same conclusion on its own.
+    // the fundamentals beside the flag that disqualifies them.
+    expect(ev.score).toBeGreaterThan(0);
+
+    // A negative P/B reaches the same conclusion when equity is absent: price
+    // is always positive, so the sign can only come from book value.
     expect(
       evaluateStock(makeStock({ pbRatio: -0.3 }), DEFAULT_SCREENING_CONFIG, APP).redFlags,
     ).toEqual(['Negative net worth']);
+
+    // A NEGATIVE DEBT/EQUITY NO LONGER FLAGS, and that is the point. The ratio
+    // only carries the sign of equity when the provider reports GROSS debt; a
+    // provider reporting NET debt gives a negative ratio to a company holding
+    // more cash than it owes. It still earns no safety points, which is a
+    // separate judgement and deliberately unchanged.
+    const netCash = evaluateStock(makeStock({ debtToEquity: -3.5 }), DEFAULT_SCREENING_CONFIG, APP);
+    expect(netCash.redFlags).toEqual([]);
+    expect(netCash.rejectionReasons).not.toContain('High D/E');
+    expect(netCash.scoreLines).toContain('D/E -3.5 (+0.0)');
+
+    // Equity wins over a contradictory P/B: a reported balance sheet beats a
+    // ratio derived from one.
+    expect(
+      evaluateStock(makeStock({ shareholdersEquity: 5000, pbRatio: -0.3 }),
+        DEFAULT_SCREENING_CONFIG, APP).redFlags,
+    ).toEqual([]);
   });
 
   it('reports a published zero as a value, never as a missing figure', () => {

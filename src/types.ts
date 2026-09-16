@@ -114,6 +114,8 @@ export interface CleanedStock {
   dividendYield: number | null;
   /** Absolute revenue in rupee crore, when the export carries such a column. */
   sales: number | null;
+  /** Optional; the direct test for negative net worth when an export carries it. */
+  shareholdersEquity: number | null;
   /**
    * Financial-company metrics. Null for every company whose export lacks them,
    * which is what puts a bank into "not scored: missing bank metrics".
