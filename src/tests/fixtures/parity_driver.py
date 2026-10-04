@@ -76,6 +76,9 @@ def run_screen(engine, pd, spec, expected_rows=None):
                 "score": item["score"],
                 "composite": item["composite"],
                 "compositeBasis": item["compositeBasis"],
+                "operatingCashFlowYieldPct": item["operatingCashFlowYieldPct"],
+                "marketStructure": item["marketStructure"],
+                "selectionReview": item["selectionReview"],
                 "verdict": item["verdict"],
                 "coverage": item["coverage"],
                 "reasons": list(item["reasons"]),
@@ -127,6 +130,7 @@ def run_screen(engine, pd, spec, expected_rows=None):
             for item in result["fundamental_only"]
         ],
         "watchlist_csv": engine.watchlist_to_csv(result["watchlist"]),
+        "selection_review_csv": engine.selection_review_to_csv(result["evaluations"]),
         "passed_below_csv": engine.watchlist_to_csv(result["passed_below_cutoff"]),
         "rejected_csv": engine.rejected_to_csv(result["rejected"]),
         "technicals": None if history is None else engine.technicals_from_history(history, tickers),
@@ -176,12 +180,15 @@ def main():
             price_parse_results.append({"error": True})
 
     payload = {
+        "market_structure_results": [engine.compute_market_structure(**case)
+                                     for case in job.get("market_structure_cases", [])],
         "engine": "python",
         "mapping": base["mapping"],
         "duplicates_removed": base["duplicates_removed"],
         "evaluations": base["evaluations"],
         "watchlist": base["watchlist"],
         "watchlist_csv": base["watchlist_csv"],
+        "selection_review_csv": base["selection_review_csv"],
         "rejected_csv": base["rejected_csv"],
         # The primary screen's sizing summary. run_screen() already projects one
         # per extra screen, but the base screen's was not lifted here, so the

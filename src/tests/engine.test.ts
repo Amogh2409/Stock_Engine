@@ -34,6 +34,7 @@ import {
   escapeCsvCell,
   escapeHtml,
   evaluateStock,
+  operatingCashFlowYieldPct,
   fmt1,
   generateHtmlReport,
   generateRankingChangesCsv,
@@ -67,6 +68,35 @@ function makeStock(overrides: Partial<CleanedStock> = {}): CleanedStock {
 
 const APP = { ...DEFAULT_APP_CONFIG, minimum_total_score: 0, enable_technical_confirmation: false };
 const prices = (n: number) => Array.from({ length: n }, (_, i) => 100 + i * 0.5);
+
+describe('Operating cash-flow yield diagnostic', () => {
+  it('reports a percent with the same units on numerator and denominator', () => {
+    expect(operatingCashFlowYieldPct(makeStock({ operatingCashFlow: 750, marketCap: 10000 }))).toBe(7.5);
+    expect(operatingCashFlowYieldPct(makeStock({ operatingCashFlow: 0 }))).toBe(0);
+    expect(operatingCashFlowYieldPct(makeStock({ operatingCashFlow: -750 }))).toBe(-7.5);
+  });
+
+  it('does not invent yields for lenders, missing inputs or invalid denominators', () => {
+    for (const stock of [
+      makeStock({ sector: 'Banks - Private Sector' }),
+      makeStock({ sector: 'Finance - NBFC' }),
+      makeStock({ operatingCashFlow: null }),
+      makeStock({ operatingCashFlow: Infinity }),
+      ...[null, 0, -10, NaN, Infinity].map(marketCap => makeStock({ marketCap })),
+    ]) expect(operatingCashFlowYieldPct(stock)).toBeNull();
+  });
+
+  it('exposes the diagnostic without awarding points, and suppresses red-flagged data', () => {
+    const low = evaluateStock(makeStock({ operatingCashFlow: 100 }), DEFAULT_SCREENING_CONFIG, APP);
+    const high = evaluateStock(makeStock({ operatingCashFlow: 750 }), DEFAULT_SCREENING_CONFIG, APP);
+    expect(high.operatingCashFlowYieldPct).toBe(7.5);
+    expect(high.score).toBe(low.score);
+    expect(high.compositeScore).toBe(low.compositeScore);
+    expect(high.passed).toBe(low.passed);
+    expect(evaluateStock(makeStock({ promoterPledge: 99 }), DEFAULT_SCREENING_CONFIG, APP)
+      .operatingCashFlowYieldPct).toBeNull();
+  });
+});
 
 describe('Position sizing', () => {
   /**

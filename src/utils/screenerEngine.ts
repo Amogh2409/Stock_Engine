@@ -27,10 +27,12 @@ import {
   ColumnProfile,
   DataInspectionReport,
   FilterOperator,
+  MarketStructure,
   RankingChange,
   RelativeStrengthBucket,
   ScreenerRow,
   ScreeningConfig,
+  SelectionReview,
   SectorMedian,
   SectorMedians,
   SectorRelativeStrength,
@@ -2264,6 +2266,185 @@ export function technicalsFromHistory(
   return out;
 }
 
+/** Daily-bar diagnostics only. Canonical implementation: compute_market_structure() in Python. */
+function dailyVolumeProfile(series: PriceSeries, anchored: number[], bins: number, total: number): MarketStructure['volumeProfile'] {
+  // Reduce rather than spread: an explicitly anchored history can be very long.
+  const floor = anchored.reduce((v, i) => Math.min(v, series.lows[i]!), Infinity);
+  const ceiling = anchored.reduce((v, i) => Math.max(v, series.highs[i]!), -Infinity);
+  const width = (ceiling - floor) / bins;
+  const profile = width === 0 ? [{ low: floor, high: ceiling, volume: total }]
+    : Array.from({ length: bins }, (_, b) => ({ low: floor + b * width,
+      high: b === bins - 1 ? ceiling : floor + (b + 1) * width, volume: 0 }));
+  if (width !== 0) {
+    for (const i of anchored) {
+      const low = series.lows[i]!, high = series.highs[i]!, volume = series.volumes[i]!;
+      if (high === low) {
+        const b = Math.min(bins - 1, Math.max(0, Math.trunc((low - floor) / width)));
+        profile[b].volume += volume;
+      } else {
+        for (const cell of profile) {
+          const overlap = Math.max(0, Math.min(high, cell.high) - Math.max(low, cell.low));
+          cell.volume += volume * (overlap / (high - low));
+        }
+      }
+    }
+  }
+  let poc = 0;
+  profile.forEach((cell, b) => { if (cell.volume > profile[poc].volume) poc = b; });
+  let left = poc, right = poc, covered = profile[poc].volume;
+  while (covered < 0.70 * total && (left > 0 || right < profile.length - 1)) {
+    const down = left > 0 ? profile[left - 1].volume : -1;
+    const up = right < profile.length - 1 ? profile[right + 1].volume : -1;
+    if (down >= up) covered += profile[--left].volume;
+    else covered += profile[++right].volume;
+  }
+  return { bins: profile, poc: profile[poc].low / 2 + profile[poc].high / 2,
+    valueAreaLow: profile[left].low, valueAreaHigh: profile[right].high, totalVolume: total, reason: null };
+}
+
+export function computeMarketStructure(
+  series: PriceSeries,
+  anchorDate: string | null = null,
+  asOf: string | null = null,
+  lookback = 20,
+  bins = 24,
+): MarketStructure {
+  const result: MarketStructure = {
+    asOf: null, anchorDate: null, lookback,
+    basis: 'Daily bars on the supplied adjustment basis; VWAP and volume profile are approximations. No ranking or trading signal.',
+    error: null,
+    anchoredVwap: { value: null, distancePct: null, bars: 0, reason: null },
+    sweep: { side: null, referenceHigh: null, referenceLow: null, reason: null },
+    wyckoff: { context: 'unavailable', reason: null },
+    volumeProfile: { bins: [], poc: null, valueAreaLow: null, valueAreaHigh: null, totalVolume: null, reason: null },
+    auctionContext: { position: 'unavailable', referenceStart: null, referenceEnd: null,
+      poc: null, valueAreaLow: null, valueAreaHigh: null,
+      reason: 'Needs a valid latest bar and a full prior lookback with positive volume.' },
+    orderFlow: { status: 'unavailable', reason: 'Daily OHLCV has no aggressor-side trades or order-book events.' },
+  };
+  if (!Number.isInteger(lookback) || lookback < 2 || lookback > 252 || !Number.isInteger(bins) || bins < 2 || bins > 100) {
+    result.error = 'Use a whole-number lookback of 2–252 bars and 2–100 profile bins.';
+    return result;
+  }
+  if ((anchorDate !== null && !isRealDate(anchorDate)) || (asOf !== null && !isRealDate(asOf))) {
+    result.error = 'Anchor and as-of dates must be valid YYYY-MM-DD dates.';
+    return result;
+  }
+  const dates = series.dates;
+  if (!dates.length) {
+    result.error = 'No daily price history loaded.';
+    return result;
+  }
+  if (dates.some((d, i) => !isRealDate(d) || (i > 0 && d <= dates[i - 1]))) {
+    result.error = 'Daily dates must be valid, unique and increasing.';
+    return result;
+  }
+  if ([series.closes, series.highs, series.lows, series.volumes].some(a => a.length !== dates.length)) {
+    result.error = 'Close, High, Low and Volume must align with every daily date.';
+    return result;
+  }
+  let end = -1;
+  dates.forEach((d, i) => { if (asOf === null || d <= asOf) end = i; });
+  if (end < 0) {
+    result.error = 'No bars on or before the as-of date.';
+    return result;
+  }
+  result.asOf = dates[end];
+  const validPrice = (i: number) => {
+    const low = series.lows[i], close = series.closes[i], high = series.highs[i];
+    return low !== null && high !== null && [low, close, high].every(v => Number.isFinite(v) && v > 0)
+      && low <= close && close <= high;
+  };
+  const indices = (start: number) => Array.from({ length: end - start + 1 }, (_, i) => start + i);
+  if (end < lookback) {
+    result.sweep.reason = result.wyckoff.reason = 'Need the latest bar plus a full prior lookback of High, Low and Close.';
+  } else if (!indices(end - lookback).every(validPrice)) {
+    result.sweep.reason = result.wyckoff.reason = 'Missing or inconsistent High, Low or Close in the lookback; no bars skipped.';
+  } else {
+    const prior = indices(end - lookback).slice(0, -1);
+    const upper = Math.max(...prior.map(i => series.highs[i]!));
+    const lower = Math.min(...prior.map(i => series.lows[i]!));
+    const close = series.closes[end];
+    const sell = series.lows[end]! < lower && close > lower;
+    const buy = series.highs[end]! > upper && close < upper;
+    const side = sell && buy ? 'both' : sell ? 'sell-side' : buy ? 'buy-side' : 'none';
+    Object.assign(result.sweep, { side, referenceHigh: upper, referenceLow: lower });
+    result.wyckoff.context = close > upper ? 'markup candidate' : close < lower ? 'markdown candidate'
+      : side === 'both' ? 'ambiguous two-sided sweep' : sell ? 'spring candidate'
+      : buy ? 'upthrust candidate' : 'range — accumulation/distribution unresolved';
+    result.wyckoff.reason = 'Price context only; full Wyckoff phases and institutional activity are not established.';
+  }
+  // Prior profile excludes the current bar and ignores the manual chart anchor.
+  if (end >= lookback && indices(end - lookback).every(validPrice)) {
+    const prior = indices(end - lookback).slice(0, -1);
+    if (prior.every(i => Number.isFinite(series.volumes[i]) && series.volumes[i]! > 0)) {
+      const total = prior.reduce((sum, i) => sum + series.volumes[i]!, 0);
+      if (Number.isFinite(total)) {
+        const profile = dailyVolumeProfile(series, prior, bins, total);
+        const close = series.closes[end];
+        Object.assign(result.auctionContext, {
+          position: close > profile.valueAreaHigh! ? 'above value' : close < profile.valueAreaLow! ? 'below value' : 'inside value',
+          referenceStart: dates[end - lookback], referenceEnd: dates[end - 1],
+          poc: profile.poc, valueAreaLow: profile.valueAreaLow, valueAreaHigh: profile.valueAreaHigh,
+          reason: 'Close relative to the prior daily estimated value area; acceptance, rejection and TPO are not established.',
+        });
+      }
+    }
+  }
+  const anchor = anchorDate ?? dates[Math.max(0, end - lookback + 1)];
+  const start = dates.indexOf(anchor);
+  if (start < 0 || start > end) {
+    result.anchoredVwap.reason = result.volumeProfile.reason = 'Anchor must match a loaded session on or before the as-of date.';
+    return result;
+  }
+  result.anchorDate = anchor;
+  const anchored = indices(start);
+  if (!anchored.every(i => validPrice(i) && Number.isFinite(series.volumes[i]) && series.volumes[i]! > 0)) {
+    result.anchoredVwap.reason = result.volumeProfile.reason = 'Every anchored bar needs valid High, Low, Close and positive Volume; no bars skipped.';
+    return result;
+  }
+  let total = 0;
+  for (const i of anchored) total += series.volumes[i]!;
+  if (!Number.isFinite(total)) {
+    result.anchoredVwap.reason = result.volumeProfile.reason = 'Volume total is not finite.';
+    return result;
+  }
+  let vwap = 0;
+  for (const i of anchored) {
+    const typical = series.highs[i]! / 3 + series.lows[i]! / 3 + series.closes[i] / 3;
+    vwap += typical * (series.volumes[i]! / total);
+  }
+  const distance = vwap > 0 ? (series.closes[end] / vwap - 1) * 100 : Infinity;
+  if (!Number.isFinite(vwap) || !Number.isFinite(distance)) {
+    result.anchoredVwap.reason = result.volumeProfile.reason = 'Price calculation is not finite.';
+    return result;
+  }
+  Object.assign(result.anchoredVwap, { value: vwap, distancePct: distance, bars: end - start + 1 });
+  result.volumeProfile = dailyVolumeProfile(series, anchored, bins, total);
+  return result;
+}
+
+/** Experimental review filter; never feeds a score, admission gate or allocation. */
+export function selectionReview(passed: boolean, structure: MarketStructure | null, referenceDate: string | null = null): SelectionReview {
+  if (!passed) return { status: 'excluded', reasons: ['Did not pass the existing stock screen.'] };
+  if (!structure) return { status: 'unavailable', reasons: ['No price history for this company.'] };
+  if (structure.error) return { status: 'unavailable', reasons: [structure.error] };
+  if (referenceDate !== null && structure.asOf !== referenceDate) return { status: 'unavailable',
+    reasons: [`Price history does not reach the latest screened session (${referenceDate}).`] };
+  const { anchoredVwap: vwap, sweep, wyckoff: { context } } = structure;
+  if (vwap.distancePct === null || sweep.side === null) {
+    const reasons = [vwap.reason, sweep.reason].filter((r): r is string => Boolean(r));
+    return { status: 'unavailable', reasons: reasons.length ? reasons : ['Price/volume diagnostics are incomplete.'] };
+  }
+  const above = vwap.distancePct > 0;
+  const constructive = context === 'spring candidate' || context === 'markup candidate';
+  const conflicting = sweep.side === 'buy-side' || sweep.side === 'both';
+  const reasons = [above ? 'Close above anchored VWAP.' : 'Close at or below anchored VWAP.',
+    `Wyckoff price context: ${context}.`];
+  if (conflicting) reasons.push('Buy-side or two-sided sweep conflicts with the long-side review rule.');
+  return { status: above && constructive && !conflicting ? 'candidate' : 'mixed', reasons };
+}
+
 /** Headline facts about a loaded price history, for status lines. */
 export function describePriceHistory(history: PriceHistory): {
   tickers: number;
@@ -2983,6 +3164,16 @@ export function verdictFor(
   return VERDICT_WEAK;
 }
 
+/** Reported OCF / market cap; diagnostic only, with no period alignment implied. */
+export function operatingCashFlowYieldPct(stock: CleanedStock): number | null {
+  if (FINANCIAL_SECTOR_RE.test(stock.sector || '')) return null;
+  const cash = stock.operatingCashFlow;
+  const cap = stock.marketCap;
+  if (cash === null || cap === null || !Number.isFinite(cash) || !Number.isFinite(cap) || cap <= 0) return null;
+  const value = cash / cap * 100;
+  return Number.isFinite(value) ? round1(value) : null;
+}
+
 export function evaluateStock(
   stock: CleanedStock,
   config: ScreeningConfig,
@@ -3102,6 +3293,9 @@ export function evaluateStock(
     score: round1(total),
     compositeScore: combined.composite,
     compositeBasis: combined.basis,
+    operatingCashFlowYieldPct: notScored === null && redFlags.length === 0 ? operatingCashFlowYieldPct(stock) : null,
+    marketStructure: null,
+    selectionReview: selectionReview(reasons.length === 0, null),
     verdict,
     // Filled in by the pipeline, the only place that sees every company at
     // once. Scoring one stock cannot know its peers, so the default says so
@@ -3389,8 +3583,17 @@ export function processScreenerPipeline(
   // after scoring, which is also the reason it can never influence a score --
   // it does not exist until the scores are final.
   const rsBuckets = sectorRelativeStrength(universe, technicals);
+  const referenceDate = universe.reduce<string | null>((latest, stock) => {
+    const date = priceHistory ? ownEntry(priceHistory, stock.ticker)?.dates.at(-1) : null;
+    return date && (latest === null || date > latest) ? date : latest;
+  }, null);
   const evaluations = universe
     .map((s) => evaluateStock(s, screeningConfig, appConfig, medians))
+    .map(ev => {
+      const entry = priceHistory ? ownEntry(priceHistory, ev.stock.ticker) : null;
+      const structure = entry && ev.passed ? computeMarketStructure(entry) : null;
+      return { ...ev, marketStructure: structure, selectionReview: selectionReview(ev.passed, structure, referenceDate) };
+    })
     .map((ev) => {
       const own = ev.stock.technicals?.relativeStrength6M ?? null;
       const [peer, basis] = relativeStrengthYardstick(rsBuckets, ev.stock.sector);
@@ -3678,6 +3881,25 @@ function blockCell(item: StockEvaluation, name: keyof TechnicalBlocks): string {
 export const REJECTED_CSV_COLUMNS = [
   'Ticker', 'Name', 'Sector', 'Score', 'Coverage', 'RejectionReasons', 'WarningFlags',
 ] as const;
+
+/** Byte-identical to selection_review_to_csv() in python/engine.py. */
+export function generateSelectionReviewCsv(rows: StockEvaluation[]): string {
+  const lines = [csvRow(['Ticker', 'Name', 'ScreenPassed', 'FundamentalScore', 'Composite', 'CompositeBasis', 'ReviewStatus', 'ReviewReasons',
+    'AsOf', 'AnchorDate', 'AnchoredVWAP', 'CloseVsVWAPPct', 'Sweep', 'WyckoffContext',
+    'EstimatedPOC', 'EstimatedVAL', 'EstimatedVAH', 'OperatingCashFlowYieldPct', 'Basis', 'AuctionPosition', 'AuctionReferenceStart', 'AuctionReferenceEnd', 'PriorEstimatedPOC', 'PriorEstimatedVAL', 'PriorEstimatedVAH'])];
+  for (const item of [...rows].sort((a, b) => b.score - a.score || compareCodePoints(a.stock.ticker, b.stock.ticker))) {
+    const s = item.marketStructure;
+    lines.push(csvRow([textCell(item.stock.ticker), textCell(item.stock.name), item.passed ? 'yes' : 'no',
+      fmt1(item.score), fmt1(item.compositeScore), textCell(item.compositeBasis), item.selectionReview.status, textCell(item.selectionReview.reasons.join('; ')),
+      s?.asOf ?? '', s?.anchorDate ?? '', fmt1(s?.anchoredVwap.value ?? null), fmt1(s?.anchoredVwap.distancePct ?? null),
+      s?.sweep.side ?? '', s?.wyckoff.context ?? '', fmt1(s?.volumeProfile.poc ?? null),
+      fmt1(s?.volumeProfile.valueAreaLow ?? null), fmt1(s?.volumeProfile.valueAreaHigh ?? null),
+      fmt1(item.operatingCashFlowYieldPct), textCell(s?.basis ?? ''), s?.auctionContext.position ?? 'unavailable',
+      s?.auctionContext.referenceStart ?? '', s?.auctionContext.referenceEnd ?? '', fmt1(s?.auctionContext.poc ?? null),
+      fmt1(s?.auctionContext.valueAreaLow ?? null), fmt1(s?.auctionContext.valueAreaHigh ?? null)]));
+  }
+  return `${lines.join('\n')}\n`;
+}
 
 /** Byte-identical to watchlist_to_csv() in python/engine.py. */
 export function generateWatchlistCsv(rows: StockEvaluation[]): string {

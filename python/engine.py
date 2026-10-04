@@ -2691,6 +2691,222 @@ def parse_price_history_csv(text):
     return history, skipped
 
 
+def _daily_volume_profile(series, indices, bins, total):
+    """Validated daily bars; same allocation for current and prior profiles."""
+    floor = min(series["lows"][i] for i in indices)
+    ceiling = max(series["highs"][i] for i in indices)
+    width = (ceiling - floor) / bins
+    if width == 0:
+        profile = [{"low": floor, "high": ceiling, "volume": total}]
+    else:
+        profile = [{"low": floor + b * width,
+                    "high": ceiling if b == bins - 1 else floor + (b + 1) * width,
+                    "volume": 0.0} for b in range(bins)]
+        for i in indices:
+            low, high, volume = (series[key][i] for key in ("lows", "highs", "volumes"))
+            if high == low:
+                b = min(bins - 1, max(0, int((low - floor) / width)))
+                profile[b]["volume"] += volume
+            else:
+                for cell in profile:
+                    overlap = max(0.0, min(high, cell["high"]) - max(low, cell["low"]))
+                    cell["volume"] += volume * (overlap / (high - low))
+    # Deterministic ties: lowest-price POC; expand lower first on equal volume.
+    poc = max(range(len(profile)), key=lambda b: profile[b]["volume"])
+    left = right = poc
+    covered = profile[poc]["volume"]
+    while covered < 0.70 * total and (left > 0 or right < len(profile) - 1):
+        down = profile[left - 1]["volume"] if left > 0 else -1
+        up = profile[right + 1]["volume"] if right < len(profile) - 1 else -1
+        if down >= up:
+            left -= 1
+            covered += profile[left]["volume"]
+        else:
+            right += 1
+            covered += profile[right]["volume"]
+    return {"bins": profile, "poc": profile[poc]["low"] / 2 + profile[poc]["high"] / 2,
+            "valueAreaLow": profile[left]["low"], "valueAreaHigh": profile[right]["high"],
+            "totalVolume": total, "reason": None}
+
+
+def compute_market_structure(series, anchor_date=None, as_of=None, lookback=20, bins=24):
+    """Daily-bar research diagnostics; never consumed by scoring or sizing.
+
+    Mirrors computeMarketStructure(). HLC3 VWAP and uniformly allocated volume
+    profile are bar approximations on the supplied price/volume adjustment basis.
+    A sweep is a price pattern, not evidence of orders or stop executions.
+    """
+    result = {
+        "asOf": None, "anchorDate": None, "lookback": lookback,
+        "basis": "Daily bars on the supplied adjustment basis; VWAP and volume profile are approximations. No ranking or trading signal.",
+        "error": None,
+        "anchoredVwap": {"value": None, "distancePct": None, "bars": 0, "reason": None},
+        "sweep": {"side": None, "referenceHigh": None, "referenceLow": None, "reason": None},
+        "wyckoff": {"context": "unavailable", "reason": None},
+        "volumeProfile": {"bins": [], "poc": None, "valueAreaLow": None,
+                          "valueAreaHigh": None, "totalVolume": None, "reason": None},
+        "auctionContext": {"position": "unavailable", "referenceStart": None, "referenceEnd": None,
+                           "poc": None, "valueAreaLow": None, "valueAreaHigh": None,
+                           "reason": "Needs a valid latest bar and a full prior lookback with positive volume."},
+        "orderFlow": {"status": "unavailable", "reason":
+                      "Daily OHLCV has no aggressor-side trades or order-book events."},
+    }
+    if (not isinstance(lookback, int) or isinstance(lookback, bool) or not 2 <= lookback <= 252
+            or not isinstance(bins, int) or isinstance(bins, bool) or not 2 <= bins <= 100):
+        result["error"] = "Use a whole-number lookback of 2–252 bars and 2–100 profile bins."
+        return result
+    if ((anchor_date is not None and not _is_real_date(anchor_date))
+            or (as_of is not None and not _is_real_date(as_of))):
+        result["error"] = "Anchor and as-of dates must be valid YYYY-MM-DD dates."
+        return result
+    dates = series.get("dates", [])
+    if not dates:
+        result["error"] = "No daily price history loaded."
+        return result
+    if any(not _is_real_date(d) or (i > 0 and d <= dates[i - 1]) for i, d in enumerate(dates)):
+        result["error"] = "Daily dates must be valid, unique and increasing."
+        return result
+    if any(len(series.get(key, [])) != len(dates) for key in ("closes", "highs", "lows", "volumes")):
+        result["error"] = "Close, High, Low and Volume must align with every daily date."
+        return result
+    eligible = [i for i, d in enumerate(dates) if as_of is None or d <= as_of]
+    if not eligible:
+        result["error"] = "No bars on or before the as-of date."
+        return result
+    end = eligible[-1]
+    result["asOf"] = dates[end]
+
+    def finite(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+    def valid_price(i):
+        low, close, high = (series[key][i] for key in ("lows", "closes", "highs"))
+        return all(finite(v) and v > 0 for v in (low, close, high)) and low <= close <= high
+
+    if end < lookback:
+        reason = "Need the latest bar plus a full prior lookback of High, Low and Close."
+        result["sweep"]["reason"] = result["wyckoff"]["reason"] = reason
+    elif not all(valid_price(i) for i in range(end - lookback, end + 1)):
+        reason = "Missing or inconsistent High, Low or Close in the lookback; no bars skipped."
+        result["sweep"]["reason"] = result["wyckoff"]["reason"] = reason
+    else:
+        prior = range(end - lookback, end)
+        upper = max(series["highs"][i] for i in prior)
+        lower = min(series["lows"][i] for i in prior)
+        close = series["closes"][end]
+        sell = series["lows"][end] < lower and close > lower
+        buy = series["highs"][end] > upper and close < upper
+        side = "both" if sell and buy else "sell-side" if sell else "buy-side" if buy else "none"
+        result["sweep"].update(side=side, referenceHigh=upper, referenceLow=lower)
+        context = ("markup candidate" if close > upper else "markdown candidate" if close < lower
+                   else "ambiguous two-sided sweep" if side == "both"
+                   else "spring candidate" if sell else "upthrust candidate" if buy
+                   else "range — accumulation/distribution unresolved")
+        result["wyckoff"].update(context=context, reason=
+                                "Price context only; full Wyckoff phases and institutional activity are not established.")
+
+    # The reference excludes today's bar and is independent of the manual anchor.
+    if end >= lookback and all(valid_price(i) for i in range(end - lookback, end + 1)):
+        prior = range(end - lookback, end)
+        if all(finite(series["volumes"][i]) and series["volumes"][i] > 0 for i in prior):
+            prior_total = sum(series["volumes"][i] for i in prior)
+            if math.isfinite(prior_total):
+                profile = _daily_volume_profile(series, prior, bins, prior_total)
+                close = series["closes"][end]
+                position = ("above value" if close > profile["valueAreaHigh"] else
+                            "below value" if close < profile["valueAreaLow"] else "inside value")
+                result["auctionContext"].update(position=position,
+                    referenceStart=dates[end - lookback], referenceEnd=dates[end - 1],
+                    poc=profile["poc"], valueAreaLow=profile["valueAreaLow"], valueAreaHigh=profile["valueAreaHigh"],
+                    reason="Close relative to the prior daily estimated value area; acceptance, rejection and TPO are not established.")
+
+    # A manual anchor must be an observed session. Never silently move an anchor
+    # before the file to its first row or substitute a hindsight-selected pivot.
+    anchor = anchor_date if anchor_date is not None else dates[max(0, end - lookback + 1)]
+    if anchor not in dates[:end + 1]:
+        reason = "Anchor must match a loaded session on or before the as-of date."
+        result["anchoredVwap"]["reason"] = result["volumeProfile"]["reason"] = reason
+        return result
+    start = dates.index(anchor)
+    result["anchorDate"] = anchor
+    indices = range(start, end + 1)
+    if not all(valid_price(i) and finite(series["volumes"][i]) and series["volumes"][i] > 0 for i in indices):
+        reason = "Every anchored bar needs valid High, Low, Close and positive Volume; no bars skipped."
+        result["anchoredVwap"]["reason"] = result["volumeProfile"]["reason"] = reason
+        return result
+    total = 0.0
+    for i in indices:
+        total += series["volumes"][i]
+    if not math.isfinite(total):
+        result["anchoredVwap"]["reason"] = result["volumeProfile"]["reason"] = "Volume total is not finite."
+        return result
+    vwap = 0.0
+    for i in indices:
+        typical = series["highs"][i] / 3 + series["lows"][i] / 3 + series["closes"][i] / 3
+        vwap += typical * (series["volumes"][i] / total)
+    distance = (series["closes"][end] / vwap - 1) * 100 if vwap > 0 else float("inf")
+    if not math.isfinite(vwap) or not math.isfinite(distance):
+        result["anchoredVwap"]["reason"] = result["volumeProfile"]["reason"] = "Price calculation is not finite."
+        return result
+    result["anchoredVwap"].update(value=vwap, distancePct=distance, bars=end - start + 1)
+    result["volumeProfile"] = _daily_volume_profile(series, indices, bins, total)
+    return result
+
+
+def selection_review(passed, structure, reference_date=None):
+    """Experimental review filter, not a score or a replacement for admission."""
+    if not passed:
+        return {"status": "excluded", "reasons": ["Did not pass the existing stock screen."]}
+    if structure is None:
+        return {"status": "unavailable", "reasons": ["No price history for this company."]}
+    if structure.get("error"):
+        return {"status": "unavailable", "reasons": [structure["error"]]}
+    if reference_date is not None and structure["asOf"] != reference_date:
+        return {"status": "unavailable", "reasons": ["Price history does not reach the latest screened session (%s)." % reference_date]}
+    vwap, sweep, context = structure["anchoredVwap"], structure["sweep"], structure["wyckoff"]["context"]
+    if vwap["distancePct"] is None or sweep["side"] is None:
+        reasons = [r for r in (vwap["reason"], sweep["reason"]) if r]
+        return {"status": "unavailable", "reasons": reasons or ["Price/volume diagnostics are incomplete."]}
+    above = vwap["distancePct"] > 0
+    constructive = context in ("spring candidate", "markup candidate")
+    conflicting = sweep["side"] in ("buy-side", "both")
+    reasons = ["Close above anchored VWAP." if above else "Close at or below anchored VWAP.",
+               "Wyckoff price context: %s." % context]
+    if conflicting:
+        reasons.append("Buy-side or two-sided sweep conflicts with the long-side review rule.")
+    return {"status": "candidate" if above and constructive and not conflicting else "mixed", "reasons": reasons}
+
+
+def selection_review_to_csv(rows):
+    """All screened rows, not just the top-N; separate from the stable watchlist CSV."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
+    writer.writerow(["Ticker", "Name", "ScreenPassed", "FundamentalScore", "Composite", "CompositeBasis", "ReviewStatus", "ReviewReasons",
+                     "AsOf", "AnchorDate", "AnchoredVWAP", "CloseVsVWAPPct", "Sweep", "WyckoffContext",
+                     "EstimatedPOC", "EstimatedVAL", "EstimatedVAH", "OperatingCashFlowYieldPct", "Basis", "AuctionPosition", "AuctionReferenceStart", "AuctionReferenceEnd", "PriorEstimatedPOC", "PriorEstimatedVAL", "PriorEstimatedVAH"])
+    for item in sorted(rows, key=lambda e: (-e["score"], e["ticker"])):
+        structure = item.get("marketStructure") or {}
+        review = item["selectionReview"]
+        vwap, profile = structure.get("anchoredVwap", {}), structure.get("volumeProfile", {})
+        writer.writerow([
+            escape_csv_cell(item.get("ticker")), escape_csv_cell(item.get("name")),
+            "yes" if item["passed"] else "no", _num(item["score"]), _num(item["composite"]),
+            escape_csv_cell(item["compositeBasis"]), review["status"],
+            escape_csv_cell("; ".join(review["reasons"])), structure.get("asOf") or "",
+            structure.get("anchorDate") or "", _num(vwap.get("value")), _num(vwap.get("distancePct")),
+            structure.get("sweep", {}).get("side") or "", structure.get("wyckoff", {}).get("context") or "",
+            _num(profile.get("poc")), _num(profile.get("valueAreaLow")), _num(profile.get("valueAreaHigh")),
+            _num(item.get("operatingCashFlowYieldPct")), escape_csv_cell(structure.get("basis") or ""),
+            structure.get("auctionContext", {}).get("position") or "unavailable",
+            structure.get("auctionContext", {}).get("referenceStart") or "",
+            structure.get("auctionContext", {}).get("referenceEnd") or "",
+            _num(structure.get("auctionContext", {}).get("poc")),
+            _num(structure.get("auctionContext", {}).get("valueAreaLow")),
+            _num(structure.get("auctionContext", {}).get("valueAreaHigh")),
+        ])
+    return buffer.getvalue()
+
+
 def technicals_from_history(history, tickers):
     """Indicators for each ticker from a parsed price history. Mirrors technicalsFromHistory().
 
@@ -3324,6 +3540,23 @@ def verdict_for(composite, red_flags, not_scored):
     return VERDICT_WEAK
 
 
+def operating_cash_flow_yield_pct(stock):
+    """Reported OCF / market cap, in percent; a diagnostic, never a score.
+
+    Both inputs are normalised to crore. The export does not establish period
+    alignment, so this is not an annualised return or free-cash-flow yield.
+    Lenders need their own cash-flow interpretation and are excluded.
+    """
+    if FINANCIAL_SECTOR_RE.search(stock.get("sector") or ""):
+        return None
+    cash = stock.get("operatingCashFlow")
+    cap = stock.get("marketCap")
+    if cash is None or cap is None or not math.isfinite(cash) or not math.isfinite(cap) or cap <= 0:
+        return None
+    value = cash / cap * 100.0
+    return round1(value) if math.isfinite(value) else None
+
+
 class ScreeningEngine:
     """Deterministic rule-based screen and score.
 
@@ -3469,6 +3702,9 @@ class ScreeningEngine:
             "sectorGroup": sector_group(sector),
             "currentPrice": stock.get("currentPrice"),
             "marketCap": mcap,
+            "operatingCashFlowYieldPct": operating_cash_flow_yield_pct(stock) if scored else None,
+            "marketStructure": None,
+            "selectionReview": selection_review(len(reasons) == 0, None),
             "passed": len(reasons) == 0,
             "score": round1(total),
             "composite": composite,
@@ -3562,6 +3798,17 @@ class ScreeningEngine:
             self.evaluate(s, None if technicals is None else technicals[s["ticker"]], medians)
             for s in stocks
         ]
+
+        # Evaluate the same explicit rolling-anchor diagnostic for every company,
+        # before the top-N split. A stale file must not supply a fresh candidate.
+        reference_date = max((entry["dates"][-1] for stock in stocks
+                              for entry in [(price_history or {}).get(stock["ticker"])]
+                              if entry and entry.get("dates")), default=None)
+        for item in evaluations:
+            entry = (price_history or {}).get(item["ticker"])
+            structure = compute_market_structure(entry) if entry and item["passed"] else None
+            item["marketStructure"] = structure
+            item["selectionReview"] = selection_review(item["passed"], structure, reference_date)
 
         # Sector-relative strength is cross-sectional: no company can be placed
         # against its peers until every peer has been measured. So it is
@@ -5671,6 +5918,8 @@ def run_pipeline(paths, app_config, screening_config, allow_network=False, stamp
     watchlist_path.write_text(watchlist_to_csv(result["watchlist"]), encoding="utf-8")
     rejected_path = paths["reports"] / ("rejected_%s.csv" % stamp)
     rejected_path.write_text(rejected_to_csv(result["rejected"]), encoding="utf-8")
+    review_path = paths["reports"] / ("selection_review_%s.csv" % stamp)
+    review_path.write_text(selection_review_to_csv(result["evaluations"]), encoding="utf-8")
 
     below_path = None
     if below:
@@ -5707,6 +5956,7 @@ def run_pipeline(paths, app_config, screening_config, allow_network=False, stamp
 
     artefacts = {
         "watchlist_csv": str(watchlist_path),
+        "selection_review_csv": str(review_path),
         "rejected_csv": str(rejected_path),
         "passed_below_top_n_csv": str(below_path) if below_path else None,
         "ranking_changes_csv": str(changes_path),

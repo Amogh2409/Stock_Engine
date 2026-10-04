@@ -17,7 +17,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import type { TechnicalBlocks } from '../../types';
+import type { MarketStructure, SelectionReview, TechnicalBlocks } from '../../types';
+import type { PriceSeries } from '../../utils/screenerEngine';
 import {
   buildColabNotebookJson,
   notebookCodeCells,
@@ -74,6 +75,7 @@ export interface ScreenSpec {
 }
 
 export interface ParityJob {
+  market_structure_cases?: { series: PriceSeries; anchor_date?: string; as_of?: string; lookback?: number; bins?: number }[];
   csv: string;
   app_config: Record<string, unknown>;
   screening_config: Record<string, unknown>;
@@ -101,6 +103,9 @@ export interface ParityEvaluation {
   score: number;
   composite: number;
   compositeBasis: string;
+  operatingCashFlowYieldPct: number | null;
+  marketStructure: MarketStructure | null;
+  selectionReview: SelectionReview;
   verdict: string;
   coverage: number;
   reasons: string[];
@@ -132,6 +137,7 @@ export interface ParityEvaluation {
 }
 
 export interface ParityScreen {
+  selection_review_csv: string;
   mapping: Record<string, string>;
   duplicates_removed: number;
   outside_universe: number;
@@ -162,6 +168,8 @@ export interface ParityScreen {
 }
 
 export interface ParityPayload {
+  selection_review_csv: string;
+  market_structure_results: MarketStructure[];
   engine: 'python';
   mapping: Record<string, string>;
   duplicates_removed: number;
@@ -293,7 +301,7 @@ export function runPythonParity(job: ParityJob): ParityPayload {
     'engine', 'mapping', 'evaluations', 'watchlist', 'watchlist_csv',
     'rejected_csv', 'ranking_changes_csv', 'universe', 'screens', 'number_text',
     'strict_decimals', 'whitespace_numbers', 'trimmed', 'headers', 'config_limits',
-    'config_results', 'price_parse_results',
+    'config_results', 'price_parse_results', 'market_structure_results', 'selection_review_csv',
   ];
   const missing = required.filter((key) => payload[key] === undefined);
   if (missing.length) {

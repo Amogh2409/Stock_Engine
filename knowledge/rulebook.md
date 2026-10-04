@@ -1,5 +1,36 @@
 # Rulebook
 
+## Angel One collection boundary (2026-10-04)
+
+**Status: Convention (data policy, not a selection rule).** The SmartAPI adapter
+exports completed daily candles for the existing scanner. Today's daily bar is
+excluded conservatively; no zero-volume fill or cross-provider adjustment is
+invented. Exact NSE equity matching is required. Intraday candles, FULL quote
+snapshots and option Greeks are separate research captures, not new scores or
+review conditions. No aggressor classification or dealer positioning is inferred.
+Provider contracts and the unverified live-access status are documented in
+[scripts/ANGEL_ONE.md](../scripts/ANGEL_ONE.md). No rule was tuned or measured on
+returns and the reserved window was not analysed.
+
+## Auction location and research heatmap (2026-10-04)
+
+**Status: Convention.** The daily auction context compares the latest close to
+the prior 20-bar estimated 70% volume value area, excluding the latest bar.
+Strictly above VAH / below VAL gives above / below value; boundaries count as
+inside. The prior profile needs valid High/Low/Close and positive finite volume;
+the latest bar needs valid High/Low/Close. The existing 24-bin allocation and tie
+rules apply. Manual VWAP anchors do not change this reference. These choices are
+descriptive conventions, not optimal parameters or established AMT acceptance.
+
+This adds an optional view/export filter and a labelled stock evidence heatmap,
+not an admission rule, score or portfolio weight. Unaligned or unavailable review
+records have neutral directional heatmap cells. Time & Sales, footprint, trade
+delta, depth heatmaps, session VWAP, signed gamma exposure and TPO Market Profile
+remain unavailable with the current daily inputs and earn no implicit points.
+Definitions and feed requirements are in [price-volume-research.md](price-volume-research.md).
+No return-driven tuning, holdout measurement or 50,000-case study was performed.
+No existing rule changes provenance; no book-support claim is made here.
+
 Every **technical** scoring rule in the engine, with its source — and the
 position sizing built on top of it.
 
@@ -1714,3 +1745,71 @@ three-year cumulative test. It is probably the better economic formulation, and
 it **changes which companies are admitted**, which makes it a hypothesis rather
 than a correctness fix. It is recorded in `knowledge/preregistration.md` to be
 benchmarked against the current rule, and must not be adopted on plausibility.
+
+## Operating cash-flow yield — reported diagnostic (2026-10-04)
+
+**Status: Convention** for including this diagnostic; no predictive rule or
+threshold is adopted. `operating_cash_flow_yield_pct` / `operatingCashFlowYieldPct`
+reports `100 × operatingCashFlow / marketCap`, using the existing crore-normalised
+inputs and the engine's one-decimal rounding. Zero and negative cash flows are
+preserved by the calculation. Missing/non-finite inputs, non-positive market cap,
+and financial companies return null. Evaluations also suppress it for data with
+hard red flags or an unscored company.
+
+This value contributes no points, filters, weights or ranking changes. It is
+exposed on evaluation records and the browser stock-detail view, not the existing
+CSV schema. A reported cash-flow period is not established by the imported field:
+check reporting period, publication date and market-cap date before comparing
+companies. It is neither free-cash-flow yield nor an expected investment return.
+
+Corpus queries: `earnings quality cash flow accruals`, `value momentum profitability`,
+and `price cash flow ratio`. Read
+`02_open_textbooks/cfa_research_foundation/CFA_Institute_Research_Foundation_Monograph_rf-v2017-n4-1_.pdf#26`
+and `The-Complete-Guide-to-Trading.pdf#41` / `#42`. They discuss comparable-company
+valuation and cash-flow valuation, but do not establish that this exact operating
+cash-flow yield predicts Indian-equity returns. No existing Convention status
+was upgraded. See [indicator assessment](indicator-assessment.md) for external
+sources and the remaining data requirements. The frozen scores and reserved
+window remain unchanged; no return measurement was run for this addition.
+
+## Daily price/volume research panel (2026-10-04)
+
+**Status: Adapted** for the anchored HLC3 VWAP formula; **Convention** for the
+20-bar range, Wyckoff candidate labels, uniform daily volume allocation, 24 bins,
+70% value-area expansion and deterministic ties. These diagnostics earn no
+points and are outside the frozen scoring model. No efficacy is claimed.
+
+`compute_market_structure` in Python and `computeMarketStructure` in TypeScript
+accept explicit anchor/as-of dates and never consume future prices/volume after
+that as-of date. Missing required bars remain unavailable. The watchlist panel
+shows price-only sweep candidates, tentative Wyckoff context, anchored VWAP and
+an estimated volume profile. It explicitly reports order flow unavailable;
+candle colour is never represented as buyer/seller trade volume.
+
+Corpus evidence: `TSaM.pdf#590` and `TSaM.pdf#593` distinguish time-based TPO
+Market Profile from volume at price;
+`02_open_textbooks/cfa_research_foundation/CFA_Institute_Research_Foundation_Monograph_rf-v2015-n4-1_.pdf#49`
+discusses VWAP as an execution benchmark. These do not source the new windows,
+bin settings, daily allocation assumption or phase labels. The adapted formula
+comes from the external TradingView documentation linked in
+[price-volume-research.md](price-volume-research.md), which records the complete
+definitions, corpus queries and limitations. No old Convention entry was
+upgraded. Tests use synthetic bars; no reserved-window measurement was made.
+
+### Selection review integration — Convention (2026-10-04)
+
+**Status: Convention.** Passing the existing screen, closing above the automatic
+20-bar anchored VWAP, and having a spring/markup candidate without a buy-side
+or two-sided sweep identifies an experimental **review candidate**. This is not
+an evidence-based change to the frozen score or original portfolio. Complete
+nonmatching patterns are mixed; incomplete or comparatively old price series
+are unavailable; failed screens stay excluded. Date alignment is relative to
+the loaded universe and does not establish wall-clock freshness.
+
+Calculations now attach to every eligible evaluation before top-N truncation.
+The browser offers a separate filterable review view, and Python/Colab export a
+separate review CSV for all evaluated companies. Ordering uses the fundamental
+score to avoid mixing unlike composite bases. The profile and cash-flow yield
+are context only. No thresholds were tuned, no performance claim is made, and
+no reserved-window measurement was run. Exact behavior and limitations are in
+[price-volume-research.md](price-volume-research.md#integrated-selection-review).

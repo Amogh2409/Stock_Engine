@@ -231,6 +231,15 @@ function ranked(overrides: Partial<CleanedStock>, rank: number): StockEvaluation
 }
 
 describe('Watchlist detail describes only the data actually loaded', () => {
+  it('shows reported cash-flow yield and replaces it with an explanation for missing data', () => {
+    const { rerender } = render(<WatchlistTable watchlist={[ranked({ operatingCashFlow: 750 }, 1)]} />);
+    expect(within(screen.getByTestId('cash-flow-yield')).getByText('7.5%')).toBeTruthy();
+    expect(screen.getByTestId('cash-flow-yield').textContent).toContain('earns no ranking points');
+    rerender(<WatchlistTable watchlist={[ranked({ operatingCashFlow: null }, 1)]} />);
+    expect(within(screen.getByTestId('cash-flow-yield')).getByText('—')).toBeTruthy();
+    expect(screen.getByTestId('cash-flow-yield').textContent).toContain('Unavailable');
+  });
+
   it('drops a selection that is no longer listed, even when row ids collide', () => {
     const { rerender } = render(
       <WatchlistTable

@@ -6,6 +6,7 @@ import { downloadText, todayStamp } from '../utils/download';
 import { fmt1, generateWatchlistCsv, PriceHistory, SizingSummary } from '../utils/screenerEngine';
 import { PositionSizingSummary } from './PositionSizingSummary';
 import { PriceChart } from './PriceChart';
+import { MarketStructurePanel } from './MarketStructurePanel';
 
 interface WatchlistTableProps {
   watchlist: StockEvaluation[];
@@ -414,6 +415,21 @@ export const WatchlistTable: React.FC<WatchlistTableProps> = ({
             <p className="text-xs text-slate-600 leading-relaxed">{activeStock.explanation}</p>
           </div>
 
+          <div className="bg-slate-50 rounded-xl p-3 border border-slate-100" data-testid="cash-flow-yield">
+            <div className="flex justify-between gap-3 text-xs">
+              <span className="font-semibold text-slate-700">Operating cash-flow yield</span>
+              <span className="font-mono text-slate-900">{ratio(activeStock.operatingCashFlowYieldPct, '%')}</span>
+            </div>
+            <p className="text-[11px] text-slate-500 mt-1">
+              {activeStock.scoringModel === 'financial'
+                ? 'Not applied to banks or financial companies.'
+                : activeStock.operatingCashFlowYieldPct === null
+                ? 'Unavailable: requires valid operating cash flow, positive market capitalisation, and no data red flags.'
+                : 'Reported operating cash flow ÷ market capitalisation. Check the cash-flow period and valuation date before comparing companies.'}
+              {' '}Diagnostic only; earns no ranking points. This is not free-cash-flow yield or an expected investment return.
+            </p>
+          </div>
+
           <div className="space-y-2">
             <span className="text-[11px] font-semibold text-slate-700 flex items-center gap-1">
               <TrendingUp className="w-3.5 h-3.5 text-purple-600" />
@@ -512,6 +528,10 @@ export const WatchlistTable: React.FC<WatchlistTableProps> = ({
               </>
             )}
           </div>
+
+          <MarketStructurePanel key={selectionKey(activeStock)} ticker={s.ticker}
+            series={priceHistory && Object.prototype.hasOwnProperty.call(priceHistory, s.ticker)
+              ? priceHistory[s.ticker] : null} />
 
           {activeStock.warningFlags.length > 0 && (
             <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl space-y-1">
