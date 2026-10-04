@@ -23,9 +23,11 @@ import {
   escapeCsvCell,
   cleanNumeric,
   computeTechnicalIndicators,
+  computeMarketStructure,
   generateRankingChangesCsv,
   generateRejectedCsv,
   generateWatchlistCsv,
+  generateSelectionReviewCsv,
   normalizeHeader,
   parseCsv,
   parsePriceHistoryCsv,
@@ -380,6 +382,9 @@ function tsEvaluationFields(ev: StockEvaluation): Omit<ParityEvaluation, 'ticker
     score: ev.score,
     composite: ev.compositeScore,
     compositeBasis: ev.compositeBasis,
+    operatingCashFlowYieldPct: ev.operatingCashFlowYieldPct,
+    marketStructure: ev.marketStructure,
+    selectionReview: ev.selectionReview,
     verdict: ev.verdict,
     coverage: ev.coveragePct,
     reasons: ev.rejectionReasons,
@@ -438,6 +443,15 @@ let ts: ReturnType<typeof processScreenerPipeline>;
 let tsChanges: string;
 const tsScreens: Record<string, { result: PipelineResult; history: PriceHistory | null; skipped: number | null }> = {};
 
+const structureSeries = parsePriceHistoryCsv(buildPriceCsv()).history.TCS;
+const structureCases = [
+  { series: structureSeries },
+  { series: structureSeries, anchor_date: structureSeries.dates[200], as_of: structureSeries.dates[250], bins: 12 },
+  { series: structureSeries, anchor_date: '1900-01-01' },
+  { series: { ...structureSeries, volumes: structureSeries.volumes.map(() => null) } },
+  { series: { ...structureSeries, highs: structureSeries.closes, lows: structureSeries.closes } },
+];
+
 beforeAll(() => {
   // If the sample literal and the imported constant ever diverge, both engines
   // would be fed different data and "parity" would be meaningless.
@@ -485,6 +499,7 @@ beforeAll(() => {
     header_cases: HEADER_CASES,
     config_cases: CONFIG_CASES,
     price_parse_cases: PRICE_PARSE_CASES,
+    market_structure_cases: structureCases,
   });
 
   for (const spec of SCREENS) {
@@ -504,6 +519,19 @@ beforeAll(() => {
 });
 
 describe('Cross-engine parity on all bundled sample companies', () => {
+  it('exports the same selection review from both pipelines, including every extra screen', () => {
+    expect(generateSelectionReviewCsv(ts.evaluations)).toBe(py.selection_review_csv);
+    for (const spec of SCREENS) {
+      expect(generateSelectionReviewCsv(tsScreens[spec.label].result.evaluations))
+        .toBe(py.screens[spec.label].selection_review_csv);
+    }
+  });
+  it('matches every price/volume research output, including unavailable cases', () => {
+    const ours = structureCases.map(c => computeMarketStructure(c.series,
+      'anchor_date' in c ? c.anchor_date : null, 'as_of' in c ? c.as_of : null,
+      20, 'bins' in c ? c.bins : 24));
+    expect(py.market_structure_results).toEqual(ours);
+  });
   it('both engines evaluated the same non-empty company set', () => {
     expect(ts.evaluations.length).toBe(EXPECTED_SAMPLE_ROWS);
     expect(py.evaluations.length).toBe(EXPECTED_SAMPLE_ROWS);

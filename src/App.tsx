@@ -26,6 +26,7 @@ import { RejectedTable } from './components/RejectedTable';
 import { TestsRunner } from './components/TestsRunner';
 import { Visualizations } from './components/Visualizations';
 import { WatchlistTable } from './components/WatchlistTable';
+import { SelectionReviewTable } from './components/SelectionReviewTable';
 import { NIFTY100_PROVENANCE } from './data/nifty100Snapshot';
 import { SAMPLE_SCREENER_CSV_STRING } from './data/sampleScreenerData';
 import { AppConfig, ScreeningConfig, WatchlistSnapshotEntry } from './types';
@@ -50,6 +51,7 @@ import {
 
 type ActiveTab =
   | 'watchlist'
+  | 'selection'
   | 'changes'
   | 'rejected'
   | 'inspection'
@@ -391,6 +393,7 @@ export default function App() {
 
   const tabs: { id: ActiveTab; label: string; icon: React.ReactNode; count?: number }[] = [
     { id: 'watchlist', label: `Watchlist (top ${appConfig.top_n})`, icon: <Sparkles className="w-3.5 h-3.5" />, count: watchlist.length },
+    { id: 'selection', label: 'Selection review', icon: <BarChart3 className="w-3.5 h-3.5" />, count: allEvaluations.filter(e => e.selectionReview.status === 'candidate').length },
     { id: 'changes', label: 'Run deltas', icon: <GitCompare className="w-3.5 h-3.5" />, count: rankingChanges.length },
     { id: 'rejected', label: 'Rejected audit', icon: <XCircle className="w-3.5 h-3.5" />, count: rejected.length },
     { id: 'config', label: 'Universe & config', icon: <Globe className="w-3.5 h-3.5" /> },
@@ -658,6 +661,7 @@ export default function App() {
             sizing={result.sizing}
           />
         )}
+        {activeTab === 'selection' && <SelectionReviewTable evaluations={allEvaluations} />}
         {activeTab === 'changes' && (
           <RankingChangesView
             rankingChanges={rankingChanges}

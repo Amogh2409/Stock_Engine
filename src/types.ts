@@ -9,6 +9,30 @@ export interface ScreenerRow {
   [key: string]: string | number | null | undefined;
 }
 
+/** Descriptive daily-bar research tools. None feeds the stock ranking. */
+export interface MarketStructure {
+  basis: string;
+  asOf: string | null;
+  anchorDate: string | null;
+  lookback: number;
+  error: string | null;
+  anchoredVwap: { value: number | null; distancePct: number | null; bars: number; reason: string | null };
+  sweep: { side: 'sell-side' | 'buy-side' | 'both' | 'none' | null;
+    referenceHigh: number | null; referenceLow: number | null; reason: string | null };
+  wyckoff: { context: string; reason: string | null };
+  volumeProfile: {
+    bins: { low: number; high: number; volume: number }[];
+    poc: number | null; valueAreaLow: number | null; valueAreaHigh: number | null;
+    totalVolume: number | null; reason: string | null;
+  };
+  orderFlow: { status: 'unavailable'; reason: string };
+}
+
+export interface SelectionReview {
+  status: 'candidate' | 'mixed' | 'unavailable' | 'excluded';
+  reasons: string[];
+}
+
 /** Which indicators actually had enough history to be computed. */
 export interface TechnicalAvailability {
   sma50: boolean;
@@ -287,6 +311,10 @@ export interface StockEvaluation {
   compositeScore: number;
   /** How the composite was arrived at, for display beside it. */
   compositeBasis: string;
+  /** Reported OCF / market cap (%). Diagnostic only; null for lenders or invalid data. */
+  operatingCashFlowYieldPct: number | null;
+  marketStructure: MarketStructure | null;
+  selectionReview: SelectionReview;
   /** Descriptive band over the composite. A label, not a prediction. */
   verdict: string;
   /**

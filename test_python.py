@@ -193,6 +193,107 @@ FULL_STOCK = {
 }
 
 
+class MarketStructureTests(unittest.TestCase):
+    def bars(self, n=21):
+        return {"dates": ["2020-01-%02d" % (i + 1) for i in range(n)],
+                "closes": [100.0] * n, "highs": [110.0] * n,
+                "lows": [90.0] * n, "volumes": [100.0] * n}
+
+    def test_hand_calculated_vwap_profile_and_value_area(self):
+        series = self.bars(2)
+        series["closes"][1], series["highs"][1], series["lows"][1], series["volumes"][1] = 110, 120, 100, 300
+        result = E.compute_market_structure(series, bins=3)
+        self.assertAlmostEqual(result["anchoredVwap"]["value"], 107.5)
+        self.assertEqual([b["volume"] for b in result["volumeProfile"]["bins"]], [50, 200, 150])
+        self.assertEqual(result["volumeProfile"]["poc"], 105)
+        self.assertEqual(result["volumeProfile"]["valueAreaLow"], 100)
+        self.assertEqual(result["volumeProfile"]["valueAreaHigh"], 120)
+        self.assertEqual(result["orderFlow"]["status"], "unavailable")
+
+    def test_sweep_reference_excludes_latest_bar_and_equality_is_not_a_breach(self):
+        for low, high, close, side in ((89, 109, 95, "sell-side"), (91, 111, 105, "buy-side"),
+                                      (89, 111, 100, "both"), (90, 110, 100, "none"),
+                                      (89, 109, 90, "none")):
+            with self.subTest(side=side, close=close):
+                series = self.bars()
+                series["lows"][-1], series["highs"][-1], series["closes"][-1] = low, high, close
+                result = E.compute_market_structure(series)
+                self.assertEqual(result["sweep"]["side"], side)
+                self.assertEqual(result["sweep"]["referenceLow"], 90)
+                self.assertEqual(result["sweep"]["referenceHigh"], 110)
+
+    def test_as_of_excludes_future_data(self):
+        series = self.bars(22)
+        original = E.compute_market_structure(series, as_of="2020-01-21")
+        series["highs"][-1], series["closes"][-1], series["volumes"][-1] = 9999, 9000, 1e12
+        self.assertEqual(E.compute_market_structure(series, as_of="2020-01-21"), original)
+
+    def test_no_silent_anchor_replacement_or_missing_volume_fill(self):
+        series = self.bars()
+        self.assertIsNone(E.compute_market_structure(series, anchor_date="2019-12-31")["anchoredVwap"]["value"])
+        self.assertIsNone(E.compute_market_structure(series, anchor_date="2020-01-21", as_of="2020-01-20")["anchoredVwap"]["value"])
+        series["volumes"][10] = None
+        result = E.compute_market_structure(series)
+        self.assertIsNone(result["anchoredVwap"]["value"])
+        self.assertEqual(result["sweep"]["side"], "none")
+
+    def test_flat_prices_and_invalid_inputs(self):
+        series = self.bars()
+        series["highs"] = series["lows"] = [100.0] * 21
+        result = E.compute_market_structure(series)
+        self.assertEqual(result["volumeProfile"]["bins"], [{"low": 100.0, "high": 100.0, "volume": 2000.0}])
+        self.assertTrue(E.compute_market_structure(series, lookback=0)["error"])
+        self.assertTrue(E.compute_market_structure(series, as_of="2020-02-30")["error"])
+        series["volumes"].pop()
+        self.assertTrue(E.compute_market_structure(series)["error"])
+
+    def test_pipeline_reviews_below_top_n_and_exports_all_companies(self):
+        import pandas as pd
+        columns = "Name,NSE Code,Industry,Market Capitalization,Sales growth 3Years,Profit growth 3Years,ROCE,Return on equity,Debt to equity,Interest Coverage,Cash flow from operations,Promoter holding,Pledged percentage,Price to Earning,Price to book value,Dividend yield".split(",")
+        values = ["IT", 5000, 20, 20, 25, 25, 0.1, 10, 500, 60, 0, 15, 2, 1]
+        frame = pd.DataFrame([["Alpha", "AAA"] + values, ["Beta", "BBB"] + values], columns=columns)
+        series = self.bars()
+        series["closes"][-1], series["highs"][-1], series["lows"][-1] = 112, 115, 95
+        result = engine(universe_mode="custom", top_n=1).screen(frame, price_history={"AAA": series, "BBB": series})
+        self.assertEqual([e["selectionReview"]["status"] for e in result["evaluations"]], ["candidate", "candidate"])
+        self.assertEqual(result["passed_below_cutoff"][0]["ticker"], "BBB")
+        self.assertIn("BBB,Beta,yes", E.selection_review_to_csv(result["evaluations"]))
+        baseline = engine(universe_mode="custom", top_n=1).screen(frame)
+        self.assertEqual([(e["ticker"], e["composite"]) for e in result["watchlist"]],
+                         [(e["ticker"], e["composite"]) for e in baseline["watchlist"]])
+
+    def test_review_refuses_failed_screens_incomplete_and_unaligned_data(self):
+        series = self.bars()
+        structure = E.compute_market_structure(series)
+        self.assertEqual(E.selection_review(False, structure)["status"], "excluded")
+        self.assertEqual(E.selection_review(True, structure, "2020-01-22")["status"], "unavailable")
+        series["volumes"][10] = None
+        self.assertEqual(E.selection_review(True, E.compute_market_structure(series))["status"], "unavailable")
+        self.assertEqual(E.selection_review(True, None)["status"], "unavailable")
+
+
+class OperatingCashFlowYieldTests(unittest.TestCase):
+    def test_percent_and_signed_values(self):
+        for cash, expected in ((750, 7.5), (0, 0), (-750, -7.5)):
+            self.assertEqual(E.operating_cash_flow_yield_pct(dict(FULL_STOCK, operatingCashFlow=cash)), expected)
+
+    def test_missing_invalid_and_financial_inputs(self):
+        cases = [{"sector": "Banks - Private Sector"}, {"sector": "Finance - NBFC"},
+                 {"operatingCashFlow": None}, {"operatingCashFlow": float("inf")}]
+        cases += [{"marketCap": cap} for cap in (None, 0, -10, float("nan"), float("inf"))]
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                self.assertIsNone(E.operating_cash_flow_yield_pct(dict(FULL_STOCK, **overrides)))
+
+    def test_diagnostic_has_no_scoring_effect_and_rejects_flagged_data(self):
+        low = engine().evaluate(dict(FULL_STOCK, operatingCashFlow=100))
+        high = engine().evaluate(dict(FULL_STOCK, operatingCashFlow=750))
+        self.assertEqual(high["operatingCashFlowYieldPct"], 7.5)
+        for key in ("score", "composite", "passed"):
+            self.assertEqual(low[key], high[key])
+        self.assertIsNone(engine().evaluate(dict(FULL_STOCK, promoterPledge=99))["operatingCashFlowYieldPct"])
+
+
 class CanonicalTypeContract(unittest.TestCase):
     """Reasons and warnings are lists of strings -- never joined strings."""
 
@@ -771,7 +872,13 @@ class PipelineWithPriceHistory(unittest.TestCase):
         self.assertTrue(saved.exists())
         self.assertEqual(saved.parent, self.paths["market_data"])
         self.assertEqual(saved.read_text(encoding="utf-8").splitlines()[0],
-                         "Date,Ticker,Open,High,Low,Close,Volume")
+                         "Date,Ticker,Open,High,Low,Close,Volume,CloseUnadjusted")
+        import csv
+        review_rows = list(csv.DictReader(io.StringIO(Path(artefacts["selection_review_csv"]).read_text())))
+        self.assertEqual({r["Ticker"] for r in review_rows}, {"ALPHA", "BETA"})
+        self.assertEqual({r["Ticker"]: r["ReviewStatus"] for r in review_rows},
+                         {"ALPHA": "unavailable", "BETA": "excluded"})
+        self.assertTrue(all(r["AnchoredVWAP"] == "" for r in review_rows))
         by_ticker = {e["ticker"]: e for e in result["evaluations"]}
         # 81, not a perfect 100. This downloader supplies no highs or lows, so
         # ADX forfeits its 4, and its closes are a straight ramp, so the MACD
@@ -986,7 +1093,7 @@ def build_suite() -> unittest.TestSuite:
     # 1. The notebook's own offline tests.
     suite.addTests(loader.loadTestsFromTestCase(E.EngineTests))
     # 2. The additional contract and parity tests defined above.
-    for case in (CanonicalTypeContract, UniverseProviderContract, CleanNumericSignature,
+    for case in (MarketStructureTests, OperatingCashFlowYieldTests, CanonicalTypeContract, UniverseProviderContract, CleanNumericSignature,
                  IdentifierMappingParity, TechnicalHistorySemantics, CsvExportSafety,
                  DeltaSchema, ScoringAndOrdering, StorageAndLogging, ImportPurity,
                  PipelineWithPriceHistory, FundamentalsParsing, FundamentalsDate,
