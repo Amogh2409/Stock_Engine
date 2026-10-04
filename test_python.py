@@ -1117,6 +1117,10 @@ def build_suite() -> unittest.TestSuite:
                  PipelineWithPriceHistory, FundamentalsParsing, FundamentalsDate,
                  UniverseCache, RunConfiguration):
         suite.addTests(loader.loadTestsFromTestCase(case))
+    # Read-only SmartAPI collection: synthetic responses, network blocked.
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import test_angelone_data as angelone_tests
+    suite.addTests(loader.loadTestsFromTestCase(angelone_tests.AngelOneDataTests))
     # 3. Optional network tests, only when explicitly enabled.
     if os.environ.get("RUN_NETWORK_TESTS") == "1":
         suite.addTests(loader.loadTestsFromTestCase(E.NetworkIntegrationTests))

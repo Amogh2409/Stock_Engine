@@ -10,6 +10,8 @@ export function OrderFlowRequirements() {
   ];
   return <details className="border border-slate-200 rounded-lg p-3 text-xs">
     <summary className="font-semibold cursor-pointer">Order-flow tools · additional data needed</summary>
+    <p className="text-slate-600 my-2">Using Angel One? The local SmartAPI collector can export a daily prices.csv for Upload prices.
+      Intraday candles, five-level depth snapshots and option Greeks are saved separately; they do not yet feed this view.</p>
     <p className="text-slate-600 my-2">These tools are unavailable with the current daily uploads. They do not influence review status or scores.</p>
     <dl className="space-y-2">{tools.map(([name, need]) => <div key={name}>
       <dt className="font-semibold">{name} · unavailable</dt><dd className="text-slate-600">{need}</dd>

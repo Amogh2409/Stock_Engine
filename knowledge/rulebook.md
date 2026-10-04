@@ -1,5 +1,17 @@
 # Rulebook
 
+## Angel One collection boundary (2026-10-04)
+
+**Status: Convention (data policy, not a selection rule).** The SmartAPI adapter
+exports completed daily candles for the existing scanner. Today's daily bar is
+excluded conservatively; no zero-volume fill or cross-provider adjustment is
+invented. Exact NSE equity matching is required. Intraday candles, FULL quote
+snapshots and option Greeks are separate research captures, not new scores or
+review conditions. No aggressor classification or dealer positioning is inferred.
+Provider contracts and the unverified live-access status are documented in
+[scripts/ANGEL_ONE.md](../scripts/ANGEL_ONE.md). No rule was tuned or measured on
+returns and the reserved window was not analysed.
+
 ## Auction location and research heatmap (2026-10-04)
 
 **Status: Convention.** The daily auction context compares the latest close to

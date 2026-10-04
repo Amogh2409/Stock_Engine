@@ -125,9 +125,11 @@ descriptions and must not be counted as independent confirmations.
 
 ### Data-dependent tools still unavailable
 
-The UI lists these as unavailable, with their requirements. No collector,
-provider connection or raw microstructure importer has been implemented, and
-none of these tools contributes to stock selection yet:
+The UI lists these as unavailable, with their requirements. A read-only
+[Angel One collector](../scripts/ANGEL_ONE.md) now exports daily prices for the
+existing scanner and saves separate intraday/quote/Greek research captures.
+No raw microstructure importer or processing UI has been implemented, and none
+of the following tools contributes to stock selection yet:
 
 | Tool | Required input and implementation boundary |
 | --- | --- |
