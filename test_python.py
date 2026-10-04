@@ -194,6 +194,24 @@ FULL_STOCK = {
 
 
 class MarketStructureTests(unittest.TestCase):
+    def test_prior_auction_profile_excludes_current_bar_and_manual_anchor(self):
+        series = self.bars(3)
+        series.update(closes=[100, 110, 150], highs=[110, 120, 500], lows=[90, 100, 100], volumes=[100, 300, 1e9])
+        context = E.compute_market_structure(series, lookback=2, bins=3)["auctionContext"]
+        self.assertEqual((context["poc"], context["valueAreaLow"], context["valueAreaHigh"]), (105, 100, 120))
+        self.assertEqual(context["position"], "above value")
+        self.assertEqual(context["referenceEnd"], "2020-01-02")
+        self.assertEqual(E.compute_market_structure(series, anchor_date="2020-01-03", lookback=2, bins=3)["auctionContext"], context)
+        for close in (100, 120):
+            series["closes"][2] = close
+            self.assertEqual(E.compute_market_structure(series, lookback=2, bins=3)["auctionContext"]["position"], "inside value")
+        series["closes"][2], series["lows"][2] = 99, 80
+        self.assertEqual(E.compute_market_structure(series, lookback=2, bins=3)["auctionContext"]["position"], "below value")
+        series["volumes"][0] = None
+        result = E.compute_market_structure(series, lookback=2, bins=3)
+        self.assertEqual(result["auctionContext"]["position"], "unavailable")
+        self.assertIsNotNone(result["anchoredVwap"]["value"])
+
     def bars(self, n=21):
         return {"dates": ["2020-01-%02d" % (i + 1) for i in range(n)],
                 "closes": [100.0] * n, "highs": [110.0] * n,

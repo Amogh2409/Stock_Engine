@@ -97,6 +97,66 @@ continues to apply only to the original watchlist.
 
 ## Exact definitions and conventions
 
+### Auction context and the stock evidence heatmap
+
+`auctionContext` compares the latest close with an estimated volume profile made
+from the **prior** `lookback` bars, excluding the latest bar. It uses the same
+allocation, POC, contiguous 70% value area and tie conventions as the existing
+profile. Its reference is independent of the manual VWAP anchor. A close strictly
+above VAH is `above value`, strictly below VAL is `below value`, and equality at
+either boundary is `inside value`. It requires a valid latest High/Low/Close and
+a complete prior window with positive finite volume. Missing evidence yields
+`unavailable`, never a neutral zero. The reference dates and levels accompany
+every result and the selection-review CSV. An invalid manual anchor may suppress
+the manually anchored profile while leaving this independent prior context valid.
+
+This is an Auction Market Theory-inspired **location description**, not a full
+AMT strategy: a daily close does not establish acceptance, rejection, initiative
+activity, responsive activity or intraday auction sequence. It adds no score or
+admission threshold. The Selection review value-area filter narrows the displayed
+rows and their CSV export only; the default is all positions. Existing candidate
+statuses and original watchlist ranking are unchanged.
+
+The stock evidence heatmap displays the same filtered rows with labels as well
+as colour. Blue/orange means above/below a reference, not buy/sell. Unavailable
+or unaligned review records have neutral directional cells. This is **not an
+order-book liquidity heatmap**. Profile, VWAP and price context are correlated
+descriptions and must not be counted as independent confirmations.
+
+### Data-dependent tools still unavailable
+
+The UI lists these as unavailable, with their requirements. No collector,
+provider connection or raw microstructure importer has been implemented, and
+none of these tools contributes to stock selection yet:
+
+| Tool | Required input and implementation boundary |
+| --- | --- |
+| Liquidity heatmap | Timestamped bid/ask depth snapshots or sequenced book events, price/quantity units and coverage. Resting orders are not executed trades; cancellations are not selling pressure. |
+| Time & Sales | Executed trades with exchange timestamp, instrument, price, size, trade ID, corrections and cancellations. Deduplicate by source identity, not by equal price/time alone. |
+| Footprint / delta / order flow | Classified aggressor-side trades at each price and time bucket. Delta = buyer-initiated volume minus seller-initiated volume. Unknown side must remain unknown; daily candle colour is not classification. Reset cumulative delta on an explicit session boundary. |
+| Session VWAP | Intraday volume/prices and session calendar. Trade VWAP = sum(price × size) / sum(size); intraday bar calculations remain approximations. Daily rolling anchored VWAP is already supported. |
+| Gamma exposure | Dated option chain with gamma and its units, OI, lot size, strike, expiry, underlying price and consistent snapshot times. Gross OI-scaled exposure per 1% move can be defined as sum(gamma × OI × lot size × spot² × 0.01); this is not signed dealer exposure. Signed exposure needs signed positions or a clearly labelled position assumption, never an automatic call-positive/put-negative claim. |
+| Market Profile / TPO | Intraday observations, exchange session/calendar, time-block length and price tick size. Count each price bucket once per time block. This measures price visitation by time blocks, not volume. Daily volume profile cannot stand in for it. |
+
+No claim of improved accuracy follows from adding these tools. A future provider
+integration must keep instrument, session, units, timestamps, source, coverage,
+trade corrections, corporate actions and decision-time availability explicit.
+Until a feed is supplied, these tools remain unavailable. Existing tests validate
+code and parity, not profitability; the requested 50,000-case study has not been executed.
+
+Primary references for these data definitions (not evidence of an investment edge):
+[Sierra Chart Numbers Bars](https://www.sierrachart.com/index.php?l=doc/NumbersBars.php),
+[Time & Sales](https://www.sierrachart.com/index.php?page=doc/TimeandSalesWindow.html),
+[TPO profiles](https://www.sierrachart.com/index.php?page=doc/StudiesReference/TimePriceOpportunityCharts.html),
+[Bookmap heatmap](https://bookmap.com/knowledgebase/docs/KB-SettingUpAndOperating-HeatmapMainChart),
+[CME gamma](https://www.cmegroup.com/education/courses/option-greeks/options-gamma-the-greeks),
+[CME open interest](https://www.cmegroup.com/education/lessons/open-interest).
+OI counts outstanding contracts; it does not identify which participant holds
+each side. The signed-dealer-exposure limitation is an inference from that data
+definition. Neither these sources nor our tests validate a trading rule.
+
+### Existing daily formulas
+
 * VWAP = sum of `(High + Low + Close) / 3 × Volume` divided by total volume.
   Each anchored bar needs positive finite prices, Low ≤ Close ≤ High, and
   positive finite Volume. Missing or zero volume makes the anchored calculation

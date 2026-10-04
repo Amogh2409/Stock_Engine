@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { computeMarketStructure, PriceSeries } from '../utils/screenerEngine';
 import { downloadText } from '../utils/download';
+import { OrderFlowRequirements } from './OrderFlowRequirements';
 
 const price = (value: number | null) => value === null ? '—' : value.toFixed(2);
 
@@ -70,6 +71,14 @@ export function MarketStructurePanel({ series, ticker }: { series: PriceSeries |
               <dd className="text-slate-500 mt-1">{result.wyckoff.reason}</dd>
             </div>
           </dl>
+          <div className="bg-slate-50 rounded p-2 text-xs space-y-1">
+            <h5 className="font-semibold">Auction market context · daily approximation</h5>
+            <p>{result.auctionContext.position}</p>
+            <p>{result.auctionContext.reason}</p>
+            {result.auctionContext.referenceEnd && <p>Prior {result.lookback} bars: {result.auctionContext.referenceStart}–{result.auctionContext.referenceEnd}.
+              Estimated value area {price(result.auctionContext.valueAreaLow)}–{price(result.auctionContext.valueAreaHigh)}; POC {price(result.auctionContext.poc)}.</p>}
+            <p className="text-slate-500">Excludes the current bar. Independent of the manual VWAP anchor; this is not a TPO Market Profile.</p>
+          </div>
           <div className="space-y-2 text-xs">
             <h5 className="font-semibold">Volume profile · daily-bar estimate</h5>
             {profile?.reason ? <p className="text-slate-500">{profile.reason}</p> : profile && <>
@@ -95,6 +104,7 @@ export function MarketStructurePanel({ series, ticker }: { series: PriceSeries |
         </>}
       </>}
       <p className="text-xs text-slate-600"><strong>Order flow: unavailable.</strong> Requires aggressor-side trades for delta and order-book events for depth; daily OHLCV cannot supply them.</p>
+      <OrderFlowRequirements />
       <p className="text-[11px] text-slate-500">Levels use the uploaded price basis. Adjusted prices, corporate actions or unmatched volume adjustments can distort historical levels. Use consistently adjusted data and completed daily bars.</p>
     </section>
   );

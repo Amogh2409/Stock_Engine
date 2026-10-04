@@ -26,6 +26,12 @@ export interface MarketStructure {
     totalVolume: number | null; reason: string | null;
   };
   orderFlow: { status: 'unavailable'; reason: string };
+  auctionContext: {
+    position: 'above value' | 'inside value' | 'below value' | 'unavailable';
+    referenceStart: string | null; referenceEnd: string | null;
+    poc: number | null; valueAreaLow: number | null; valueAreaHigh: number | null;
+    reason: string;
+  };
 }
 
 export interface SelectionReview {

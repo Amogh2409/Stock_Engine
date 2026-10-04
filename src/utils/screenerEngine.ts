@@ -2267,6 +2267,41 @@ export function technicalsFromHistory(
 }
 
 /** Daily-bar diagnostics only. Canonical implementation: compute_market_structure() in Python. */
+function dailyVolumeProfile(series: PriceSeries, anchored: number[], bins: number, total: number): MarketStructure['volumeProfile'] {
+  // Reduce rather than spread: an explicitly anchored history can be very long.
+  const floor = anchored.reduce((v, i) => Math.min(v, series.lows[i]!), Infinity);
+  const ceiling = anchored.reduce((v, i) => Math.max(v, series.highs[i]!), -Infinity);
+  const width = (ceiling - floor) / bins;
+  const profile = width === 0 ? [{ low: floor, high: ceiling, volume: total }]
+    : Array.from({ length: bins }, (_, b) => ({ low: floor + b * width,
+      high: b === bins - 1 ? ceiling : floor + (b + 1) * width, volume: 0 }));
+  if (width !== 0) {
+    for (const i of anchored) {
+      const low = series.lows[i]!, high = series.highs[i]!, volume = series.volumes[i]!;
+      if (high === low) {
+        const b = Math.min(bins - 1, Math.max(0, Math.trunc((low - floor) / width)));
+        profile[b].volume += volume;
+      } else {
+        for (const cell of profile) {
+          const overlap = Math.max(0, Math.min(high, cell.high) - Math.max(low, cell.low));
+          cell.volume += volume * (overlap / (high - low));
+        }
+      }
+    }
+  }
+  let poc = 0;
+  profile.forEach((cell, b) => { if (cell.volume > profile[poc].volume) poc = b; });
+  let left = poc, right = poc, covered = profile[poc].volume;
+  while (covered < 0.70 * total && (left > 0 || right < profile.length - 1)) {
+    const down = left > 0 ? profile[left - 1].volume : -1;
+    const up = right < profile.length - 1 ? profile[right + 1].volume : -1;
+    if (down >= up) covered += profile[--left].volume;
+    else covered += profile[++right].volume;
+  }
+  return { bins: profile, poc: profile[poc].low / 2 + profile[poc].high / 2,
+    valueAreaLow: profile[left].low, valueAreaHigh: profile[right].high, totalVolume: total, reason: null };
+}
+
 export function computeMarketStructure(
   series: PriceSeries,
   anchorDate: string | null = null,
@@ -2282,6 +2317,9 @@ export function computeMarketStructure(
     sweep: { side: null, referenceHigh: null, referenceLow: null, reason: null },
     wyckoff: { context: 'unavailable', reason: null },
     volumeProfile: { bins: [], poc: null, valueAreaLow: null, valueAreaHigh: null, totalVolume: null, reason: null },
+    auctionContext: { position: 'unavailable', referenceStart: null, referenceEnd: null,
+      poc: null, valueAreaLow: null, valueAreaHigh: null,
+      reason: 'Needs a valid latest bar and a full prior lookback with positive volume.' },
     orderFlow: { status: 'unavailable', reason: 'Daily OHLCV has no aggressor-side trades or order-book events.' },
   };
   if (!Number.isInteger(lookback) || lookback < 2 || lookback > 252 || !Number.isInteger(bins) || bins < 2 || bins > 100) {
@@ -2336,6 +2374,23 @@ export function computeMarketStructure(
       : buy ? 'upthrust candidate' : 'range — accumulation/distribution unresolved';
     result.wyckoff.reason = 'Price context only; full Wyckoff phases and institutional activity are not established.';
   }
+  // Prior profile excludes the current bar and ignores the manual chart anchor.
+  if (end >= lookback && indices(end - lookback).every(validPrice)) {
+    const prior = indices(end - lookback).slice(0, -1);
+    if (prior.every(i => Number.isFinite(series.volumes[i]) && series.volumes[i]! > 0)) {
+      const total = prior.reduce((sum, i) => sum + series.volumes[i]!, 0);
+      if (Number.isFinite(total)) {
+        const profile = dailyVolumeProfile(series, prior, bins, total);
+        const close = series.closes[end];
+        Object.assign(result.auctionContext, {
+          position: close > profile.valueAreaHigh! ? 'above value' : close < profile.valueAreaLow! ? 'below value' : 'inside value',
+          referenceStart: dates[end - lookback], referenceEnd: dates[end - 1],
+          poc: profile.poc, valueAreaLow: profile.valueAreaLow, valueAreaHigh: profile.valueAreaHigh,
+          reason: 'Close relative to the prior daily estimated value area; acceptance, rejection and TPO are not established.',
+        });
+      }
+    }
+  }
   const anchor = anchorDate ?? dates[Math.max(0, end - lookback + 1)];
   const start = dates.indexOf(anchor);
   if (start < 0 || start > end) {
@@ -2365,38 +2420,7 @@ export function computeMarketStructure(
     return result;
   }
   Object.assign(result.anchoredVwap, { value: vwap, distancePct: distance, bars: end - start + 1 });
-  // Reduce rather than spread: an explicitly anchored history can be very long.
-  const floor = anchored.reduce((v, i) => Math.min(v, series.lows[i]!), Infinity);
-  const ceiling = anchored.reduce((v, i) => Math.max(v, series.highs[i]!), -Infinity);
-  const width = (ceiling - floor) / bins;
-  const profile = width === 0 ? [{ low: floor, high: ceiling, volume: total }]
-    : Array.from({ length: bins }, (_, b) => ({ low: floor + b * width,
-      high: b === bins - 1 ? ceiling : floor + (b + 1) * width, volume: 0 }));
-  if (width !== 0) {
-    for (const i of anchored) {
-      const low = series.lows[i]!, high = series.highs[i]!, volume = series.volumes[i]!;
-      if (high === low) {
-        const b = Math.min(bins - 1, Math.max(0, Math.trunc((low - floor) / width)));
-        profile[b].volume += volume;
-      } else {
-        for (const cell of profile) {
-          const overlap = Math.max(0, Math.min(high, cell.high) - Math.max(low, cell.low));
-          cell.volume += volume * (overlap / (high - low));
-        }
-      }
-    }
-  }
-  let poc = 0;
-  profile.forEach((cell, b) => { if (cell.volume > profile[poc].volume) poc = b; });
-  let left = poc, right = poc, covered = profile[poc].volume;
-  while (covered < 0.70 * total && (left > 0 || right < profile.length - 1)) {
-    const down = left > 0 ? profile[left - 1].volume : -1;
-    const up = right < profile.length - 1 ? profile[right + 1].volume : -1;
-    if (down >= up) covered += profile[--left].volume;
-    else covered += profile[++right].volume;
-  }
-  Object.assign(result.volumeProfile, { bins: profile, poc: profile[poc].low / 2 + profile[poc].high / 2,
-    valueAreaLow: profile[left].low, valueAreaHigh: profile[right].high, totalVolume: total });
+  result.volumeProfile = dailyVolumeProfile(series, anchored, bins, total);
   return result;
 }
 
@@ -3862,7 +3886,7 @@ export const REJECTED_CSV_COLUMNS = [
 export function generateSelectionReviewCsv(rows: StockEvaluation[]): string {
   const lines = [csvRow(['Ticker', 'Name', 'ScreenPassed', 'FundamentalScore', 'Composite', 'CompositeBasis', 'ReviewStatus', 'ReviewReasons',
     'AsOf', 'AnchorDate', 'AnchoredVWAP', 'CloseVsVWAPPct', 'Sweep', 'WyckoffContext',
-    'EstimatedPOC', 'EstimatedVAL', 'EstimatedVAH', 'OperatingCashFlowYieldPct', 'Basis'])];
+    'EstimatedPOC', 'EstimatedVAL', 'EstimatedVAH', 'OperatingCashFlowYieldPct', 'Basis', 'AuctionPosition', 'AuctionReferenceStart', 'AuctionReferenceEnd', 'PriorEstimatedPOC', 'PriorEstimatedVAL', 'PriorEstimatedVAH'])];
   for (const item of [...rows].sort((a, b) => b.score - a.score || compareCodePoints(a.stock.ticker, b.stock.ticker))) {
     const s = item.marketStructure;
     lines.push(csvRow([textCell(item.stock.ticker), textCell(item.stock.name), item.passed ? 'yes' : 'no',
@@ -3870,7 +3894,9 @@ export function generateSelectionReviewCsv(rows: StockEvaluation[]): string {
       s?.asOf ?? '', s?.anchorDate ?? '', fmt1(s?.anchoredVwap.value ?? null), fmt1(s?.anchoredVwap.distancePct ?? null),
       s?.sweep.side ?? '', s?.wyckoff.context ?? '', fmt1(s?.volumeProfile.poc ?? null),
       fmt1(s?.volumeProfile.valueAreaLow ?? null), fmt1(s?.volumeProfile.valueAreaHigh ?? null),
-      fmt1(item.operatingCashFlowYieldPct), textCell(s?.basis ?? '')]));
+      fmt1(item.operatingCashFlowYieldPct), textCell(s?.basis ?? ''), s?.auctionContext.position ?? 'unavailable',
+      s?.auctionContext.referenceStart ?? '', s?.auctionContext.referenceEnd ?? '', fmt1(s?.auctionContext.poc ?? null),
+      fmt1(s?.auctionContext.valueAreaLow ?? null), fmt1(s?.auctionContext.valueAreaHigh ?? null)]));
   }
   return `${lines.join('\n')}\n`;
 }

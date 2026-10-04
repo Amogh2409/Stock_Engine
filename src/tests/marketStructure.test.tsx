@@ -14,6 +14,25 @@ function bars(n = 21): PriceSeries {
 }
 
 describe('Daily price and volume research', () => {
+  it('compares the close with a hand-calculated prior profile, excluding the current bar and anchor', () => {
+    const s = bars(3);
+    s.closes = [100, 110, 150]; s.highs = [110, 120, 500]; s.lows = [90, 100, 100]; s.volumes = [100, 300, 1e9];
+    const r = computeMarketStructure(s, null, null, 2, 3);
+    expect(r.auctionContext).toMatchObject({ position: 'above value', referenceStart: '2020-01-01',
+      referenceEnd: '2020-01-02', poc: 105, valueAreaLow: 100, valueAreaHigh: 120 });
+    expect(computeMarketStructure(s, '2020-01-03', null, 2, 3).auctionContext).toEqual(r.auctionContext);
+    for (const close of [100, 120]) {
+      s.closes[2] = close;
+      expect(computeMarketStructure(s, null, null, 2, 3).auctionContext.position).toBe('inside value');
+    }
+    s.lows[2] = 80; s.closes[2] = 99;
+    expect(computeMarketStructure(s, null, null, 2, 3).auctionContext.position).toBe('below value');
+    s.volumes[0] = null;
+    const missing = computeMarketStructure(s, null, null, 2, 3);
+    expect(missing.auctionContext.position).toBe('unavailable');
+    expect(missing.anchoredVwap.value).not.toBeNull();
+    expect(computeMarketStructure(bars(2)).auctionContext.position).toBe('unavailable');
+  });
   it('matches hand-calculated VWAP, profile allocation, POC and contiguous value area', () => {
     const s = bars(2);
     s.closes[1] = 110; s.highs[1] = 120; s.lows[1] = 100; s.volumes[1] = 300;
@@ -121,6 +140,28 @@ function markup() {
 }
 
 describe('Integrated selection review', () => {
+  it('filters by prior value area and renders an evidence heatmap with unavailable tools explicit', () => {
+    const result = processScreenerPipeline(parseCsv(fundamentals), reviewApp, DEFAULT_SCREENING_CONFIG, undefined,
+      { AAA: markup(), BBB: bars() });
+    const { unmount } = render(<SelectionReviewTable evaluations={result.evaluations} />);
+    fireEvent.change(screen.getByLabelText('Selection review filter'), { target: { value: 'all' } });
+    fireEvent.change(screen.getByLabelText('Auction context filter'), { target: { value: 'above value' } });
+    expect(screen.getByText('Alpha')).toBeTruthy();
+    expect(screen.queryByText('Beta')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Review display'), { target: { value: 'heatmap' } });
+    expect(screen.getByRole('table', { name: 'Stock evidence heatmap' })).toBeTruthy();
+    expect(screen.getByText('Gamma exposure · unavailable')).toBeTruthy();
+    expect(screen.getByText('Market Profile / TPO · unavailable')).toBeTruthy();
+    expect(generateSelectionReviewCsv(result.evaluations)).toContain('AuctionPosition,AuctionReferenceStart,AuctionReferenceEnd,PriorEstimatedPOC,PriorEstimatedVAL,PriorEstimatedVAH');
+    // A lagging file's directional cells must not read like fresh confirmation.
+    result.evaluations[0].selectionReview = { status: 'unavailable', reasons: ['Unaligned'] };
+    unmount();
+    render(<SelectionReviewTable evaluations={result.evaluations} />);
+    fireEvent.change(screen.getByLabelText('Selection review filter'), { target: { value: 'unavailable' } });
+    fireEvent.change(screen.getByLabelText('Review display'), { target: { value: 'heatmap' } });
+    expect(screen.queryByText('markup candidate')).toBeNull();
+    expect(screen.queryByText('above value', { selector: 'td' })).toBeNull();
+  });
   it('reviews beyond top-N without changing existing admission or ranking', () => {
     const rows = parseCsv(fundamentals);
     const baseline = processScreenerPipeline(rows, reviewApp, DEFAULT_SCREENING_CONFIG);

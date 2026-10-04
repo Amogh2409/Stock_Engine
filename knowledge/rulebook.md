@@ -1,5 +1,24 @@
 # Rulebook
 
+## Auction location and research heatmap (2026-10-04)
+
+**Status: Convention.** The daily auction context compares the latest close to
+the prior 20-bar estimated 70% volume value area, excluding the latest bar.
+Strictly above VAH / below VAL gives above / below value; boundaries count as
+inside. The prior profile needs valid High/Low/Close and positive finite volume;
+the latest bar needs valid High/Low/Close. The existing 24-bin allocation and tie
+rules apply. Manual VWAP anchors do not change this reference. These choices are
+descriptive conventions, not optimal parameters or established AMT acceptance.
+
+This adds an optional view/export filter and a labelled stock evidence heatmap,
+not an admission rule, score or portfolio weight. Unaligned or unavailable review
+records have neutral directional heatmap cells. Time & Sales, footprint, trade
+delta, depth heatmaps, session VWAP, signed gamma exposure and TPO Market Profile
+remain unavailable with the current daily inputs and earn no implicit points.
+Definitions and feed requirements are in [price-volume-research.md](price-volume-research.md).
+No return-driven tuning, holdout measurement or 50,000-case study was performed.
+No existing rule changes provenance; no book-support claim is made here.
+
 Every **technical** scoring rule in the engine, with its source — and the
 position sizing built on top of it.
 

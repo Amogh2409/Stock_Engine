@@ -445,6 +445,11 @@ const tsScreens: Record<string, { result: PipelineResult; history: PriceHistory 
 
 const structureSeries = parsePriceHistoryCsv(buildPriceCsv()).history.TCS;
 const structureCases = [
+  ...[99, 100, 120, 150].map(close => ({ series: {
+    dates: ['2020-01-01', '2020-01-02', '2020-01-03'], closes: [100, 110, close],
+    highs: [110, 120, 500], lows: [90, 100, 80], volumes: [100, 300, 1e9],
+    opens: [100, 110, 100], closesUnadjusted: [null, null, null],
+  }, lookback: 2, bins: 3 })),
   { series: structureSeries },
   { series: structureSeries, anchor_date: structureSeries.dates[200], as_of: structureSeries.dates[250], bins: 12 },
   { series: structureSeries, anchor_date: '1900-01-01' },
@@ -529,7 +534,7 @@ describe('Cross-engine parity on all bundled sample companies', () => {
   it('matches every price/volume research output, including unavailable cases', () => {
     const ours = structureCases.map(c => computeMarketStructure(c.series,
       'anchor_date' in c ? c.anchor_date : null, 'as_of' in c ? c.as_of : null,
-      20, 'bins' in c ? c.bins : 24));
+      'lookback' in c ? c.lookback : 20, 'bins' in c ? c.bins : 24));
     expect(py.market_structure_results).toEqual(ours);
   });
   it('both engines evaluated the same non-empty company set', () => {

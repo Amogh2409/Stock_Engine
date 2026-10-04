@@ -2691,6 +2691,44 @@ def parse_price_history_csv(text):
     return history, skipped
 
 
+def _daily_volume_profile(series, indices, bins, total):
+    """Validated daily bars; same allocation for current and prior profiles."""
+    floor = min(series["lows"][i] for i in indices)
+    ceiling = max(series["highs"][i] for i in indices)
+    width = (ceiling - floor) / bins
+    if width == 0:
+        profile = [{"low": floor, "high": ceiling, "volume": total}]
+    else:
+        profile = [{"low": floor + b * width,
+                    "high": ceiling if b == bins - 1 else floor + (b + 1) * width,
+                    "volume": 0.0} for b in range(bins)]
+        for i in indices:
+            low, high, volume = (series[key][i] for key in ("lows", "highs", "volumes"))
+            if high == low:
+                b = min(bins - 1, max(0, int((low - floor) / width)))
+                profile[b]["volume"] += volume
+            else:
+                for cell in profile:
+                    overlap = max(0.0, min(high, cell["high"]) - max(low, cell["low"]))
+                    cell["volume"] += volume * (overlap / (high - low))
+    # Deterministic ties: lowest-price POC; expand lower first on equal volume.
+    poc = max(range(len(profile)), key=lambda b: profile[b]["volume"])
+    left = right = poc
+    covered = profile[poc]["volume"]
+    while covered < 0.70 * total and (left > 0 or right < len(profile) - 1):
+        down = profile[left - 1]["volume"] if left > 0 else -1
+        up = profile[right + 1]["volume"] if right < len(profile) - 1 else -1
+        if down >= up:
+            left -= 1
+            covered += profile[left]["volume"]
+        else:
+            right += 1
+            covered += profile[right]["volume"]
+    return {"bins": profile, "poc": profile[poc]["low"] / 2 + profile[poc]["high"] / 2,
+            "valueAreaLow": profile[left]["low"], "valueAreaHigh": profile[right]["high"],
+            "totalVolume": total, "reason": None}
+
+
 def compute_market_structure(series, anchor_date=None, as_of=None, lookback=20, bins=24):
     """Daily-bar research diagnostics; never consumed by scoring or sizing.
 
@@ -2707,6 +2745,9 @@ def compute_market_structure(series, anchor_date=None, as_of=None, lookback=20, 
         "wyckoff": {"context": "unavailable", "reason": None},
         "volumeProfile": {"bins": [], "poc": None, "valueAreaLow": None,
                           "valueAreaHigh": None, "totalVolume": None, "reason": None},
+        "auctionContext": {"position": "unavailable", "referenceStart": None, "referenceEnd": None,
+                           "poc": None, "valueAreaLow": None, "valueAreaHigh": None,
+                           "reason": "Needs a valid latest bar and a full prior lookback with positive volume."},
         "orderFlow": {"status": "unavailable", "reason":
                       "Daily OHLCV has no aggressor-side trades or order-book events."},
     }
@@ -2764,6 +2805,21 @@ def compute_market_structure(series, anchor_date=None, as_of=None, lookback=20, 
         result["wyckoff"].update(context=context, reason=
                                 "Price context only; full Wyckoff phases and institutional activity are not established.")
 
+    # The reference excludes today's bar and is independent of the manual anchor.
+    if end >= lookback and all(valid_price(i) for i in range(end - lookback, end + 1)):
+        prior = range(end - lookback, end)
+        if all(finite(series["volumes"][i]) and series["volumes"][i] > 0 for i in prior):
+            prior_total = sum(series["volumes"][i] for i in prior)
+            if math.isfinite(prior_total):
+                profile = _daily_volume_profile(series, prior, bins, prior_total)
+                close = series["closes"][end]
+                position = ("above value" if close > profile["valueAreaHigh"] else
+                            "below value" if close < profile["valueAreaLow"] else "inside value")
+                result["auctionContext"].update(position=position,
+                    referenceStart=dates[end - lookback], referenceEnd=dates[end - 1],
+                    poc=profile["poc"], valueAreaLow=profile["valueAreaLow"], valueAreaHigh=profile["valueAreaHigh"],
+                    reason="Close relative to the prior daily estimated value area; acceptance, rejection and TPO are not established.")
+
     # A manual anchor must be an observed session. Never silently move an anchor
     # before the file to its first row or substitute a hindsight-selected pivot.
     anchor = anchor_date if anchor_date is not None else dates[max(0, end - lookback + 1)]
@@ -2793,40 +2849,7 @@ def compute_market_structure(series, anchor_date=None, as_of=None, lookback=20, 
         result["anchoredVwap"]["reason"] = result["volumeProfile"]["reason"] = "Price calculation is not finite."
         return result
     result["anchoredVwap"].update(value=vwap, distancePct=distance, bars=end - start + 1)
-    floor = min(series["lows"][i] for i in indices)
-    ceiling = max(series["highs"][i] for i in indices)
-    width = (ceiling - floor) / bins
-    if width == 0:
-        profile = [{"low": floor, "high": ceiling, "volume": total}]
-    else:
-        profile = [{"low": floor + b * width,
-                    "high": ceiling if b == bins - 1 else floor + (b + 1) * width,
-                    "volume": 0.0} for b in range(bins)]
-        for i in indices:
-            low, high, volume = (series[key][i] for key in ("lows", "highs", "volumes"))
-            if high == low:
-                b = min(bins - 1, max(0, int((low - floor) / width)))
-                profile[b]["volume"] += volume
-            else:
-                for cell in profile:
-                    overlap = max(0.0, min(high, cell["high"]) - max(low, cell["low"]))
-                    cell["volume"] += volume * (overlap / (high - low))
-    # Deterministic ties: lowest-price POC; expand lower first on equal volume.
-    poc = max(range(len(profile)), key=lambda b: profile[b]["volume"])
-    left = right = poc
-    covered = profile[poc]["volume"]
-    while covered < 0.70 * total and (left > 0 or right < len(profile) - 1):
-        down = profile[left - 1]["volume"] if left > 0 else -1
-        up = profile[right + 1]["volume"] if right < len(profile) - 1 else -1
-        if down >= up:
-            left -= 1
-            covered += profile[left]["volume"]
-        else:
-            right += 1
-            covered += profile[right]["volume"]
-    result["volumeProfile"].update(bins=profile, poc=profile[poc]["low"] / 2 + profile[poc]["high"] / 2,
-                                   valueAreaLow=profile[left]["low"], valueAreaHigh=profile[right]["high"],
-                                   totalVolume=total)
+    result["volumeProfile"] = _daily_volume_profile(series, indices, bins, total)
     return result
 
 
@@ -2860,7 +2883,7 @@ def selection_review_to_csv(rows):
     writer = csv.writer(buffer, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
     writer.writerow(["Ticker", "Name", "ScreenPassed", "FundamentalScore", "Composite", "CompositeBasis", "ReviewStatus", "ReviewReasons",
                      "AsOf", "AnchorDate", "AnchoredVWAP", "CloseVsVWAPPct", "Sweep", "WyckoffContext",
-                     "EstimatedPOC", "EstimatedVAL", "EstimatedVAH", "OperatingCashFlowYieldPct", "Basis"])
+                     "EstimatedPOC", "EstimatedVAL", "EstimatedVAH", "OperatingCashFlowYieldPct", "Basis", "AuctionPosition", "AuctionReferenceStart", "AuctionReferenceEnd", "PriorEstimatedPOC", "PriorEstimatedVAL", "PriorEstimatedVAH"])
     for item in sorted(rows, key=lambda e: (-e["score"], e["ticker"])):
         structure = item.get("marketStructure") or {}
         review = item["selectionReview"]
@@ -2874,6 +2897,12 @@ def selection_review_to_csv(rows):
             structure.get("sweep", {}).get("side") or "", structure.get("wyckoff", {}).get("context") or "",
             _num(profile.get("poc")), _num(profile.get("valueAreaLow")), _num(profile.get("valueAreaHigh")),
             _num(item.get("operatingCashFlowYieldPct")), escape_csv_cell(structure.get("basis") or ""),
+            structure.get("auctionContext", {}).get("position") or "unavailable",
+            structure.get("auctionContext", {}).get("referenceStart") or "",
+            structure.get("auctionContext", {}).get("referenceEnd") or "",
+            _num(structure.get("auctionContext", {}).get("poc")),
+            _num(structure.get("auctionContext", {}).get("valueAreaLow")),
+            _num(structure.get("auctionContext", {}).get("valueAreaHigh")),
         ])
     return buffer.getvalue()
 
